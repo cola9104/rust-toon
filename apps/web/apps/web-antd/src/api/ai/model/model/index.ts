@@ -25,6 +25,12 @@ export namespace AiModelModelApi {
   }
 
   export interface PlatformCapabilities {
+    cachedModels: Array<{
+      model: string;
+      platform: string;
+      syncedAt: number;
+      type: string;
+    }>;
     platforms: PlatformCapability[];
     types: string[];
   }
@@ -97,6 +103,8 @@ export function discoverModels(data: {
   return requestClient.post<{
     models: AiModelModelApi.DiscoveredModel[];
     platform: string;
+    persisted: boolean;
     source: string;
+    syncedAt: number;
   }>('/ai/model/discover', data);
 }

@@ -20,6 +20,7 @@ import { $t } from '#/locales';
 import { useGridColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
 import { applyGatewayCapabilities } from './platforms';
+import { applyDiscoveredModels } from './platforms';
 
 const [FormModal, formModalApi] = useVbenModal({
   connectedComponent: Form,
@@ -35,6 +36,16 @@ function handleRefresh() {
 async function loadCapabilities() {
   const capabilities = await getModelPlatformCapabilities();
   applyGatewayCapabilities(capabilities.platforms);
+  for (const platform of new Set(
+    capabilities.cachedModels.map((item) => item.platform),
+  )) {
+    applyDiscoveredModels(
+      platform,
+      capabilities.cachedModels
+        .filter((item) => item.platform === platform)
+        .map((item) => ({ id: item.model, type: item.type })),
+    );
+  }
 }
 
 async function handleCreate() {

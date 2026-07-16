@@ -4,7 +4,6 @@ mod factory;
 mod knowledge;
 mod media;
 mod midjourney;
-mod model_catalog;
 mod provider;
 mod tools;
 mod vector;
@@ -297,6 +296,7 @@ fn discovered_model_type(model: &str) -> &'static str {
 
 async fn discover_models(
     user: CurrentUser,
+    State(state): State<AiState>,
     Json(request): Json<DiscoverModels>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "ai:model:query")?;
@@ -353,10 +353,50 @@ async fn discover_models(
                 .then(|| json!({"id":id,"type":model_type.code()}))
         })
         .collect::<Vec<_>>();
+    let source = format!("{}/models", request.url.trim_end_matches('/'));
+    let synced_at = chrono::Utc::now().timestamp_millis();
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start model catalog sync"))?;
+    sqlx::query(
+        "UPDATE ai.model_catalog
+         SET missing_count=missing_count+1
+         WHERE platform=$1 AND source='discover'",
+    )
+    .bind(platform.code())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::internal("failed to clear old model catalog"))?;
+    for model in &models {
+        sqlx::query(
+            "INSERT INTO ai.model_catalog(
+                platform,model,type,source,source_url,active,synced_at,missing_count
+             ) VALUES($1,$2,$3,'discover',$4,TRUE,$5,0)
+             ON CONFLICT(platform,model) DO UPDATE
+             SET type=EXCLUDED.type,source='discover',source_url=EXCLUDED.source_url,
+                 active=TRUE,synced_at=EXCLUDED.synced_at,missing_count=0",
+        )
+        .bind(platform.code())
+        .bind(model["id"].as_str().unwrap_or_default())
+        .bind(model["type"].as_str().unwrap_or("chat"))
+        .bind(&source)
+        .bind(synced_at)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| AppError::internal("failed to persist model catalog"))?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit model catalog sync"))?;
     Ok(Json(ApiResponse::new(json!({
         "models": models,
         "platform": platform.code(),
-        "source": format!("{}/models", request.url.trim_end_matches('/')),
+        "source": source,
+        "syncedAt": synced_at,
+        "persisted": true,
     }))))
 }
 async fn test(
@@ -446,10 +486,74 @@ async fn test(
         json!({"success":true,"latencyMs":started.elapsed().as_millis(),"result":result}),
     )))
 }
-async fn platforms(user: CurrentUser) -> Result<Json<ApiResponse<Value>>, AppError> {
+async fn platforms(
+    user: CurrentUser,
+    State(state): State<AiState>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "ai:model:query")?;
+    let platform_rows = sqlx::query(
+        "SELECT platform,label,default_url,supported_types
+         FROM ai.model_platforms WHERE enabled=TRUE ORDER BY platform",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load model platforms"))?;
+    let model_rows = sqlx::query(
+        "SELECT platform,model,type,source,synced_at
+         FROM ai.model_catalog WHERE active=TRUE ORDER BY platform,type,model",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load model catalog"))?;
+    let models = model_rows
+        .into_iter()
+        .map(|row| {
+            json!({
+                "platform": row.get::<String, _>("platform"),
+                "model": row.get::<String, _>("model"),
+                "type": row.get::<String, _>("type"),
+                "source": row.get::<String, _>("source"),
+                "syncedAt": row.get::<i64, _>("synced_at"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let platforms = platform_rows
+        .into_iter()
+        .map(|row| {
+            let platform = row.get::<String, _>("platform");
+            let types = row.get::<Vec<String>, _>("supported_types");
+            let mut presets = serde_json::Map::new();
+            for model_type in &types {
+                let entries = models
+                    .iter()
+                    .filter(|model| {
+                        model["platform"] == platform
+                            && model["type"] == *model_type
+                            && model["source"] == "preset"
+                    })
+                    .map(|model| {
+                        let id = model["model"].as_str().unwrap_or_default();
+                        json!({"label":id,"model":id})
+                    })
+                    .collect::<Vec<_>>();
+                presets.insert(model_type.clone(), json!(entries));
+            }
+            json!({
+                "platform": platform,
+                "label": row.get::<String, _>("label"),
+                "url": row.get::<String, _>("default_url"),
+                "types": types,
+                "presets": presets,
+            })
+        })
+        .collect::<Vec<_>>();
+    let cached_models = models
+        .into_iter()
+        .filter(|model| model["source"] == "discover")
+        .collect::<Vec<_>>();
     Ok(Json(ApiResponse::new(json!({
-        "platforms": model_catalog::platform_catalog(),
+        "platforms": platforms,
+        "cachedModels": cached_models,
         "types": ["chat","image","video","speech","transcription","music","embedding","rerank"]
     }))))
 }

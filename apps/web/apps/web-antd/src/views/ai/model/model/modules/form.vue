@@ -147,6 +147,16 @@ const [Modal, modalApi] = useVbenModal({
     }
     const capabilities = await getModelPlatformCapabilities();
     applyGatewayCapabilities(capabilities.platforms);
+    for (const platform of new Set(
+      capabilities.cachedModels.map((item) => item.platform),
+    )) {
+      applyDiscoveredModels(
+        platform,
+        capabilities.cachedModels
+          .filter((item) => item.platform === platform)
+          .map((item) => ({ id: item.model, type: item.type })),
+      );
+    }
     formApi.setState({ schema: useFormSchema() });
     // 加载数据
     const data = modalApi.getData<AiModelModelApi.Model>();
