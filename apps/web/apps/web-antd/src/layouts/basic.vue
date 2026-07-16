@@ -3,7 +3,7 @@ import type { NotificationItem } from '@vben/layouts';
 
 import type { SystemTenantApi } from '#/api/system/tenant';
 
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 import { useAccess } from '@vben/access';
 import { AuthenticationLoginExpiredModal, useVbenModal } from '@vben/common-ui';
@@ -52,6 +52,8 @@ const { closeOtherTabs, refreshTab } = useTabs();
 const notifications = ref<NotificationItem[]>([]);
 const unreadCount = ref(0);
 const showDot = computed(() => unreadCount.value > 0);
+let unreadCountPollingTimer: ReturnType<typeof setInterval> | undefined;
+let unreadCountRequestPending = false;
 
 const [HelpModal, helpModalApi] = useVbenModal({
   connectedComponent: Help,
@@ -103,7 +105,18 @@ async function handleLogout() {
 
 /** 获得未读消息数 */
 async function handleNotificationGetUnreadCount() {
-  unreadCount.value = await getUnreadNotifyMessageCount();
+  if (unreadCountRequestPending) {
+    return;
+  }
+
+  unreadCountRequestPending = true;
+  try {
+    unreadCount.value = await getUnreadNotifyMessageCount();
+  } catch {
+    // Keep the last count when the API is temporarily unavailable.
+  } finally {
+    unreadCountRequestPending = false;
+  }
 }
 
 /** 获得消息列表 */
@@ -202,14 +215,20 @@ onMounted(() => {
   // 获取租户列表
   handleGetTenantList();
   // 轮询刷新未读数量
-  setInterval(
+  unreadCountPollingTimer = setInterval(
     () => {
       if (userStore.userInfo) {
-        handleNotificationGetUnreadCount();
+        void handleNotificationGetUnreadCount();
       }
     },
     1000 * 60 * 2,
   );
+});
+
+onBeforeUnmount(() => {
+  if (unreadCountPollingTimer) {
+    clearInterval(unreadCountPollingTimer);
+  }
 });
 
 const handleClick = (item: NotificationItem) => {
