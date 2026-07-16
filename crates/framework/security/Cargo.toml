@@ -1,0 +1,21 @@
+[package]
+name = "rust-toon-framework-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+argon2.workspace = true
+axum.workspace = true
+bcrypt.workspace = true
+chrono.workspace = true
+jsonwebtoken.workspace = true
+rand_core.workspace = true
+rust-toon-framework-common.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower.workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "rust-toon-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+rust-toon-framework-common.workspace = true
+rust-toon-framework-database.workspace = true
+rust-toon-framework-redis.workspace = true
+rust-toon-framework-security.workspace = true
+rust-toon-framework-web.workspace = true
+rust-toon-infra-server.workspace = true
+rust-toon-ai-server.workspace = true
+rust-toon-media-server.workspace = true
+rust-toon-system-server.workspace = true
+rust-toon-toon-server.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

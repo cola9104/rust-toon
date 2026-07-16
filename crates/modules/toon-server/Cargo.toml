@@ -1,0 +1,26 @@
+[package]
+name = "rust-toon-toon-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+image.workspace = true
+futures-util.workspace = true
+rust-toon-framework-common.workspace = true
+rust-toon-framework-database.workspace = true
+rust-toon-framework-security.workspace = true
+rust-toon-framework-web.workspace = true
+rust-toon-ai-api.workspace = true
+rust-toon-ai-server.workspace = true
+rust-toon-toon-api.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true

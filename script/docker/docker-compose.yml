@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: rust-toon-postgres
+    environment:
+      POSTGRES_USER: rust_toon
+      POSTGRES_PASSWORD: rust_toon
+      POSTGRES_DB: rust_toon
+    ports:
+      - "5432:5432"
+    volumes:
+      - rust-toon-postgres:/var/lib/postgresql
+
+  redis:
+    image: redis:8
+    container_name: rust-toon-redis
+    ports:
+      - "6379:6379"
+
+  nats:
+    image: nats:2
+    container_name: rust-toon-nats
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  minio:
+    image: minio/minio:latest
+    container_name: rust-toon-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: rust_toon
+      MINIO_ROOT_PASSWORD: rust_toon_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rust-toon-minio:/data
+
+volumes:
+  rust-toon-postgres:
+  rust-toon-minio:

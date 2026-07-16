@@ -1,0 +1,10 @@
+[package]
+name = "rust-toon-framework-telemetry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rust-toon-framework-common.workspace = true
+tracing.workspace = true
