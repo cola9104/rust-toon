@@ -5,6 +5,8 @@ use crate::DatabaseConfig;
 // Yudao System, Infra compatibility, seed cleanup, performance, media, menu cleanup,
 // Toonflow track ordering, and bigint video timestamps are embedded here.
 // Recompile this crate whenever the embedded SQL migration catalog changes.
+// SQLx embeds this directory at compile time; adding a migration must rebuild
+// this module so local development and release binaries see the complete catalog.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../sql/postgresql");
 const CURRENT_DATABASE_BASELINE: &str = include_str!("../../../../sql/bootstrap/current.sql");
 

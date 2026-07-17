@@ -171,7 +171,7 @@ const routes: RouteRecordRaw[] = [
     path: '/system/message',
     name: 'SystemMessage',
     meta: {
-      title: '消息中心',
+      title: '信息中心',
       icon: 'lucide:mail',
       order: 12,
     },

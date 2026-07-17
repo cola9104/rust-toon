@@ -305,9 +305,10 @@ export function useGridColumns(): VxeTableGridOptions<SystemMenuApi.Menu>['colum
       field: 'type',
       title: '菜单类型',
       minWidth: 100,
-      cellRender: {
-        name: 'CellDict',
-        props: { type: DICT_TYPE.SYSTEM_MENU_TYPE },
+      formatter: ({ row }) => {
+        if (row.type === SystemMenuTypeEnum.DIR) return '目录';
+        if (row.type === SystemMenuTypeEnum.BUTTON) return '按钮';
+        return row.visible ? '菜单' : '隐藏页面';
       },
     },
     {
@@ -331,8 +332,14 @@ export function useGridColumns(): VxeTableGridOptions<SystemMenuApi.Menu>['colum
       minWidth: 200,
     },
     {
+      field: 'visible',
+      title: '显示状态',
+      minWidth: 100,
+      formatter: ({ cellValue }) => (cellValue ? '显示' : '隐藏'),
+    },
+    {
       field: 'status',
-      title: '状态',
+      title: '启用状态',
       minWidth: 100,
       cellRender: {
         name: 'CellDict',

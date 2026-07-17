@@ -39,7 +39,7 @@ async fn validate_project_models(
 ) -> Result<(), AppError> {
     for (id, kind) in [(image, "image"), (video, "video")] {
         if let Some(id) = id {
-            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai.model_configs WHERE id=$1 AND type=$2 AND status=1)").bind(id).bind(kind).fetch_one(pool).await.map_err(|_|AppError::internal("failed to validate AI model"))?;
+            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai.model_configs WHERE id=$1 AND type=$2 AND status=0)").bind(id).bind(kind).fetch_one(pool).await.map_err(|_|AppError::internal("failed to validate AI model"))?;
             if !valid {
                 return Err(AppError::bad_request(format!("请选择启用的{kind}模型")));
             }

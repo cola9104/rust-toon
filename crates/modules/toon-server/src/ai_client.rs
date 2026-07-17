@@ -90,18 +90,29 @@ pub async fn image(
         .map_err(|e| format!("{e:?}"))
 }
 pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<String, String> {
-    let response = rust_toon_ai_server::AiModelFactory::new(pool.clone())
-        .video(model_id(configured, "视频")?, payload)
+    let model_id = model_id(configured, "视频")?;
+    let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
+    let response = factory
+        .video(model_id, payload)
         .await
         .map_err(|e| format!("{e:?}"))?;
-    if response.url.is_empty() {
-        Err(format!(
-            "视频任务 {} 尚未完成",
-            response.task_id.unwrap_or_default()
-        ))
-    } else {
-        Ok(response.url)
+    if !response.url.is_empty() {
+        return Ok(response.url);
     }
+    let task_id = response
+        .task_id
+        .ok_or_else(|| "视频响应缺少 URL 或任务 ID".to_string())?;
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        let result = factory
+            .poll_video(model_id, &task_id)
+            .await
+            .map_err(|e| format!("{e:?}"))?;
+        if !result.url.is_empty() {
+            return Ok(result.url);
+        }
+    }
+    Err(format!("视频任务 {task_id} 等待超时"))
 }
 pub async fn speech(
     pool: &PgPool,

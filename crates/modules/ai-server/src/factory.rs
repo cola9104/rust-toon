@@ -1,5 +1,6 @@
 use crate::provider::{
-    AnthropicProvider, AzureOpenAiProvider, ChatProvider, GeminiProvider, OpenAiCompatibleProvider,
+    AnthropicProvider, AzureOpenAiProvider, ChatProvider, DouBaoMediaProvider, GeminiProvider,
+    OpenAiCompatibleProvider,
 };
 use rust_toon_ai_api::{
     AiModelType, AiPlatform, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -13,10 +14,15 @@ use sqlx::{PgPool, Row};
 pub struct AiModelFactory {
     pool: PgPool,
 }
+
+fn model_is_enabled(status: i32) -> bool {
+    status == 0
+}
+
 impl AiModelFactory {
     async fn typed(&self, id: i64, expected: AiModelType) -> Result<ModelConfig, AppError> {
         let config = self.config(id).await?;
-        if config.status == 0 {
+        if !model_is_enabled(config.status) {
             return Err(AppError::bad_request("AI model is disabled"));
         }
         if AiModelType::parse(&config.type_) != Some(expected) {
@@ -47,7 +53,7 @@ impl AiModelFactory {
     }
     pub async fn chat(&self, id: i64, mut request: ChatRequest) -> Result<ChatResponse, AppError> {
         let config = self.config(id).await?;
-        if config.status == 0 {
+        if !model_is_enabled(config.status) {
             return Err(AppError::bad_request("AI model is disabled"));
         }
         if AiModelType::parse(&config.type_) != Some(AiModelType::Chat) {
@@ -158,7 +164,7 @@ impl AiModelFactory {
         Fut: std::future::Future<Output = Result<(), String>>,
     {
         let config = self.config(id).await?;
-        if config.status == 0 {
+        if !model_is_enabled(config.status) {
             return Err(AppError::bad_request("AI model is disabled"));
         }
         if AiModelType::parse(&config.type_) != Some(AiModelType::Chat) {
@@ -252,8 +258,24 @@ impl AiModelFactory {
     }
     pub async fn video(&self, id: i64, payload: Value) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Video).await?;
+        if config.platform == AiPlatform::DouBao.code() {
+            return DouBaoMediaProvider
+                .video(&config, payload)
+                .await
+                .map_err(AppError::bad_request);
+        }
         OpenAiCompatibleProvider
             .video(&config, payload)
+            .await
+            .map_err(AppError::bad_request)
+    }
+    pub async fn poll_video(&self, id: i64, task_id: &str) -> Result<MediaResponse, AppError> {
+        let config = self.typed(id, AiModelType::Video).await?;
+        if config.platform != AiPlatform::DouBao.code() {
+            return Err(AppError::bad_request("该视频平台不支持任务轮询"));
+        }
+        DouBaoMediaProvider
+            .poll_video(&config, task_id)
             .await
             .map_err(AppError::bad_request)
     }
@@ -288,5 +310,16 @@ impl AiModelFactory {
             .embedding(&config, &request)
             .await
             .map_err(AppError::bad_request)
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::model_is_enabled;
+
+    #[test]
+    fn follows_yudao_common_status_semantics() {
+        assert!(model_is_enabled(0));
+        assert!(!model_is_enabled(1));
     }
 }

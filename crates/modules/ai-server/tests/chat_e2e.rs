@@ -77,7 +77,7 @@ async fn chat_json_and_sse_persist_complete_messages() -> Result<(), Box<dyn std
         .ok();
     });
     let now = chrono::Utc::now().timestamp_millis();
-    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time)VALUES(91001,'E2E','e2e-chat','OpenAICompatible','chat','mock',$1,1,$2,$2)")
+    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time)VALUES(91001,'E2E','e2e-chat','OpenAICompatible','chat','mock',$1,0,$2,$2)")
         .bind(&model_url).bind(now).execute(&pool).await?;
     let security = SecurityConfig::new(
         "integration-test-secret-at-least-32-characters",
@@ -133,7 +133,7 @@ async fn chat_json_and_sse_persist_complete_messages() -> Result<(), Box<dyn std
     let stored:String=sqlx::query_scalar("SELECT content FROM ai.chat_messages WHERE conversation_id=$1 AND type='assistant' ORDER BY id DESC LIMIT 1").bind(conversation_id).fetch_one(&pool).await?;
     assert_eq!(stored, "流式回复");
 
-    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time)VALUES(91002,'MJ E2E','e2e-mj','Midjourney','image','midjourney',$1,1,$2,$2)")
+    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time)VALUES(91002,'MJ E2E','e2e-mj','Midjourney','image','midjourney',$1,0,$2,$2)")
         .bind(&model_url).bind(now).execute(&pool).await?;
     let (status,body)=request(app.clone(),&token,"/ai/image/midjourney/imagine",json!({"modelId":91002,"prompt":"测试图片","base64Array":[],"width":"1024","height":"1024","version":"6.0"})).await;
     assert_eq!(status, StatusCode::OK);

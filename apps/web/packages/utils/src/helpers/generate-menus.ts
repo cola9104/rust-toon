@@ -139,19 +139,25 @@ function convertServerMenuToRouteRecordStringComponent(
       };
       menus.push(urlMenu);
       return;
-    } else if (menu.children && menu.parentId === 0) {
+    } else if (
+      menu.children &&
+      menu.children.length > 0 &&
+      menu.parentId === 0
+    ) {
       menu.component = 'BasicLayout';
     }
     if (menu.component === 'Layout') {
       menu.component = 'BasicLayout';
     }
 
-    if (menu.children && menu.parentId !== 0) {
+    if (menu.children && menu.children.length > 0 && menu.parentId !== 0) {
       menu.component = '';
     }
 
     // path
-    if (parent) {
+    // 绝对子路由（例如 /workspace）已经是完整地址，不能再次拼接父路径。
+    // 只有相对路径才继承父级路径。
+    if (parent && !menu.path.startsWith('/')) {
       menu.path = `${parent}/${menu.path}`;
     }
 

@@ -1,4 +1,4 @@
-import { initPreferences } from '@vben/preferences';
+import { initPreferences, updatePreferences } from '@vben/preferences';
 import { unmountGlobalLoading } from '@vben/utils';
 
 import { overridesPreferences, preferencesExtension } from './preferences';
@@ -18,6 +18,14 @@ async function initApplication() {
     extension: preferencesExtension,
     namespace,
     overrides: overridesPreferences,
+  });
+
+  // 菜单和路由以 system_menu 为唯一数据源。偏好缓存的优先级高于
+  // overrides，旧缓存可能把应用悄悄切回 frontend/mixed 模式。
+  updatePreferences({
+    app: {
+      accessMode: 'backend',
+    },
   });
 
   // 启动应用并挂载

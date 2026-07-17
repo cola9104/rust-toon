@@ -132,7 +132,7 @@ async fn simple_list(
 ) -> Result<Json<ApiResponse<Vec<ModelConfig>>>, AppError> {
     require(&user, "ai:model:query")?;
     let type_filter = query.type_.as_deref().and_then(normalize_type);
-    let rows = sqlx::query("SELECT id,name,key,platform,type,model,api_key,url,status,config FROM ai.model_configs WHERE status=1 AND ($1::text IS NULL OR type=$1) ORDER BY name,id")
+    let rows = sqlx::query("SELECT id,name,key,platform,type,model,api_key,url,status,config FROM ai.model_configs WHERE status=0 AND ($1::text IS NULL OR type=$1) ORDER BY name,id")
         .bind(type_filter)
         .fetch_all(&state.pool)
         .await
@@ -190,7 +190,7 @@ struct SaveModel {
     config: Value,
 }
 fn enabled() -> i32 {
-    1
+    0
 }
 fn validate_model(request: &SaveModel) -> Result<(), AppError> {
     let platform = AiPlatform::parse(&request.platform)
@@ -281,9 +281,10 @@ fn discovered_model_type(model: &str) -> &'static str {
         "transcription"
     } else if id.contains("tts") || id.contains("audio") {
         "speech"
-    } else if id.contains("sora") || id.contains("video") {
+    } else if id.contains("sora") || id.contains("video") || id.contains("seedance") {
         "video"
     } else if id.contains("image")
+        || id.contains("seedream")
         || id.contains("dall-e")
         || id.contains("flux")
         || id.contains("cogview")
@@ -567,6 +568,8 @@ mod tests {
         assert_eq!(discovered_model_type("qwen3-rerank"), "rerank");
         assert_eq!(discovered_model_type("qwen3-vl-rerank"), "rerank");
         assert_eq!(discovered_model_type("text-embedding-v4"), "embedding");
+        assert_eq!(discovered_model_type("doubao-seedance-2-0-260128"), "video");
+        assert_eq!(discovered_model_type("doubao-seedream-5-0-260128"), "image");
         assert_eq!(discovered_model_type("qwen-max"), "chat");
     }
 }

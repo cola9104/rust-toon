@@ -127,7 +127,7 @@ async fn create_conversation(
     {
         Some(id) => id,
         None => sqlx::query_scalar(
-            "SELECT id FROM ai.model_configs WHERE type='chat' AND status=1 ORDER BY id LIMIT 1",
+            "SELECT id FROM ai.model_configs WHERE type='chat' AND status=0 ORDER BY id LIMIT 1",
         )
         .fetch_optional(&state.pool)
         .await

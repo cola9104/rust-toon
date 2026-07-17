@@ -9,9 +9,11 @@ use serde_json::{Value, json};
 
 mod anthropic;
 mod azure;
+mod doubao;
 mod gemini;
 pub use anthropic::AnthropicProvider;
 pub use azure::AzureOpenAiProvider;
+pub use doubao::DouBaoMediaProvider;
 pub use gemini::GeminiProvider;
 
 fn value_as_id(value: &Value) -> Option<String> {

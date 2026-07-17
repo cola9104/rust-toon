@@ -52,8 +52,10 @@ async function generateRoutesByBackend(
       });
     }
 
-    // add by 芋艿：合并静态路由和动态路由
-    return [...options.routes, ...routes];
+    // 后端模式以服务端菜单为唯一的路由目录。页面文件仍通过 pageMap
+    // 解析，但不能再次合并前端动态路由，否则会产生同名、同路径的
+    // 两套路由，并可能由后注册的空路由覆盖有效页面组件。
+    return routes;
   } catch (error) {
     console.error(error);
     throw error;
