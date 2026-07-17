@@ -20,6 +20,7 @@ import {
 import { $t } from '#/locales';
 
 import { useGridColumns, useGridFormSchema } from './data';
+import { ensureKnowledgeRouteContext } from '../route-context';
 
 /** AI 知识库文档列表 */
 defineOptions({ name: 'AiKnowledgeDocument' });
@@ -67,7 +68,7 @@ async function handleDelete(row: AiKnowledgeDocumentApi.KnowledgeDocument) {
 function handleSegment(id: number) {
   router.push({
     name: 'AiKnowledgeSegment',
-    query: { documentId: id },
+    query: { documentId: id, knowledgeId: route.query.knowledgeId },
   });
 }
 
@@ -125,13 +126,13 @@ const [Grid, gridApi] = useVbenVxeGrid({
 });
 
 /** 初始化 */
-onMounted(() => {
-  // 如果知识库 ID 不存在，显示错误提示并关闭页面
-  if (!route.query.knowledgeId) {
-    message.error('知识库 ID 不存在，无法查看文档列表');
-    // 关闭当前路由，返回到知识库列表页面
-    router.back();
-  }
+onMounted(async () => {
+  await ensureKnowledgeRouteContext({
+    errorMessage: '请先选择知识库，再查看文档列表',
+    query: route.query,
+    required: ['knowledgeId'],
+    router,
+  });
 });
 </script>
 

@@ -13,6 +13,10 @@ export namespace SystemMenuApi {
     icon: string;
     component: string;
     componentName?: string;
+    activeMenuId?: number;
+    activeMenuName?: string;
+    /** 仅用于菜单管理树展示，不参与路由嵌套。 */
+    displayParentId?: number;
     status: number;
     visible: boolean;
     keepAlive: boolean;

@@ -192,6 +192,7 @@ struct AuthorizedMenuRow {
     path: Option<String>,
     component: Option<String>,
     component_name: Option<String>,
+    active_menu_id: Option<i64>,
     icon: Option<String>,
     visible: bool,
     keep_alive: bool,
@@ -228,7 +229,8 @@ async fn permission_info(
 
     let menus = sqlx::query_as::<_, AuthorizedMenuRow>(
         "SELECT DISTINCT m.id, m.parent_id, m.sort, m.name, m.path, m.component,
-                m.component_name, m.icon, m.visible, m.keep_alive, m.always_show
+                m.component_name, m.active_menu_id, m.icon, m.visible,
+                m.keep_alive, m.always_show
          FROM system_users u
          JOIN system_tenant tenant
            ON tenant.id = u.tenant_id AND tenant.deleted = 0 AND tenant.status = 0
@@ -282,6 +284,7 @@ fn build_menu_tree(rows: &[AuthorizedMenuRow], parent_id: i64) -> Vec<Value> {
                 "path": row.path,
                 "component": row.component,
                 "componentName": row.component_name,
+                "activeMenuId": row.active_menu_id,
                 "icon": row.icon,
                 "visible": row.visible,
                 "keepAlive": row.keep_alive,

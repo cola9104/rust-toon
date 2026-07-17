@@ -4,7 +4,10 @@ import { createRouter, createWebHistory } from 'vue-router';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { generateMenus } from '../generate-menus';
+import {
+  convertServerMenuToRouteRecordStringComponent,
+  generateMenus,
+} from '../generate-menus';
 
 // Nested route setup to test child inclusion and hideChildrenInMenu functionality
 
@@ -229,5 +232,59 @@ describe('generateMenus', () => {
     const emptyRoutes: any[] = [];
     const menus = generateMenus(emptyRoutes, router);
     expect(menus).toEqual([]);
+  });
+
+  it('maps a hidden page business owner to meta.activePath', () => {
+    const backendMenus = [
+      {
+        children: [
+          {
+            children: [],
+            component: 'ai/image/index/index.vue',
+            componentName: 'AiImage',
+            id: 2,
+            keepAlive: true,
+            meta: {},
+            name: 'AI 绘图',
+            parentId: 1,
+            path: 'image',
+            sort: 1,
+            visible: true,
+          },
+          {
+            activeMenuId: 2,
+            children: [],
+            component: 'ai/image/square/index.vue',
+            componentName: 'AiImageSquare',
+            id: 3,
+            keepAlive: false,
+            meta: {},
+            name: '绘图作品',
+            parentId: 1,
+            path: 'image/square',
+            sort: 90,
+            visible: false,
+          },
+        ],
+        component: '',
+        componentName: 'Ai',
+        id: 1,
+        keepAlive: true,
+        meta: {},
+        name: 'AI 大模型',
+        parentId: 0,
+        path: '/ai',
+        sort: 30,
+        visible: true,
+      },
+    ] as any;
+
+    const converted =
+      convertServerMenuToRouteRecordStringComponent(backendMenus);
+    const hiddenPage = converted[0]?.children?.[1];
+
+    expect(hiddenPage?.path).toBe('/ai/image/square');
+    expect(hiddenPage?.meta?.activePath).toBe('/ai/image');
+    expect(hiddenPage?.meta?.hideInMenu).toBe(true);
   });
 });

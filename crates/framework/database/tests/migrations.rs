@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 50);
+    assert_eq!(applied, 55);
 
     for table in [
         "ai.model_configs",
@@ -82,6 +82,15 @@ async fn applies_all_migrations_to_empty_postgres() {
         duplicate_route_names, 0,
         "active route menus must not generate duplicate frontend route names"
     );
+
+    let active_menu_links: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM system_menu
+         WHERE deleted = 0 AND visible = false AND active_menu_id IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read hidden-page business menu links");
+    assert!(active_menu_links >= 14);
 
     let administrators: i64 = sqlx::query_scalar(
         "SELECT count(*)

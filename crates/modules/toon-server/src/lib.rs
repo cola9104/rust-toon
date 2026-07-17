@@ -134,11 +134,23 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_project::general_statistics),
         )
         .route(
+            "/general/generalStatistics",
+            post(toonflow_project::general_statistics),
+        )
+        .route(
             "/api/general/updateProject",
             post(toonflow_project::update_project_profile),
         )
         .route(
+            "/general/updateProject",
+            post(toonflow_project::update_project_profile),
+        )
+        .route(
             "/api/project/getModelDetails",
+            post(toonflow_project::get_model_details),
+        )
+        .route(
+            "/project/getModelDetails",
             post(toonflow_project::get_model_details),
         )
         .route("/toonflow/manuals", get(toonflow_manuals::list_all))

@@ -4,7 +4,7 @@
 
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
--- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
+-- Dumped by pg_dump version 18.4 (Debian 18.4-1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1800,7 +1800,8 @@ CREATE TABLE public.system_menu (
     create_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updater character varying(64) DEFAULT ''::character varying,
     update_time timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted smallint DEFAULT 0 NOT NULL
+    deleted smallint DEFAULT 0 NOT NULL,
+    active_menu_id bigint
 );
 
 
@@ -1942,6 +1943,13 @@ COMMENT ON COLUMN public.system_menu.update_time IS '更新时间';
 --
 
 COMMENT ON COLUMN public.system_menu.deleted IS '是否删除';
+
+
+--
+-- Name: COLUMN system_menu.active_menu_id; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON COLUMN public.system_menu.active_menu_id IS '隐藏页面的业务归属菜单ID，用于生成前端路由 meta.activePath';
 
 
 --
@@ -6114,12 +6122,19 @@ CREATE TABLE toonflow.videos (
 -- Data for Name: chat_conversations; Type: TABLE DATA; Schema: ai; Owner: -
 --
 
+INSERT INTO ai.chat_conversations VALUES (1784257819451321, 'fdf9b377-c8a9-96ce-6366-fbbf85faff12', '新对话', false, NULL, 1784257814114, 0.7, 4096, 20, NULL, 1784257819451, 1784257819451, '{}', '{}');
 
 
 --
 -- Data for Name: chat_messages; Type: TABLE DATA; Schema: ai; Owner: -
 --
 
+INSERT INTO ai.chat_messages VALUES (1784257823227097, 1784257819451321, 'fdf9b377-c8a9-96ce-6366-fbbf85faff12', 'user', 1784257814114, '你好', NULL, 0, '{}', '{}', '[]', 1784257823227);
+INSERT INTO ai.chat_messages VALUES (1784257823227098, 1784257819451321, 'fdf9b377-c8a9-96ce-6366-fbbf85faff12', 'assistant', 1784257814114, '你好！👋 很高兴见到你！
+
+我是DeepSeek，能帮你解答问题、聊天、处理文档、翻译、编程等等。不管你是想闲聊还是需要帮助，我都很乐意陪你～
+
+今天有什么我可以帮你的吗？😊', NULL, 0, '{}', '{}', '[]', 1784257823227);
 
 
 --
@@ -6156,8 +6171,6 @@ CREATE TABLE toonflow.videos (
 -- Data for Name: model_catalog; Type: TABLE DATA; Schema: ai; Owner: -
 --
 
-INSERT INTO ai.model_catalog VALUES ('DeepSeek', 'deepseek-v4-pro', 'chat', 'preset', '', true, 0, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DeepSeek', 'deepseek-v4-flash', 'chat', 'preset', '', true, 0, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('Moonshot', 'kimi-k2.5', 'chat', 'preset', '', true, 0, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('Moonshot', 'kimi-k2-0711-preview', 'chat', 'preset', '', true, 0, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('Anthropic', 'claude-fable-5', 'chat', 'preset', '', true, 0, 0, NULL);
@@ -6212,140 +6225,144 @@ INSERT INTO ai.model_catalog VALUES ('StableDiffusion', 'sd3.5-large', 'image', 
 INSERT INTO ai.model_catalog VALUES ('Midjourney', 'midjourney-v8.1', 'image', 'preset', '', true, 0, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('Midjourney', 'midjourney-v7', 'image', 'preset', '', true, 0, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('Midjourney', 'niji-7', 'image', 'preset', '', true, 0, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DeepSeek', 'deepseek-v4-flash', 'chat', 'discover', 'https://api.deepseek.com/models', true, 1784257814339, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DeepSeek', 'deepseek-v4-pro', 'chat', 'discover', 'https://api.deepseek.com/models', true, 1784257814339, 0, NULL);
 INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-5-0-lite-260128', 'image', 'preset', 'https://www.volcengine.com/docs/82379/1541523', true, 0, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-128k-240428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-128k-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-240328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-character-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-text-240515', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'mistral-7b-instruct-v0.2', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-character-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-functioncall-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-pretrain-character-240516', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-240528', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-browsing-240524', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-functioncall-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-128k-240628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-text-240715', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-character-240728', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-240815', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-character-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-128k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-preview', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-large-text-240915', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-character-241015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-241028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-241115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-vision-pro-32k-241028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-vision-lite-32k-241015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seaweed-241128', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-256k-241115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-241215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-241215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-lite-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-vision-pro-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-241215', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-256k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-241226', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-distill-qwen-7b-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-distill-qwen-32b-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-character-250228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-vision-lite-250315', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-250324', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-vision-pro-250328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-character-250228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-ui-tars-250328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-250328', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-250415', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-i2v-250225', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-t2v-250225', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-m-250415', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-lite-i2v-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-lite-t2v-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-3-0-t2i-250415', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-flf2v-250417', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-vision-pro-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-m-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-large-text-250515', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-ui-tars-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-250528', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-thinking-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-pro-250528', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-250615', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-thinking-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-character-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seededit-3-0-i2i-250628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-250711', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-vision-250815', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-1-250821', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-4-5-air-20250728', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-8b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-32b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen2-5-72b-20240919', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-4-0-250828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-250905', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-translation-250915', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-1-terminus', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-smart-router-250928', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-251015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-pro-fast-251015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-lite-251015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed3d-1-0-250928', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-thinking-251104', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-code-preview-251028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-0-6b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-14b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-4-5-251128', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-251215', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-2-251201', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-5-pro-251215', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-4-7-251222', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-8-251228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-character-251128', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-lite-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-260128', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-5-0-260128', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-mini-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-pro-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-fast-260128', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-code-preview-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'hyper3d-gen2-260112', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'hitem3d-2-0-251223', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed3d-2-0-260328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-mini-260428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-lite-260428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v4-pro-260425', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v4-flash-260425', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-mini-260615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-1-pro-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-1-turbo-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-character-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-evolving', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-5-2-260617', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
-INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-5-0-pro-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784249634400, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-128k-240428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-128k-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-240328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-character-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-text-240515', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'mistral-7b-instruct-v0.2', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-character-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-functioncall-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-pretrain-character-240516', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-240528', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-browsing-240524', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-240515', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-functioncall-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-240615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-128k-240628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-text-240715', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-4k-character-240728', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-240815', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-4k-character-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-128k-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-240828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-preview', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-large-text-240915', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-character-241015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-functioncall-241028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-browsing-241115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-vision-pro-32k-241028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-vision-lite-32k-241015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seaweed-241128', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-256k-241115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-character-241215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-pro-32k-241215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-lite-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-vision-pro-32k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-241215', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-256k-250115', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-241226', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-distill-qwen-7b-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-distill-qwen-32b-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-250120', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-character-250228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-vision-lite-250315', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-250324', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-vision-pro-250328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-lite-32k-character-250228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1.5-ui-tars-250328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-250328', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-250415', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-i2v-250225', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-t2v-250225', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-m-250415', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-lite-i2v-250428', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-lite-t2v-250428', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-3-0-t2i-250415', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'wan2-1-14b-flf2v-250417', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-vision-pro-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-thinking-pro-m-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-large-text-250515', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-ui-tars-250428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-r1-250528', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-thinking-250615', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-pro-250528', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-250615', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-thinking-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-1-5-pro-32k-character-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seededit-3-0-i2i-250628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250715', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-250711', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-vision-250815', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-1-250821', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-flash-250828', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-4-5-air-20250728', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-8b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-32b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen2-5-72b-20240919', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-4-0-250828', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-250905', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-translation-250915', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-251015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-0-pro-fast-251015', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-6-lite-251015', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-1-terminus', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-smart-router-250928', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed3d-1-0-250928', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'kimi-k2-thinking-251104', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-code-preview-251028', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-0-6b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'qwen3-14b-20250429', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-4-5-251128', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-embedding-vision-251215', 'embedding', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v3-2-251201', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-1-5-pro-251215', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-4-7-251222', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-1-8-251228', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-character-251128', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-lite-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-260128', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-5-0-260128', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-mini-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-pro-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-fast-260128', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-code-preview-260215', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'hyper3d-gen2-260112', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'hitem3d-2-0-251223', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed3d-2-0-260328', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-mini-260428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-0-lite-260428', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v4-pro-260425', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'deepseek-v4-flash-260425', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedance-2-0-mini-260615', 'video', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-1-pro-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-2-1-turbo-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-character-260628', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seed-evolving', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'glm-5-2-260617', 'chat', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
+INSERT INTO ai.model_catalog VALUES ('DouBao', 'doubao-seedream-5-0-pro-260628', 'image', 'discover', 'https://ark.cn-beijing.volces.com/api/v3/models', true, 1784257398572, 0, NULL);
 
 
 --
 -- Data for Name: model_configs; Type: TABLE DATA; Schema: ai; Owner: -
 --
 
-INSERT INTO ai.model_configs VALUES (1784249635985, '豆包 · doubao-seedance-2-0-260128', 'doubao-doubao-seedance-2-0-260128', 'DouBao', 'video', 'doubao-seedance-2-0-260128', '', 'https://ark.cn-beijing.volces.com/api/v3', 0, 'null', 1784249635985, 1784249635985);
+INSERT INTO ai.model_configs VALUES (1784249635985, '豆包 · doubao-seedance-1-5-pro-251215', 'doubao-doubao-seedance-1-5-pro-251215', 'DouBao', 'video', 'doubao-seedance-1-5-pro-251215', '', 'https://ark.cn-beijing.volces.com/api/v3', 0, 'null', 1784249635985, 1784255725674);
+INSERT INTO ai.model_configs VALUES (1784256674777, '豆包 · doubao-seedream-4-5-251128', 'doubao-doubao-seedream-4-5-251128', 'DouBao', 'image', 'doubao-seedream-4-5-251128', '', 'https://ark.cn-beijing.volces.com/api/v3', 0, 'null', 1784256674777, 1784257129492);
+INSERT INTO ai.model_configs VALUES (1784257814114, 'DeepSeek · deepseek-v4-pro', 'deepseek-deepseek-v4-pro', 'DeepSeek', 'chat', 'deepseek-v4-pro', '', 'https://api.deepseek.com', 0, 'null', 1784257814114, 1784257814114);
 
 
 --
@@ -6452,6 +6469,15 @@ INSERT INTO public._sqlx_migrations VALUES (43, 'toonflow video time bigint', '2
 INSERT INTO public._sqlx_migrations VALUES (44, 'ai model catalog', '2026-07-16 10:52:52.33751+00', true, '\x242255685a8815dfeb018047f471796cdd1170cf798dbd4825e16831bd5c2af3bc8151e0ac84f6de206426a46db4c983', 49064433);
 INSERT INTO public._sqlx_migrations VALUES (45, 'ai model catalog validation', '2026-07-16 10:52:52.39164+00', true, '\xbd56dcc72ea5a50d5241555ef6a39d7d156eb6bf88cde14a54ed75e97b9e17bdb175d2171894d742cd5faec05c4bae4c', 8980738);
 INSERT INTO public._sqlx_migrations VALUES (46, 'doubao seedance seedream', '2026-07-17 00:51:31.239115+00', true, '\x44cec0d9d1c8b68470349676483a682248cf98e34e985a9a5295e9b1e8219734dfbaab575fe20c9f730e35ee24d9920d', 10337681);
+INSERT INTO public._sqlx_migrations VALUES (47, 'ai console menu icons', '2026-07-17 01:13:48.097106+00', true, '\x18f98c5f074154d5f3edbff45455f1c852a76cf563e4bb7ed4fe2833add88d74a1ecde129a4796d02ad76077304a149a', 29374714);
+INSERT INTO public._sqlx_migrations VALUES (48, 'backend route catalog', '2026-07-17 01:29:09.910057+00', true, '\xdc8874cad0e03a06443e7cf9fc58df1f46ec33379e6e7ffe0544b2a54804bb7e27cfe316dea4f9247bdd3ef386b7c27f', 11304900);
+INSERT INTO public._sqlx_migrations VALUES (49, 'align backend navigation', '2026-07-17 01:35:39.386526+00', true, '\x4482010af680723ba9b7c52d330e0ce73c1317dabbbdea27df665a9d32c08992c8ecadb59ae85c23613811efd5bec3b7', 11408140);
+INSERT INTO public._sqlx_migrations VALUES (50, 'remove unimplemented navigation', '2026-07-17 01:44:04.417394+00', true, '\x0c9d7984c5926debc929e5e8aa7269c0b3eb0e1ff5e9a6da7126a5467b3ddd213d98c6b620a24af139bc125df936bab2', 6998219);
+INSERT INTO public._sqlx_migrations VALUES (51, 'menu business affiliation', '2026-07-17 02:02:24.52913+00', true, '\x6a8447333ebdbd28b08f27a4c534802872951ddfe0ec55d0d75799578927ec01a36952a9f7fa78572cd841c91b166ae2', 17433560);
+INSERT INTO public._sqlx_migrations VALUES (52, 'doubao seedance 15 seedream 45', '2026-07-17 02:32:56.547894+00', true, '\x921bb5929a89a44e79295f1cd38754c89ec1e65480b83db2380d546ba355df15c515ca664dfd647d5e80a475e46f6da0', 5967121);
+INSERT INTO public._sqlx_migrations VALUES (53, 'remove doubao model presets', '2026-07-17 02:36:01.999939+00', true, '\x72f2171e2bd6e71001c413c90e45f0bee1854cc5ae22c85b22234b18aa6d318dcae849f04e4a4598affcaf99577352ac', 8500562);
+INSERT INTO public._sqlx_migrations VALUES (54, 'rust postgresql monitoring', '2026-07-17 05:04:14.954699+00', true, '\xe32a7fd25f879d6e698db3cfda2d16b8b3171301b91ff68562de0d8552d18319d18b3367a939bc8aab8b4d08d5ea63d0', 7495516);
+INSERT INTO public._sqlx_migrations VALUES (55, 'monitor menu names', '2026-07-17 05:08:19.419206+00', true, '\x1d2d22096e59dcda374438973a53c076e39518c2bdb54ca5afbc16f78e52d14e794627a98461fcbabbf1740f98e01302', 7283119);
 
 
 --
@@ -6517,8 +6543,8 @@ INSERT INTO public.infra_config VALUES (2, 'test', 1, 'Codex Test2', 'codex.test
 -- Data for Name: infra_data_source_config; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.infra_data_source_config VALUES (1, 'Codex DS2', 'jdbc:postgresql://localhost/test2', 'u2', 'enc:v1:QA==', '', '2026-07-16 08:22:30.56435', '', '2026-07-16 08:22:30.951151', 1);
-INSERT INTO public.infra_data_source_config VALUES (2, 'Codex DS2', 'jdbc:postgresql://localhost/test2', 'u2', 'enc:v1:QA==', '', '2026-07-16 08:24:58.257105', '', '2026-07-16 08:24:58.52636', 1);
+INSERT INTO public.infra_data_source_config VALUES (1, 'Codex DS2', 'jdbc:postgresql://localhost/test2', '', '', '', '2026-07-16 08:22:30.56435', '', '2026-07-16 08:22:30.951151', 1);
+INSERT INTO public.infra_data_source_config VALUES (2, 'Codex DS2', 'jdbc:postgresql://localhost/test2', '', '', '', '2026-07-16 08:24:58.257105', '', '2026-07-16 08:24:58.52636', 1);
 
 
 --
@@ -7708,8 +7734,6 @@ INSERT INTO public.system_mail_account VALUES (4, '7685413x@qq.com', '2', '', '4
 -- Data for Name: system_mail_log; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_mail_log VALUES (2, NULL, 2, 'nobody@example.com', NULL, NULL, 2, 'ydym_test@163.com', 14, 'test_01', '芋艿', '一个标题', '<p>你是 A 吗？</p><p><br></p><p>是的话，赶紧 B 一下！</p>', '{"key01":"A","key02":"B"}', 30, '2026-07-16 07:29:59.563274', NULL, 'mail provider is not configured', 'admin', '2026-07-16 07:29:59.563274', 'admin', '2026-07-16 07:29:59.563274', 0);
-INSERT INTO public.system_mail_log VALUES (3, NULL, 2, 'test@example.com', NULL, NULL, 1, '7684413@qq.com', 13, 'admin-sms-login', '奥特曼', '你猜我猜', '<p>您的验证码是{code}，名字是Codex</p>', '{"name":"Codex"}', 30, '2026-07-16 07:41:03.257612', NULL, 'mail provider is not configured', 'admin', '2026-07-16 07:41:03.257612', 'admin', '2026-07-16 07:41:03.257612', 0);
 
 
 --
@@ -7725,387 +7749,408 @@ INSERT INTO public.system_mail_template VALUES (15, '3', '2', 2, '7', '4', '<p>4
 -- Data for Name: system_menu; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_menu VALUES (1, '系统管理', '', 1, 10, 0, '/system', 'ep:tools', NULL, NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2025-03-15 21:30:27', 0);
-INSERT INTO public.system_menu VALUES (2, '基础设施', '', 1, 20, 0, '/infra', 'ep:monitor', NULL, NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-03-01 08:28:40', 0);
-INSERT INTO public.system_menu VALUES (5, 'OA 示例', '', 1, 40, 1185, 'oa', 'fa:road', NULL, NULL, 0, true, true, true, 'admin', '2021-09-20 16:26:19', '1', '2024-02-29 12:38:13', 0);
-INSERT INTO public.system_menu VALUES (100, '用户管理', 'system:user:list', 2, 1, 1, 'user', 'ep:avatar', 'system/user/index', 'SystemUser', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-01-01 18:43:01', 0);
-INSERT INTO public.system_menu VALUES (101, '角色管理', '', 2, 2, 1, 'role', 'ep:user', 'system/role/index', 'SystemRole', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-01-05 19:30:33', 0);
-INSERT INTO public.system_menu VALUES (102, '菜单管理', '', 2, 3, 1, 'menu', 'ep:menu', 'system/menu/index', 'SystemMenu', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:03:50', 0);
-INSERT INTO public.system_menu VALUES (103, '部门管理', '', 2, 4, 1, 'dept', 'fa:address-card', 'system/dept/index', 'SystemDept', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:06:28', 0);
-INSERT INTO public.system_menu VALUES (104, '岗位管理', '', 2, 5, 1, 'post', 'fa:address-book-o', 'system/post/index', 'SystemPost', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:06:39', 0);
-INSERT INTO public.system_menu VALUES (105, '字典管理', '', 2, 6, 1, 'dict', 'ep:collection', 'system/dict/index', 'SystemDictType', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:07:12', 0);
-INSERT INTO public.system_menu VALUES (106, '配置管理', '', 2, 8, 2, 'config', 'fa:connectdevelop', 'infra/config/index', 'InfraConfig', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:02:45', 0);
-INSERT INTO public.system_menu VALUES (107, '通知公告', '', 2, 4, 2739, 'notice', 'ep:takeaway-box', 'system/notice/index', 'SystemNotice', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-22 23:56:17', 0);
-INSERT INTO public.system_menu VALUES (108, '审计日志', '', 1, 9, 1, 'log', 'ep:document-copy', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:08:30', 0);
-INSERT INTO public.system_menu VALUES (109, '令牌管理', '', 2, 2, 1261, 'token', 'fa:key', 'system/oauth2/token/index', 'SystemTokenClient', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:13:48', 0);
-INSERT INTO public.system_menu VALUES (110, '定时任务', '', 2, 7, 2, 'job', 'fa-solid:tasks', 'infra/job/index', 'InfraJob', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:57:36', 0);
-INSERT INTO public.system_menu VALUES (111, 'MySQL 监控', '', 2, 1, 2740, 'druid', 'fa-solid:box', 'infra/druid/index', 'InfraDruid', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:05:58', 0);
-INSERT INTO public.system_menu VALUES (112, 'Java 监控', '', 2, 3, 2740, 'admin-server', 'ep:coffee-cup', 'infra/server/index', 'InfraAdminServer', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:06:57', 0);
-INSERT INTO public.system_menu VALUES (113, 'Redis 监控', '', 2, 2, 2740, 'redis', 'fa:reddit-square', 'infra/redis/index', 'InfraRedis', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:06:09', 0);
-INSERT INTO public.system_menu VALUES (114, '表单构建', 'infra:build:list', 2, 2, 2, 'build', 'fa:wpforms', 'infra/build/index', 'InfraBuild', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:51:35', 0);
-INSERT INTO public.system_menu VALUES (115, '代码生成', 'infra:codegen:query', 2, 1, 2, 'codegen', 'ep:document-copy', 'infra/codegen/index', 'InfraCodegen', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:51:06', 0);
-INSERT INTO public.system_menu VALUES (116, 'API 接口', 'infra:swagger:list', 2, 3, 2, 'swagger', 'fa:fighter-jet', 'infra/swagger/index', 'InfraSwagger', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:01:24', 0);
-INSERT INTO public.system_menu VALUES (500, '操作日志', '', 2, 1, 108, 'operate-log', 'ep:position', 'system/operatelog/index', 'SystemOperateLog', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:09:59', 0);
-INSERT INTO public.system_menu VALUES (501, '登录日志', '', 2, 2, 108, 'login-log', 'ep:promotion', 'system/loginlog/index', 'SystemLoginLog', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:10:29', 0);
-INSERT INTO public.system_menu VALUES (1001, '用户查询', 'system:user:query', 3, 1, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1002, '用户新增', 'system:user:create', 3, 2, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1003, '用户修改', 'system:user:update', 3, 3, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1004, '用户删除', 'system:user:delete', 3, 4, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1005, '用户导出', 'system:user:export', 3, 5, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1006, '用户导入', 'system:user:import', 3, 6, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1007, '重置密码', 'system:user:update-password', 3, 7, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1008, '角色查询', 'system:role:query', 3, 1, 101, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1009, '角色新增', 'system:role:create', 3, 2, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1010, '角色修改', 'system:role:update', 3, 3, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1011, '角色删除', 'system:role:delete', 3, 4, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1012, '角色导出', 'system:role:export', 3, 5, 101, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1013, '菜单查询', 'system:menu:query', 3, 1, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1014, '菜单新增', 'system:menu:create', 3, 2, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1015, '菜单修改', 'system:menu:update', 3, 3, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1016, '菜单删除', 'system:menu:delete', 3, 4, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1017, '部门查询', 'system:dept:query', 3, 1, 103, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1018, '部门新增', 'system:dept:create', 3, 2, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1019, '部门修改', 'system:dept:update', 3, 3, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1020, '部门删除', 'system:dept:delete', 3, 4, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1021, '岗位查询', 'system:post:query', 3, 1, 104, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1022, '岗位新增', 'system:post:create', 3, 2, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1023, '岗位修改', 'system:post:update', 3, 3, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1024, '岗位删除', 'system:post:delete', 3, 4, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1025, '岗位导出', 'system:post:export', 3, 5, 104, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1026, '字典查询', 'system:dict:query', 3, 1, 105, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1027, '字典新增', 'system:dict:create', 3, 2, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1028, '字典修改', 'system:dict:update', 3, 3, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1029, '字典删除', 'system:dict:delete', 3, 4, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1030, '字典导出', 'system:dict:export', 3, 5, 105, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1031, '配置查询', 'infra:config:query', 3, 1, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1032, '配置新增', 'infra:config:create', 3, 2, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1033, '配置修改', 'infra:config:update', 3, 3, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1034, '配置删除', 'infra:config:delete', 3, 4, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1035, '配置导出', 'infra:config:export', 3, 5, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1036, '公告查询', 'system:notice:query', 3, 1, 107, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1037, '公告新增', 'system:notice:create', 3, 2, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1038, '公告修改', 'system:notice:update', 3, 3, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1039, '公告删除', 'system:notice:delete', 3, 4, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1040, '操作查询', 'system:operate-log:query', 3, 1, 500, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1042, '日志导出', 'system:operate-log:export', 3, 2, 500, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1043, '登录查询', 'system:login-log:query', 3, 1, 501, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1045, '日志导出', 'system:login-log:export', 3, 3, 501, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1046, '令牌列表', 'system:oauth2-token:page', 3, 1, 109, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-05-09 23:54:42', 0);
-INSERT INTO public.system_menu VALUES (1048, '令牌删除', 'system:oauth2-token:delete', 3, 2, 109, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-05-09 23:54:53', 0);
-INSERT INTO public.system_menu VALUES (1050, '任务新增', 'infra:job:create', 3, 2, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1051, '任务修改', 'infra:job:update', 3, 3, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1052, '任务删除', 'infra:job:delete', 3, 4, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1053, '状态修改', 'infra:job:update', 3, 5, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1054, '任务导出', 'infra:job:export', 3, 7, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1056, '生成修改', 'infra:codegen:update', 3, 2, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1057, '生成删除', 'infra:codegen:delete', 3, 3, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1058, '导入代码', 'infra:codegen:create', 3, 2, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1059, '预览代码', 'infra:codegen:preview', 3, 4, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1060, '生成代码', 'infra:codegen:download', 3, 5, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1063, '设置角色菜单权限', 'system:permission:assign-role-menu', 3, 6, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-06 17:53:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1064, '设置角色数据权限', 'system:permission:assign-role-data-scope', 3, 7, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-06 17:56:31', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1065, '设置用户角色', 'system:permission:assign-user-role', 3, 8, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-07 10:23:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1066, '获得 Redis 监控信息', 'infra:redis:get-monitor-info', 3, 1, 113, '', '', '', NULL, 0, true, true, true, '', '2021-01-26 01:02:31', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1067, '获得 Redis Key 列表', 'infra:redis:get-key-list', 3, 2, 113, '', '', '', NULL, 0, true, true, true, '', '2021-01-26 01:02:52', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1070, '代码生成案例', '', 1, 1, 2, 'demo', 'ep:aim', 'infra/testDemo/index', NULL, 0, true, true, true, '', '2021-02-06 12:42:49', '1', '2023-11-15 23:45:53', 0);
-INSERT INTO public.system_menu VALUES (1075, '任务触发', 'infra:job:trigger', 3, 8, 110, '', '', '', NULL, 0, true, true, true, '', '2021-02-07 13:03:10', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1077, '链路追踪', '', 2, 4, 2740, 'skywalking', 'fa:eye', 'infra/skywalking/index', 'InfraSkyWalking', 0, true, true, true, '', '2021-02-08 20:41:31', '1', '2024-04-23 00:07:15', 0);
-INSERT INTO public.system_menu VALUES (1078, '访问日志', '', 2, 1, 1083, 'api-access-log', 'ep:place', 'infra/apiAccessLog/index', 'InfraApiAccessLog', 0, true, true, true, '', '2021-02-26 01:32:59', '1', '2024-02-29 08:54:57', 0);
-INSERT INTO public.system_menu VALUES (1082, '日志导出', 'infra:api-access-log:export', 3, 2, 1078, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 01:32:59', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1083, 'API 日志', '', 2, 4, 2, 'log', 'fa:tasks', NULL, NULL, 0, true, true, true, '', '2021-02-26 02:18:24', '1', '2024-04-22 23:58:36', 0);
-INSERT INTO public.system_menu VALUES (1084, '错误日志', 'infra:api-error-log:query', 2, 2, 1083, 'api-error-log', 'ep:warning-filled', 'infra/apiErrorLog/index', 'InfraApiErrorLog', 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2024-02-29 08:55:17', 0);
-INSERT INTO public.system_menu VALUES (1085, '日志处理', 'infra:api-error-log:update-status', 3, 2, 1084, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1086, '日志导出', 'infra:api-error-log:export', 3, 3, 1084, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1087, '任务查询', 'infra:job:query', 3, 1, 110, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:26:19', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1088, '日志查询', 'infra:api-access-log:query', 3, 1, 1078, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:28:04', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1089, '日志查询', 'infra:api-error-log:query', 3, 1, 1084, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:29:09', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1090, '文件列表', '', 2, 5, 1243, 'file', 'ep:upload-filled', 'infra/file/index', 'InfraFile', 0, true, true, true, '', '2021-03-12 20:16:20', '1', '2024-02-29 08:53:02', 0);
-INSERT INTO public.system_menu VALUES (1091, '文件查询', 'infra:file:query', 3, 1, 1090, '', '', '', NULL, 0, true, true, true, '', '2021-03-12 20:16:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1092, '文件删除', 'infra:file:delete', 3, 4, 1090, '', '', '', NULL, 0, true, true, true, '', '2021-03-12 20:16:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1093, '短信管理', '', 1, 1, 2739, 'sms', 'ep:message', NULL, NULL, 0, true, true, true, '1', '2021-04-05 01:10:16', '1', '2024-04-22 23:56:03', 0);
-INSERT INTO public.system_menu VALUES (1094, '短信渠道', '', 2, 0, 1093, 'sms-channel', 'fa:stack-exchange', 'system/sms/channel/index', 'SystemSmsChannel', 0, true, true, true, '', '2021-04-01 11:07:15', '1', '2024-02-29 01:15:54', 0);
-INSERT INTO public.system_menu VALUES (1095, '短信渠道查询', 'system:sms-channel:query', 3, 1, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1096, '短信渠道创建', 'system:sms-channel:create', 3, 2, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1097, '短信渠道更新', 'system:sms-channel:update', 3, 3, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1098, '短信渠道删除', 'system:sms-channel:delete', 3, 4, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1100, '短信模板', '', 2, 1, 1093, 'sms-template', 'ep:connection', 'system/sms/template/index', 'SystemSmsTemplate', 0, true, true, true, '', '2021-04-01 17:35:17', '1', '2024-02-29 01:16:18', 0);
-INSERT INTO public.system_menu VALUES (1101, '短信模板查询', 'system:sms-template:query', 3, 1, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1102, '短信模板创建', 'system:sms-template:create', 3, 2, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1103, '短信模板更新', 'system:sms-template:update', 3, 3, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1104, '短信模板删除', 'system:sms-template:delete', 3, 4, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1105, '短信模板导出', 'system:sms-template:export', 3, 5, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1106, '发送测试短信', 'system:sms-template:send-sms', 3, 6, 1100, '', '', '', NULL, 0, true, true, true, '1', '2021-04-11 00:26:40', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1107, '短信日志', '', 2, 2, 1093, 'sms-log', 'fa:edit', 'system/sms/log/index', 'SystemSmsLog', 0, true, true, true, '', '2021-04-11 08:37:05', '1', '2024-02-29 08:49:02', 0);
-INSERT INTO public.system_menu VALUES (1108, '短信日志查询', 'system:sms-log:query', 3, 1, 1107, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1109, '短信日志导出', 'system:sms-log:export', 3, 5, 1107, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1118, '请假查询', '', 2, 0, 5, 'leave', 'fa:leanpub', 'bpm/oa/leave/index', 'BpmOALeave', 0, true, true, true, '', '2021-09-20 08:51:03', '1', '2024-02-29 12:38:21', 0);
-INSERT INTO public.system_menu VALUES (1119, '请假申请查询', 'bpm:oa-leave:query', 3, 1, 1118, '', '', '', NULL, 0, true, true, true, '', '2021-09-20 08:51:03', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1120, '请假申请创建', 'bpm:oa-leave:create', 3, 2, 1118, '', '', '', NULL, 0, true, true, true, '', '2021-09-20 08:51:03', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (6100, '招标管理', '', 1, 20, 0, '/bid', 'ant-design:solution-outlined', NULL, NULL, 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-15 10:45:40.087609', 0);
-INSERT INTO public.system_menu VALUES (6101, '招标公告', 'bid:notice:query', 2, 1, 6100, 'notice', 'ant-design:notification-outlined', 'bid/notice/index', 'BidNotice', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-15 10:45:40.087609', 0);
-INSERT INTO public.system_menu VALUES (6102, '投标商机', 'bid:opportunity:query', 2, 2, 6100, 'opportunity', 'ant-design:bulb-outlined', 'bid/opportunity/index', 'BidOpportunity', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-15 10:45:40.087609', 0);
-INSERT INTO public.system_menu VALUES (1138, '租户列表', '', 2, 0, 1224, 'list', 'ep:house', 'system/tenant/index', 'SystemTenant', 0, true, true, true, '', '2021-12-14 12:31:43', '1', '2024-02-29 01:01:10', 0);
-INSERT INTO public.system_menu VALUES (1139, '租户查询', 'system:tenant:query', 3, 1, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1140, '租户创建', 'system:tenant:create', 3, 2, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1141, '租户更新', 'system:tenant:update', 3, 3, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1142, '租户删除', 'system:tenant:delete', 3, 4, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1143, '租户导出', 'system:tenant:export', 3, 5, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (6103, '投标项目', 'bid:project:query', 2, 3, 6100, 'project', 'ant-design:project-outlined', 'bid/project/index', 'BidProject', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-15 10:45:40.087609', 0);
-INSERT INTO public.system_menu VALUES (6124, '商机跟进', 'bid:opportunity:follow', 3, 4, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6125, '商机转项目', 'bid:opportunity:convert', 3, 5, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6131, '项目修改', 'bid:project:update', 3, 1, 6103, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (1185, '工作流程', '', 1, 50, 0, '/bpm', 'fa:medium', NULL, NULL, 0, true, true, true, '1', '2021-12-30 20:26:36', '1', '2024-02-29 12:43:43', 0);
-INSERT INTO public.system_menu VALUES (1186, '流程管理', '', 1, 10, 1185, 'manager', 'fa:dedent', NULL, NULL, 0, true, true, true, '1', '2021-12-30 20:28:30', '1', '2024-02-29 12:36:02', 0);
-INSERT INTO public.system_menu VALUES (1187, '流程表单', '', 2, 2, 1186, 'form', 'fa:hdd-o', 'bpm/form/index', 'BpmForm', 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2024-03-19 12:25:25', 0);
-INSERT INTO public.system_menu VALUES (1188, '表单查询', 'bpm:form:query', 3, 1, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1189, '表单创建', 'bpm:form:create', 3, 2, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1190, '表单更新', 'bpm:form:update', 3, 3, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1191, '表单删除', 'bpm:form:delete', 3, 4, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1192, '表单导出', 'bpm:form:export', 3, 5, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1193, '流程模型', '', 2, 1, 1186, 'model', 'fa-solid:project-diagram', 'bpm/model/index', 'BpmModel', 0, true, true, true, '1', '2021-12-31 23:24:58', '1', '2024-03-19 12:25:19', 0);
-INSERT INTO public.system_menu VALUES (1194, '模型查询', 'bpm:model:query', 3, 1, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:01:10', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1195, '模型创建', 'bpm:model:create', 3, 2, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:01:24', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1197, '模型更新', 'bpm:model:update', 3, 4, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:02:28', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1198, '模型删除', 'bpm:model:delete', 3, 5, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:02:43', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1199, '模型发布', 'bpm:model:deploy', 3, 6, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:03:24', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1200, '审批中心', '', 2, 20, 1185, 'task', 'fa:tasks', NULL, NULL, 0, true, true, true, '1', '2022-01-07 23:51:48', '1', '2024-03-21 00:33:15', 0);
-INSERT INTO public.system_menu VALUES (1201, '我的流程', '', 2, 1, 1200, 'my', 'fa-solid:book', 'bpm/processInstance/index', 'BpmProcessInstanceMy', 0, true, true, true, '', '2022-01-07 15:53:44', '1', '2024-03-21 23:52:12', 0);
-INSERT INTO public.system_menu VALUES (1202, '流程实例的查询', 'bpm:process-instance:query', 3, 1, 1201, '', '', '', NULL, 0, true, true, true, '', '2022-01-07 15:53:44', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1207, '待办任务', '', 2, 10, 1200, 'todo', 'fa:slack', 'bpm/task/todo/index', 'BpmTodoTask', 0, true, true, true, '1', '2022-01-08 10:33:37', '1', '2024-02-29 12:37:39', 0);
-INSERT INTO public.system_menu VALUES (1208, '已办任务', '', 2, 20, 1200, 'done', 'fa:delicious', 'bpm/task/done/index', 'BpmDoneTask', 0, true, true, true, '1', '2022-01-08 10:34:13', '1', '2024-02-29 12:37:54', 0);
-INSERT INTO public.system_menu VALUES (1209, '用户分组', '', 2, 4, 1186, 'user-group', 'fa:user-secret', 'bpm/group/index', 'BpmUserGroup', 0, true, true, true, '', '2022-01-14 02:14:20', '1', '2024-03-21 23:55:29', 0);
-INSERT INTO public.system_menu VALUES (1210, '用户组查询', 'bpm:user-group:query', 3, 1, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (6104, '爬虫管理', 'bid:crawler:query', 2, 4, 6100, 'crawler', 'ant-design:bug-outlined', 'bid/crawler/index', 'BidCrawler', 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-15 10:45:40.148945', 0);
-INSERT INTO public.system_menu VALUES (6141, '爬虫查询', 'bid:crawler:query', 3, 1, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-15 10:45:40.148945', 0);
-INSERT INTO public.system_menu VALUES (6142, '爬虫任务创建', 'bid:crawler:create', 3, 2, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-15 10:45:40.148945', 0);
-INSERT INTO public.system_menu VALUES (6143, '爬虫任务重试', 'bid:crawler:retry', 3, 3, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-15 10:45:40.148945', 0);
-INSERT INTO public.system_menu VALUES (6144, '爬虫调度管理', 'bid:crawler:schedule', 3, 4, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-15 10:45:40.148945', 0);
-INSERT INTO public.system_menu VALUES (6105, '订阅预警', 'bid:subscription:query', 2, 5, 6100, 'subscription', 'ant-design:bell-outlined', 'bid/subscription/index', 'BidSubscription', 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (6147, '订阅预警查询', 'bid:subscription:query', 3, 1, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (6148, '订阅规则创建', 'bid:subscription:create', 3, 2, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (6149, '订阅规则修改', 'bid:subscription:update', 3, 3, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (6150, '订阅规则删除', 'bid:subscription:delete', 3, 4, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (1211, '用户组创建', 'bpm:user-group:create', 3, 2, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1212, '用户组更新', 'bpm:user-group:update', 3, 3, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1213, '用户组删除', 'bpm:user-group:delete', 3, 4, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1215, '流程定义查询', 'bpm:process-definition:query', 3, 10, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:21:43', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1216, '流程任务分配规则查询', 'bpm:task-assign-rule:query', 3, 20, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:26:53', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1217, '流程任务分配规则创建', 'bpm:task-assign-rule:create', 3, 21, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:28:15', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1218, '流程任务分配规则更新', 'bpm:task-assign-rule:update', 3, 22, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:28:41', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1219, '流程实例的创建', 'bpm:process-instance:create', 3, 2, 1201, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:36:15', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1220, '流程实例的取消', 'bpm:process-instance:cancel', 3, 3, 1201, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:36:33', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1221, '流程任务的查询', 'bpm:task:query', 3, 1, 1207, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:38:52', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1222, '流程任务的更新', 'bpm:task:update', 3, 2, 1207, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:39:24', '1', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1224, '租户管理', '', 2, 0, 1, 'tenant', 'fa-solid:house-user', NULL, NULL, 0, true, true, true, '1', '2022-02-20 01:41:13', '1', '2024-02-29 00:59:29', 0);
-INSERT INTO public.system_menu VALUES (1225, '租户套餐', '', 2, 0, 1224, 'package', 'fa:bars', 'system/tenantPackage/index', 'SystemTenantPackage', 0, true, true, true, '', '2022-02-19 17:44:06', '1', '2024-02-29 01:01:43', 0);
-INSERT INTO public.system_menu VALUES (1226, '租户套餐查询', 'system:tenant-package:query', 3, 1, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1227, '租户套餐创建', 'system:tenant-package:create', 3, 2, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1228, '租户套餐更新', 'system:tenant-package:update', 3, 3, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1229, '租户套餐删除', 'system:tenant-package:delete', 3, 4, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1237, '文件配置', '', 2, 0, 1243, 'file-config', 'fa-solid:file-signature', 'infra/fileConfig/index', 'InfraFileConfig', 0, true, true, true, '', '2022-03-15 14:35:28', '1', '2024-02-29 08:52:54', 0);
-INSERT INTO public.system_menu VALUES (1238, '文件配置查询', 'infra:file-config:query', 3, 1, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1239, '文件配置创建', 'infra:file-config:create', 3, 2, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1240, '文件配置更新', 'infra:file-config:update', 3, 3, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1241, '文件配置删除', 'infra:file-config:delete', 3, 4, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1242, '文件配置导出', 'infra:file-config:export', 3, 5, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0);
-INSERT INTO public.system_menu VALUES (1243, '文件管理', '', 2, 6, 2, 'file', 'ep:files', NULL, '', 0, true, true, true, '1', '2022-03-16 23:47:40', '1', '2024-04-23 00:02:11', 0);
-INSERT INTO public.system_menu VALUES (1255, '数据源配置', '', 2, 1, 2, 'data-source-config', 'ep:data-analysis', 'infra/dataSourceConfig/index', 'InfraDataSourceConfig', 0, true, true, true, '', '2022-04-27 14:37:32', '1', '2024-02-29 08:51:25', 0);
-INSERT INTO public.system_menu VALUES (1256, '数据源配置查询', 'infra:data-source-config:query', 3, 1, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0);
-INSERT INTO public.system_menu VALUES (1257, '数据源配置创建', 'infra:data-source-config:create', 3, 2, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0);
-INSERT INTO public.system_menu VALUES (1258, '数据源配置更新', 'infra:data-source-config:update', 3, 3, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0);
-INSERT INTO public.system_menu VALUES (1259, '数据源配置删除', 'infra:data-source-config:delete', 3, 4, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0);
-INSERT INTO public.system_menu VALUES (1260, '数据源配置导出', 'infra:data-source-config:export', 3, 5, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0);
-INSERT INTO public.system_menu VALUES (1261, 'OAuth 2.0', '', 2, 10, 1, 'oauth2', 'fa:dashcube', NULL, NULL, 0, true, true, true, '1', '2022-05-09 23:38:17', '1', '2024-02-29 01:12:08', 0);
-INSERT INTO public.system_menu VALUES (1263, '应用管理', '', 2, 0, 1261, 'oauth2/application', 'fa:hdd-o', 'system/oauth2/client/index', 'SystemOAuth2Client', 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2024-02-29 01:13:14', 0);
-INSERT INTO public.system_menu VALUES (1264, '客户端查询', 'system:oauth2-client:query', 3, 1, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:06', 0);
-INSERT INTO public.system_menu VALUES (1265, '客户端创建', 'system:oauth2-client:create', 3, 2, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:23', 0);
-INSERT INTO public.system_menu VALUES (1266, '客户端更新', 'system:oauth2-client:update', 3, 3, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:28', 0);
-INSERT INTO public.system_menu VALUES (1267, '客户端删除', 'system:oauth2-client:delete', 3, 4, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:33', 0);
-INSERT INTO public.system_menu VALUES (6145, '爬虫配置管理', 'bid:crawler:config', 3, 5, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:57:21.707523', 'system', '2026-07-15 10:45:40.196521', 0);
-INSERT INTO public.system_menu VALUES (6151, '预警处理', 'bid:subscription:process', 3, 5, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-15 10:45:40.244018', 0);
-INSERT INTO public.system_menu VALUES (6111, '公告新增', 'bid:notice:create', 3, 1, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6112, '公告修改', 'bid:notice:update', 3, 2, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6113, '公告删除', 'bid:notice:delete', 3, 3, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6121, '商机新增', 'bid:opportunity:create', 3, 1, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6122, '商机指派', 'bid:opportunity:assign', 3, 2, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6123, '商机决策', 'bid:opportunity:decision', 3, 3, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-15 10:45:40.120637', 0);
-INSERT INTO public.system_menu VALUES (6146, '爬虫登录态管理', 'bid:crawler:login', 3, 6, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 01:11:30.159654', 'system', '2026-07-15 10:45:40.221885', 0);
-INSERT INTO public.system_menu VALUES (2083, '地区管理', '', 2, 14, 1, 'area', 'fa:map-marker', 'system/area/index', 'SystemArea', 0, true, true, true, '1', '2022-12-23 17:35:05', '1', '2024-02-29 08:50:28', 0);
-INSERT INTO public.system_menu VALUES (2130, '邮箱管理', '', 2, 2, 2739, 'mail', 'fa-solid:mail-bulk', NULL, NULL, 0, true, true, true, '1', '2023-01-25 17:27:44', '1', '2024-04-22 23:56:08', 0);
-INSERT INTO public.system_menu VALUES (2131, '邮箱账号', '', 2, 0, 2130, 'mail-account', 'fa:universal-access', 'system/mail/account/index', 'SystemMailAccount', 0, true, true, true, '', '2023-01-25 09:33:48', '1', '2024-02-29 08:48:16', 0);
-INSERT INTO public.system_menu VALUES (2132, '账号查询', 'system:mail-account:query', 3, 1, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0);
-INSERT INTO public.system_menu VALUES (2133, '账号创建', 'system:mail-account:create', 3, 2, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0);
-INSERT INTO public.system_menu VALUES (2134, '账号更新', 'system:mail-account:update', 3, 3, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0);
-INSERT INTO public.system_menu VALUES (2135, '账号删除', 'system:mail-account:delete', 3, 4, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0);
-INSERT INTO public.system_menu VALUES (2136, '邮件模版', '', 2, 0, 2130, 'mail-template', 'fa:tag', 'system/mail/template/index', 'SystemMailTemplate', 0, true, true, true, '', '2023-01-25 12:05:31', '1', '2024-02-29 08:48:41', 0);
-INSERT INTO public.system_menu VALUES (2137, '模版查询', 'system:mail-template:query', 3, 1, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0);
-INSERT INTO public.system_menu VALUES (2138, '模版创建', 'system:mail-template:create', 3, 2, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0);
-INSERT INTO public.system_menu VALUES (2139, '模版更新', 'system:mail-template:update', 3, 3, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0);
-INSERT INTO public.system_menu VALUES (2140, '模版删除', 'system:mail-template:delete', 3, 4, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0);
-INSERT INTO public.system_menu VALUES (2141, '邮件记录', '', 2, 0, 2130, 'mail-log', 'fa:edit', 'system/mail/log/index', 'SystemMailLog', 0, true, true, true, '', '2023-01-26 02:16:50', '1', '2024-02-29 08:48:51', 0);
-INSERT INTO public.system_menu VALUES (2142, '日志查询', 'system:mail-log:query', 3, 1, 2141, '', '', '', NULL, 0, true, true, true, '', '2023-01-26 02:16:50', '', '2023-01-26 02:16:50', 0);
-INSERT INTO public.system_menu VALUES (2143, '发送测试邮件', 'system:mail-template:send-mail', 3, 5, 2136, '', '', '', NULL, 0, true, true, true, '1', '2023-01-26 23:29:15', '1', '2023-01-26 23:29:15', 0);
-INSERT INTO public.system_menu VALUES (2144, '站内信管理', '', 1, 3, 2739, 'notify', 'ep:message-box', NULL, NULL, 0, true, true, true, '1', '2023-01-28 10:25:18', '1', '2024-04-22 23:56:12', 0);
-INSERT INTO public.system_menu VALUES (2145, '模板管理', '', 2, 0, 2144, 'notify-template', 'fa:archive', 'system/notify/template/index', 'SystemNotifyTemplate', 0, true, true, true, '', '2023-01-28 02:26:42', '1', '2024-02-29 08:49:14', 0);
-INSERT INTO public.system_menu VALUES (2146, '站内信模板查询', 'system:notify-template:query', 3, 1, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0);
-INSERT INTO public.system_menu VALUES (2147, '站内信模板创建', 'system:notify-template:create', 3, 2, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0);
-INSERT INTO public.system_menu VALUES (2148, '站内信模板更新', 'system:notify-template:update', 3, 3, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0);
-INSERT INTO public.system_menu VALUES (2149, '站内信模板删除', 'system:notify-template:delete', 3, 4, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0);
-INSERT INTO public.system_menu VALUES (2150, '发送测试站内信', 'system:notify-template:send-notify', 3, 5, 2145, '', '', '', NULL, 0, true, true, true, '1', '2023-01-28 10:54:43', '1', '2023-01-28 10:54:43', 0);
-INSERT INTO public.system_menu VALUES (2151, '消息记录', '', 2, 0, 2144, 'notify-message', 'fa:edit', 'system/notify/message/index', 'SystemNotifyMessage', 0, true, true, true, '', '2023-01-28 04:28:22', '1', '2024-02-29 08:49:22', 0);
-INSERT INTO public.system_menu VALUES (2152, '站内信消息查询', 'system:notify-message:query', 3, 1, 2151, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 04:28:22', '', '2023-01-28 04:28:22', 0);
-INSERT INTO public.system_menu VALUES (2447, '三方登录', '', 1, 10, 1, 'social', 'fa:rocket', '', '', 0, true, true, true, '1', '2023-11-04 12:12:01', '1', '2024-02-29 01:14:05', 0);
-INSERT INTO public.system_menu VALUES (2448, '三方应用', '', 2, 1, 2447, 'client', 'ep:set-up', 'system/social/client/index.vue', 'SocialClient', 0, true, true, true, '1', '2023-11-04 12:17:19', '1', '2024-05-04 19:09:54', 0);
-INSERT INTO public.system_menu VALUES (2449, '三方应用查询', 'system:social-client:query', 3, 1, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:43:12', '1', '2023-11-04 12:43:33', 0);
-INSERT INTO public.system_menu VALUES (2450, '三方应用创建', 'system:social-client:create', 3, 2, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:43:58', '1', '2023-11-04 12:43:58', 0);
-INSERT INTO public.system_menu VALUES (2451, '三方应用更新', 'system:social-client:update', 3, 3, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:44:27', '1', '2023-11-04 12:44:27', 0);
-INSERT INTO public.system_menu VALUES (2452, '三方应用删除', 'system:social-client:delete', 3, 4, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:44:43', '1', '2023-11-04 12:44:43', 0);
-INSERT INTO public.system_menu VALUES (2453, '三方用户', 'system:social-user:query', 2, 2, 2447, 'user', 'ep:avatar', 'system/social/user/index.vue', 'SocialUser', 0, true, true, true, '1', '2023-11-04 14:01:05', '1', '2023-11-04 14:01:05', 0);
-INSERT INTO public.system_menu VALUES (2472, '主子表（内嵌）', '', 2, 12, 1070, 'demo03-inner', 'fa:power-off', 'infra/demo/demo03/inner/index', 'Demo03StudentInner', 0, true, true, true, '', '2023-11-13 04:39:51', '1', '2023-11-16 23:53:46', 0);
-INSERT INTO public.system_menu VALUES (2478, '单表（增删改查）', '', 2, 1, 1070, 'demo01-contact', 'ep:bicycle', 'infra/demo/demo01/index', 'Demo01Contact', 0, true, true, true, '', '2023-11-15 14:42:30', '1', '2023-11-16 20:34:40', 0);
-INSERT INTO public.system_menu VALUES (2479, '示例联系人查询', 'infra:demo01-contact:query', 3, 1, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0);
-INSERT INTO public.system_menu VALUES (2480, '示例联系人创建', 'infra:demo01-contact:create', 3, 2, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0);
-INSERT INTO public.system_menu VALUES (2481, '示例联系人更新', 'infra:demo01-contact:update', 3, 3, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0);
-INSERT INTO public.system_menu VALUES (2482, '示例联系人删除', 'infra:demo01-contact:delete', 3, 4, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0);
-INSERT INTO public.system_menu VALUES (2483, '示例联系人导出', 'infra:demo01-contact:export', 3, 5, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0);
-INSERT INTO public.system_menu VALUES (2484, '树表（增删改查）', '', 2, 2, 1070, 'demo02-category', 'fa:tree', 'infra/demo/demo02/index', 'Demo02Category', 0, true, true, true, '', '2023-11-16 12:18:27', '1', '2023-11-16 20:35:01', 0);
-INSERT INTO public.system_menu VALUES (2485, '示例分类查询', 'infra:demo02-category:query', 3, 1, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0);
-INSERT INTO public.system_menu VALUES (2486, '示例分类创建', 'infra:demo02-category:create', 3, 2, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0);
-INSERT INTO public.system_menu VALUES (2487, '示例分类更新', 'infra:demo02-category:update', 3, 3, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0);
-INSERT INTO public.system_menu VALUES (2488, '示例分类删除', 'infra:demo02-category:delete', 3, 4, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0);
-INSERT INTO public.system_menu VALUES (2489, '示例分类导出', 'infra:demo02-category:export', 3, 5, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0);
-INSERT INTO public.system_menu VALUES (2490, '主子表（标准）', '', 2, 10, 1070, 'demo03-normal', 'fa:battery-3', 'infra/demo/demo03/normal/index', 'Demo03StudentNormal', 0, true, true, true, '', '2023-11-16 12:53:37', '1', '2023-11-16 23:10:03', 0);
-INSERT INTO public.system_menu VALUES (2491, '学生查询', 'infra:demo03-student:query', 3, 1, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0);
-INSERT INTO public.system_menu VALUES (2492, '学生创建', 'infra:demo03-student:create', 3, 2, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0);
-INSERT INTO public.system_menu VALUES (2493, '学生更新', 'infra:demo03-student:update', 3, 3, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0);
-INSERT INTO public.system_menu VALUES (2494, '学生删除', 'infra:demo03-student:delete', 3, 4, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0);
-INSERT INTO public.system_menu VALUES (2495, '学生导出', 'infra:demo03-student:export', 3, 5, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0);
-INSERT INTO public.system_menu VALUES (2497, '主子表（ERP）', '', 2, 11, 1070, 'demo03-erp', 'ep:calendar', 'infra/demo/demo03/erp/index', 'Demo03StudentERP', 0, true, true, true, '', '2023-11-16 15:50:59', '1', '2023-11-17 13:19:56', 0);
-INSERT INTO public.system_menu VALUES (2525, 'WebSocket', '', 2, 5, 2, 'websocket', 'ep:connection', 'infra/webSocket/index', 'InfraWebSocket', 0, true, true, true, '1', '2023-11-23 19:41:55', '1', '2024-04-23 00:02:00', 0);
-INSERT INTO public.system_menu VALUES (2713, '抄送我的', 'bpm:process-instance-cc:query', 2, 30, 1200, 'copy', 'ep:copy-document', 'bpm/task/copy/index', 'BpmProcessInstanceCopy', 0, true, true, true, '1', '2024-03-17 21:50:23', '1', '2024-04-24 19:55:12', 0);
-INSERT INTO public.system_menu VALUES (2714, '流程分类', '', 2, 3, 1186, 'category', 'fa:object-ungroup', 'bpm/category/index', 'BpmCategory', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-21 23:51:18', 0);
-INSERT INTO public.system_menu VALUES (2715, '分类查询', 'bpm:category:query', 3, 1, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:25', 0);
-INSERT INTO public.system_menu VALUES (2716, '分类创建', 'bpm:category:create', 3, 2, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:31', 0);
-INSERT INTO public.system_menu VALUES (2717, '分类更新', 'bpm:category:update', 3, 3, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:35', 0);
-INSERT INTO public.system_menu VALUES (2718, '分类删除', 'bpm:category:delete', 3, 4, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:41', 0);
-INSERT INTO public.system_menu VALUES (2720, '发起流程', '', 2, 0, 1200, 'create', 'fa-solid:grin-stars', 'bpm/processInstance/create/index', 'BpmProcessInstanceCreate', 0, true, false, true, '1', '2024-03-19 19:46:05', '1', '2024-03-23 19:03:42', 0);
-INSERT INTO public.system_menu VALUES (2721, '流程实例', '', 2, 10, 1186, 'process-instance/manager', 'fa:square', 'bpm/processInstance/manager/index', 'BpmProcessInstanceManager', 0, true, true, true, '1', '2024-03-21 23:57:30', '1', '2024-03-21 23:57:30', 0);
-INSERT INTO public.system_menu VALUES (2722, '流程实例的查询（管理员）', 'bpm:process-instance:manager-query', 3, 1, 2721, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:18:27', '1', '2024-03-22 08:19:05', 0);
-INSERT INTO public.system_menu VALUES (2723, '流程实例的取消（管理员）', 'bpm:process-instance:cancel-by-admin', 3, 2, 2721, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:19:25', '1', '2024-03-22 08:19:25', 0);
-INSERT INTO public.system_menu VALUES (2724, '流程任务', '', 2, 11, 1186, 'process-tasnk', 'ep:collection-tag', 'bpm/task/manager/index', 'BpmManagerTask', 0, true, true, true, '1', '2024-03-22 08:43:22', '1', '2024-03-22 08:43:27', 0);
-INSERT INTO public.system_menu VALUES (2725, '流程任务的查询（管理员）', 'bpm:task:manager-query', 3, 1, 2724, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:43:49', '1', '2025-12-23 23:04:44', 0);
-INSERT INTO public.system_menu VALUES (2726, '流程监听器', '', 2, 5, 1186, 'process-listener', 'fa:assistive-listening-systems', 'bpm/processListener/index', 'BpmProcessListener', 0, true, true, true, '', '2024-03-09 16:05:34', '1', '2024-03-23 13:13:38', 0);
-INSERT INTO public.system_menu VALUES (2727, '流程监听器查询', 'bpm:process-listener:query', 3, 1, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0);
-INSERT INTO public.system_menu VALUES (2728, '流程监听器创建', 'bpm:process-listener:create', 3, 2, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0);
-INSERT INTO public.system_menu VALUES (2729, '流程监听器更新', 'bpm:process-listener:update', 3, 3, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0);
-INSERT INTO public.system_menu VALUES (2730, '流程监听器删除', 'bpm:process-listener:delete', 3, 4, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0);
-INSERT INTO public.system_menu VALUES (2731, '流程表达式', '', 2, 6, 1186, 'process-expression', 'fa:wpexplorer', 'bpm/processExpression/index', 'BpmProcessExpression', 0, true, true, true, '', '2024-03-09 22:35:08', '1', '2024-03-23 19:43:05', 0);
-INSERT INTO public.system_menu VALUES (2732, '流程表达式查询', 'bpm:process-expression:query', 3, 1, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0);
-INSERT INTO public.system_menu VALUES (2733, '流程表达式创建', 'bpm:process-expression:create', 3, 2, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0);
-INSERT INTO public.system_menu VALUES (2734, '流程表达式更新', 'bpm:process-expression:update', 3, 3, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0);
-INSERT INTO public.system_menu VALUES (2735, '流程表达式删除', 'bpm:process-expression:delete', 3, 4, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0);
-INSERT INTO public.system_menu VALUES (2739, '消息中心', '', 1, 7, 1, 'messages', 'ep:chat-dot-round', '', '', 0, true, true, true, '1', '2024-04-22 23:54:30', '1', '2024-04-23 09:36:35', 0);
-INSERT INTO public.system_menu VALUES (2740, '监控中心', '', 1, 10, 2, 'monitors', 'ep:monitor', '', '', 0, true, true, true, '1', '2024-04-23 00:04:44', '1', '2024-04-23 00:04:44', 0);
-INSERT INTO public.system_menu VALUES (2758, 'AI 大模型', '', 1, 400, 0, '/ai', 'tabler:ai', '', '', 0, true, true, true, '1', '2024-05-07 15:07:56', '1', '2025-04-19 18:57:05', 0);
-INSERT INTO public.system_menu VALUES (2759, 'AI 对话', '', 2, 1, 2758, 'chat', 'ep:message', 'ai/chat/index/index.vue', 'AiChat', 0, true, true, true, '1', '2024-05-07 15:09:14', '1', '2024-07-07 17:15:36', 0);
-INSERT INTO public.system_menu VALUES (2760, '控制台', '', 1, 100, 2758, 'console', 'ep:setting', '', '', 0, true, true, true, '1', '2024-05-09 22:39:09', '1', '2024-05-24 23:34:21', 0);
-INSERT INTO public.system_menu VALUES (2761, 'API 密钥', '', 2, 0, 2760, 'api-key', 'ep:key', 'ai/model/apiKey/index.vue', 'AiApiKey', 0, true, true, true, '', '2024-05-09 14:52:56', '1', '2024-05-10 22:44:08', 0);
-INSERT INTO public.system_menu VALUES (2762, 'API 密钥查询', 'ai:api-key:query', 3, 1, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', '1', '2024-05-13 20:36:32', 0);
-INSERT INTO public.system_menu VALUES (2763, 'API 密钥创建', 'ai:api-key:create', 3, 2, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', '1', '2024-05-13 20:36:26', 0);
-INSERT INTO public.system_menu VALUES (2764, 'API 密钥更新', 'ai:api-key:update', 3, 3, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', '1', '2024-05-13 20:36:42', 0);
-INSERT INTO public.system_menu VALUES (2765, 'API 密钥删除', 'ai:api-key:delete', 3, 4, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', '1', '2024-05-13 20:36:48', 0);
-INSERT INTO public.system_menu VALUES (2767, '模型配置', '', 2, 0, 2760, 'model', 'fa-solid:abacus', 'ai/model/model/index.vue', 'AiModel', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:57:41', 0);
-INSERT INTO public.system_menu VALUES (2768, '聊天模型查询', 'ai:model:query', 3, 1, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:19:46', 0);
-INSERT INTO public.system_menu VALUES (2769, '聊天模型创建', 'ai:model:create', 3, 2, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:10', 0);
-INSERT INTO public.system_menu VALUES (2770, '聊天模型更新', 'ai:model:update', 3, 3, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:14', 0);
-INSERT INTO public.system_menu VALUES (2771, '聊天模型删除', 'ai:model:delete', 3, 4, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:27', 0);
-INSERT INTO public.system_menu VALUES (2773, '聊天角色', '', 2, 0, 2760, 'chat-role', 'fa:user-secret', 'ai/model/chatRole/index.vue', 'AiChatRole', 0, true, true, true, '', '2024-05-13 12:39:28', '1', '2024-05-13 20:41:45', 0);
-INSERT INTO public.system_menu VALUES (2774, '聊天角色查询', 'ai:chat-role:query', 3, 1, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0);
-INSERT INTO public.system_menu VALUES (2775, '聊天角色创建', 'ai:chat-role:create', 3, 2, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0);
-INSERT INTO public.system_menu VALUES (2776, '聊天角色更新', 'ai:chat-role:update', 3, 3, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0);
-INSERT INTO public.system_menu VALUES (2777, '聊天角色删除', 'ai:chat-role:delete', 3, 4, 2773, '', '', '', '', 0, true, true, true, '1', '2024-05-13 21:43:38', '1', '2024-05-13 21:43:38', 0);
-INSERT INTO public.system_menu VALUES (2778, '聊天管理', '', 2, 10, 2760, 'chat-conversation', 'ep:chat-square', 'ai/chat/manager/index.vue', 'AiChatManager', 0, true, true, true, '', '2024-05-24 15:39:18', '1', '2024-06-26 21:36:56', 0);
-INSERT INTO public.system_menu VALUES (2779, '会话查询', 'ai:chat-conversation:query', 3, 1, 2778, '', '', '', '', 0, true, true, true, '', '2024-05-24 15:39:18', '1', '2024-05-25 08:38:30', 0);
-INSERT INTO public.system_menu VALUES (2780, '会话删除', 'ai:chat-conversation:delete', 3, 2, 2778, '', '', '', '', 0, true, true, true, '', '2024-05-24 15:39:18', '1', '2024-05-25 08:38:40', 0);
-INSERT INTO public.system_menu VALUES (2781, '消息查询', 'ai:chat-message:query', 3, 11, 2778, '', '', '', '', 0, true, true, true, '1', '2024-05-25 08:38:56', '1', '2024-05-25 08:38:56', 0);
-INSERT INTO public.system_menu VALUES (2782, '消息删除', 'ai:chat-message:delete', 3, 12, 2778, '', '', '', '', 0, true, true, true, '1', '2024-05-25 08:39:10', '1', '2024-05-25 08:39:10', 0);
-INSERT INTO public.system_menu VALUES (2783, 'AI 绘画', '', 2, 2, 2758, 'image', 'ep:picture-rounded', 'ai/image/index/index.vue', 'AiImage', 0, true, true, true, '1', '2024-05-26 11:45:17', '1', '2024-07-07 17:18:59', 0);
-INSERT INTO public.system_menu VALUES (2784, '绘画管理', '', 2, 11, 2760, 'image', 'fa:file-image-o', 'ai/image/manager/index.vue', 'AiImageManager', 0, true, true, true, '', '2024-06-26 13:32:31', '1', '2024-06-26 21:37:13', 0);
-INSERT INTO public.system_menu VALUES (2785, '绘画查询', 'ai:image:query', 3, 1, 2784, '', '', '', '', 0, true, true, true, '', '2024-06-26 13:32:31', '1', '2024-06-26 22:21:57', 0);
-INSERT INTO public.system_menu VALUES (2786, '绘画删除', 'ai:image:delete', 3, 4, 2784, '', '', '', '', 0, true, true, true, '', '2024-06-26 13:32:31', '1', '2024-06-26 22:22:08', 0);
-INSERT INTO public.system_menu VALUES (2787, '绘图更新', 'ai:image:update', 3, 2, 2784, '', '', '', '', 0, true, true, true, '1', '2024-06-26 22:47:56', '1', '2024-08-31 09:21:35', 0);
-INSERT INTO public.system_menu VALUES (2788, '音乐管理', '', 2, 12, 2760, 'music', 'fa:music', 'ai/music/manager/index.vue', 'AiMusicManager', 0, true, true, true, '', '2024-06-27 15:03:33', '1', '2024-06-27 23:04:19', 0);
-INSERT INTO public.system_menu VALUES (2789, '音乐查询', 'ai:music:query', 3, 1, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0);
-INSERT INTO public.system_menu VALUES (2790, '音乐更新', 'ai:music:update', 3, 3, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0);
-INSERT INTO public.system_menu VALUES (2791, '音乐删除', 'ai:music:delete', 3, 4, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0);
-INSERT INTO public.system_menu VALUES (2792, 'AI 写作', '', 2, 3, 2758, 'write', 'fa-solid:book-reader', 'ai/write/index/index.vue', 'AiWrite', 0, true, true, true, '1', '2024-07-08 09:26:44', '1', '2024-07-16 13:03:06', 0);
-INSERT INTO public.system_menu VALUES (2793, '写作管理', '', 2, 13, 2760, 'write', 'fa:bookmark-o', 'ai/write/manager/index.vue', 'AiWriteManager', 0, true, true, true, '', '2024-07-10 13:24:34', '1', '2024-07-10 21:31:59', 0);
-INSERT INTO public.system_menu VALUES (2794, 'AI 写作查询', 'ai:write:query', 3, 1, 2793, '', '', '', NULL, 0, true, true, true, '', '2024-07-10 13:24:34', '', '2024-07-10 13:24:34', 0);
-INSERT INTO public.system_menu VALUES (2795, 'AI 写作删除', 'ai:write:delete', 3, 4, 2793, '', '', '', NULL, 0, true, true, true, '', '2024-07-10 13:24:34', '', '2024-07-10 13:24:34', 0);
-INSERT INTO public.system_menu VALUES (2796, 'AI 音乐', '', 2, 4, 2758, 'music', 'fa:music', 'ai/music/index/index.vue', 'AiMusic', 0, true, true, true, '1', '2024-07-17 09:21:12', '1', '2024-07-29 21:11:52', 0);
-INSERT INTO public.system_menu VALUES (2798, 'AI 思维导图', '', 2, 6, 2758, 'mind-map', 'fa:sitemap', 'ai/mindmap/index/index.vue', 'AiMindMap', 0, true, true, true, '1', '2024-07-29 21:31:59', '1', '2025-03-02 18:57:31', 0);
-INSERT INTO public.system_menu VALUES (2799, '导图管理', '', 2, 14, 2760, 'mind-map', 'fa:map', 'ai/mindmap/manager/index', 'AiMindMapManager', 0, true, true, true, '', '2024-08-10 09:15:09', '1', '2024-08-10 17:24:28', 0);
-INSERT INTO public.system_menu VALUES (2800, '思维导图查询', 'ai:mind-map:query', 3, 1, 2799, '', '', '', NULL, 0, true, true, true, '', '2024-08-10 09:15:09', '', '2024-08-10 09:15:09', 0);
-INSERT INTO public.system_menu VALUES (2801, '思维导图删除', 'ai:mind-map:delete', 3, 4, 2799, '', '', '', NULL, 0, true, true, true, '', '2024-08-10 09:15:09', '', '2024-08-10 09:15:09', 0);
-INSERT INTO public.system_menu VALUES (2913, '流程清理', 'bpm:model:clean', 3, 7, 1193, '', '', '', '', 0, true, true, true, '1', '2025-01-17 19:32:06', '1', '2025-01-17 19:32:06', 0);
-INSERT INTO public.system_menu VALUES (2915, 'AI 知识库', '', 2, 5, 2758, 'knowledge', 'ep:notebook', 'ai/knowledge/knowledge/index', 'AiKnowledge', 0, true, true, true, '', '2025-02-28 07:04:21', '1', '2025-03-02 18:58:37', 0);
-INSERT INTO public.system_menu VALUES (2916, 'AI 知识库查询', 'ai:knowledge:query', 3, 1, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0);
-INSERT INTO public.system_menu VALUES (2917, 'AI 知识库创建', 'ai:knowledge:create', 3, 2, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0);
-INSERT INTO public.system_menu VALUES (2918, 'AI 知识库更新', 'ai:knowledge:update', 3, 3, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0);
-INSERT INTO public.system_menu VALUES (2919, 'AI 知识库删除', 'ai:knowledge:delete', 3, 4, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0);
-INSERT INTO public.system_menu VALUES (2920, '工具管理', '', 2, 0, 2760, 'tool', 'fa-solid:tools', 'ai/model/tool/index.vue', 'AiTool', 0, true, true, true, '', '2025-03-14 11:19:29', '1', '2025-03-14 19:20:18', 0);
-INSERT INTO public.system_menu VALUES (2921, '工具查询', 'ai:tool:query', 3, 1, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0);
-INSERT INTO public.system_menu VALUES (2922, '工具创建', 'ai:tool:create', 3, 2, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0);
-INSERT INTO public.system_menu VALUES (2923, '工具更新', 'ai:tool:update', 3, 3, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0);
-INSERT INTO public.system_menu VALUES (2924, '工具删除', 'ai:tool:delete', 3, 4, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0);
-INSERT INTO public.system_menu VALUES (5000, 'AI 工作流', '', 2, 5, 2758, 'workflow', 'fa:hand-grab-o', 'ai/workflow/index.vue', 'AiWorkflow', 0, true, true, true, '1', '2025-03-25 09:50:27', '1', '2025-05-03 18:55:12', 0);
-INSERT INTO public.system_menu VALUES (5001, 'AI 工作流查询', 'ai:workflow:query', 3, 1, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:11', '1', '2025-03-25 09:51:11', 0);
-INSERT INTO public.system_menu VALUES (5002, 'AI 工作流创建', 'ai:workflow:create', 3, 2, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:28', '1', '2025-03-25 09:51:28', 0);
-INSERT INTO public.system_menu VALUES (5003, 'AI 工作流更新', 'ai:workflow:update', 3, 3, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:42', '1', '2025-03-25 09:51:42', 0);
-INSERT INTO public.system_menu VALUES (5004, 'AI 工作流删除', 'ai:workflow:delete', 3, 4, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:55', '1', '2025-03-25 09:52:03', 0);
-INSERT INTO public.system_menu VALUES (5005, 'AI 工作流测试', 'ai:workflow:test', 3, 5, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-30 10:29:41', '1', '2025-03-30 10:29:41', 0);
-INSERT INTO public.system_menu VALUES (5010, '租户切换', 'system:tenant:visit', 3, 999, 1138, '', '', '', '', 0, true, true, true, '1', '2025-05-05 15:25:32', '1', '2025-05-05 15:25:32', 0);
-INSERT INTO public.system_menu VALUES (20010, '项目创建', 'toon:project:create', 3, 1, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20011, '项目更新', 'toon:project:update', 3, 2, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20012, '项目删除', 'toon:project:delete', 3, 3, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20013, '剧本读取', 'toon:episode:read', 3, 4, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20014, '剧本创建', 'toon:episode:create', 3, 5, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20015, '剧本更新', 'toon:episode:update', 3, 6, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20016, '剧本删除', 'toon:episode:delete', 3, 7, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20017, '分镜读取', 'toon:scene:read', 3, 8, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20018, '分镜创建', 'toon:scene:create', 3, 9, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20019, '分镜更新', 'toon:scene:update', 3, 10, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20020, '分镜删除', 'toon:scene:delete', 3, 11, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0);
-INSERT INTO public.system_menu VALUES (20000, '短剧工厂', '', 1, 30, 0, '/toonflow', 'lucide:clapperboard', '', 'Toonflow', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.487306', 0);
-INSERT INTO public.system_menu VALUES (20001, '项目工作台', 'toon:project:read', 2, 1, 20000, 'projects', 'lucide:layout-dashboard', 'toonflow/projects/index', 'ToonflowProjects', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.487306', 0);
-INSERT INTO public.system_menu VALUES (30000, 'AI 大模型', '', 1, 40, 0, '/ai', 'tabler:ai', '', 'Ai', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30001, 'AI 对话', '', 2, 1, 30000, 'chat', 'lucide:message-circle', 'ai/chat/index/index', 'AiChat', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30002, 'AI 绘图', '', 2, 2, 30000, 'image', 'lucide:image', 'ai/image/index/index', 'AiImage', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30003, 'AI 写作', '', 2, 3, 30000, 'write', 'lucide:pen-line', 'ai/write/index/index', 'AiWrite', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (20006, '项目详情', 'toon:project:read', 2, 6, 20000, 'projects/:id', 'lucide:file-stack', 'toonflow/projects/detail', 'ToonflowProjectDetail', 0, false, false, false, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.487306', 0);
-INSERT INTO public.system_menu VALUES (20007, '创作手册', 'toon:project:read', 2, 2, 20000, 'manuals', 'lucide:notebook-tabs', 'toonflow/manuals/index', 'ToonflowManuals', 0, true, true, true, 'system', '2026-07-16 05:03:23.546161', 'system', '2026-07-16 05:03:23.546161', 0);
-INSERT INTO public.system_menu VALUES (20002, '风格库', 'toon:project:read', 2, 3, 20000, 'styles', 'lucide:palette', 'toonflow/styles/index', 'ToonflowStyles', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0);
-INSERT INTO public.system_menu VALUES (20003, '任务中心', 'toon:project:read', 2, 4, 20000, 'tasks', 'lucide:list-checks', 'toonflow/tasks/index', 'ToonflowTasks', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0);
-INSERT INTO public.system_menu VALUES (20004, '提示词与 Skill', 'toon:project:read', 2, 5, 20000, 'prompts', 'lucide:wand-sparkles', 'toonflow/prompts/index', 'ToonflowPrompts', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0);
-INSERT INTO public.system_menu VALUES (20005, '模型与 Agent', 'toon:project:read', 2, 6, 20000, 'settings', 'lucide:bot', 'toonflow/settings/index', 'ToonflowSettings', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0);
-INSERT INTO public.system_menu VALUES (30101, '模型查询', 'ai:model:query', 3, 1, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30102, '模型创建', 'ai:model:create', 3, 2, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30103, '模型更新', 'ai:model:update', 3, 3, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30104, '模型删除', 'ai:model:delete', 3, 4, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30111, '知识库创建', 'ai:knowledge:create', 3, 1, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30112, '知识库更新', 'ai:knowledge:update', 3, 2, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30113, '知识库删除', 'ai:knowledge:delete', 3, 3, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30121, '角色创建', 'ai:chat-role:create', 3, 1, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30122, '角色更新', 'ai:chat-role:update', 3, 2, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30123, '角色删除', 'ai:chat-role:delete', 3, 3, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30131, '工具创建', 'ai:tool:create', 3, 1, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30132, '工具更新', 'ai:tool:update', 3, 2, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30133, '工具删除', 'ai:tool:delete', 3, 3, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 05:03:23.711366', 0);
-INSERT INTO public.system_menu VALUES (30004, 'AI 音乐', '', 2, 4, 30000, 'music', 'lucide:music', 'ai/music/index/index', 'AiMusic', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30005, '知识库', 'ai:knowledge:query', 2, 5, 30000, 'knowledge', 'lucide:database', 'ai/knowledge/knowledge/index', 'AiKnowledge', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30006, '模型管理', 'ai:model:query', 2, 6, 30000, 'model', 'lucide:brain-circuit', 'ai/model/model/index', 'AiModel', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30007, '聊天角色', 'ai:chat-role:query', 2, 7, 30000, 'model/chat-role', 'lucide:bot', 'ai/model/chatRole/index', 'AiModelChatRole', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
-INSERT INTO public.system_menu VALUES (30008, '工具管理', 'ai:tool:query', 2, 8, 30000, 'model/tool', 'lucide:wrench', 'ai/model/tool/index', 'AiModelTool', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1);
+INSERT INTO public.system_menu VALUES (100, '用户管理', 'system:user:list', 2, 1, 1, 'user', 'ep:avatar', 'system/user/index', 'SystemUser', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-01-01 18:43:01', 0, NULL);
+INSERT INTO public.system_menu VALUES (101, '角色管理', '', 2, 2, 1, 'role', 'ep:user', 'system/role/index', 'SystemRole', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-01-05 19:30:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (102, '菜单管理', '', 2, 3, 1, 'menu', 'ep:menu', 'system/menu/index', 'SystemMenu', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:03:50', 0, NULL);
+INSERT INTO public.system_menu VALUES (103, '部门管理', '', 2, 4, 1, 'dept', 'fa:address-card', 'system/dept/index', 'SystemDept', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:06:28', 0, NULL);
+INSERT INTO public.system_menu VALUES (104, '岗位管理', '', 2, 5, 1, 'post', 'fa:address-book-o', 'system/post/index', 'SystemPost', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:06:39', 0, NULL);
+INSERT INTO public.system_menu VALUES (105, '字典管理', '', 2, 6, 1, 'dict', 'ep:collection', 'system/dict/index', 'SystemDictType', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 01:07:12', 0, NULL);
+INSERT INTO public.system_menu VALUES (106, '配置管理', '', 2, 8, 2, 'config', 'fa:connectdevelop', 'infra/config/index', 'InfraConfig', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:02:45', 0, NULL);
+INSERT INTO public.system_menu VALUES (110, '定时任务', '', 2, 7, 2, 'job', 'fa-solid:tasks', 'infra/job/index', 'InfraJob', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:57:36', 0, NULL);
+INSERT INTO public.system_menu VALUES (114, '表单构建', 'infra:build:list', 2, 2, 2, 'build', 'fa:wpforms', 'infra/build/index', 'InfraBuild', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:51:35', 0, NULL);
+INSERT INTO public.system_menu VALUES (115, '代码生成', 'infra:codegen:query', 2, 1, 2, 'codegen', 'ep:document-copy', 'infra/codegen/index', 'InfraCodegen', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-02-29 08:51:06', 0, NULL);
+INSERT INTO public.system_menu VALUES (116, 'API 接口', 'infra:swagger:list', 2, 3, 2, 'swagger', 'fa:fighter-jet', 'infra/swagger/index', 'InfraSwagger', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2024-04-23 00:01:24', 0, NULL);
+INSERT INTO public.system_menu VALUES (1001, '用户查询', 'system:user:query', 3, 1, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1002, '用户新增', 'system:user:create', 3, 2, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1003, '用户修改', 'system:user:update', 3, 3, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1004, '用户删除', 'system:user:delete', 3, 4, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1005, '用户导出', 'system:user:export', 3, 5, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1006, '用户导入', 'system:user:import', 3, 6, 100, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1007, '重置密码', 'system:user:update-password', 3, 7, 100, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1008, '角色查询', 'system:role:query', 3, 1, 101, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1009, '角色新增', 'system:role:create', 3, 2, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1010, '角色修改', 'system:role:update', 3, 3, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1011, '角色删除', 'system:role:delete', 3, 4, 101, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1012, '角色导出', 'system:role:export', 3, 5, 101, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1013, '菜单查询', 'system:menu:query', 3, 1, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1014, '菜单新增', 'system:menu:create', 3, 2, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1015, '菜单修改', 'system:menu:update', 3, 3, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1016, '菜单删除', 'system:menu:delete', 3, 4, 102, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1017, '部门查询', 'system:dept:query', 3, 1, 103, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1018, '部门新增', 'system:dept:create', 3, 2, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1019, '部门修改', 'system:dept:update', 3, 3, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1020, '部门删除', 'system:dept:delete', 3, 4, 103, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1021, '岗位查询', 'system:post:query', 3, 1, 104, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1022, '岗位新增', 'system:post:create', 3, 2, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1023, '岗位修改', 'system:post:update', 3, 3, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1024, '岗位删除', 'system:post:delete', 3, 4, 104, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1025, '岗位导出', 'system:post:export', 3, 5, 104, '', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1026, '字典查询', 'system:dict:query', 3, 1, 105, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1027, '字典新增', 'system:dict:create', 3, 2, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1028, '字典修改', 'system:dict:update', 3, 3, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1029, '字典删除', 'system:dict:delete', 3, 4, 105, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1030, '字典导出', 'system:dict:export', 3, 5, 105, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1031, '配置查询', 'infra:config:query', 3, 1, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1032, '配置新增', 'infra:config:create', 3, 2, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (5, 'OA 示例', '', 1, 40, 1185, 'oa', 'fa:road', NULL, NULL, 0, true, true, true, 'admin', '2021-09-20 16:26:19', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (111, 'PostgreSQL 监控', '', 2, 1, 2740, 'postgresql', 'lucide:database', 'infra/druid/index', 'InfraPostgreSql', 0, true, true, true, 'admin', '2021-01-05 17:03:48', 'system', '2026-07-17 05:04:14.954699', 0, NULL);
+INSERT INTO public.system_menu VALUES (113, 'Redis 监控', '', 2, 2, 2740, 'redis', 'lucide:database-zap', 'infra/redis/index', 'InfraRedis', 0, true, true, true, 'admin', '2021-01-05 17:03:48', 'system', '2026-07-17 05:04:14.954699', 0, NULL);
+INSERT INTO public.system_menu VALUES (112, 'Rust 监控', '', 2, 3, 2740, 'rust', 'lucide:server-cog', 'infra/server/index', 'InfraRustServer', 0, true, true, true, 'admin', '2021-01-05 17:03:48', 'system', '2026-07-17 05:08:19.419206', 0, NULL);
+INSERT INTO public.system_menu VALUES (1033, '配置修改', 'infra:config:update', 3, 3, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1034, '配置删除', 'infra:config:delete', 3, 4, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1035, '配置导出', 'infra:config:export', 3, 5, 106, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1036, '公告查询', 'system:notice:query', 3, 1, 107, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1037, '公告新增', 'system:notice:create', 3, 2, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1038, '公告修改', 'system:notice:update', 3, 3, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1039, '公告删除', 'system:notice:delete', 3, 4, 107, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1040, '操作查询', 'system:operate-log:query', 3, 1, 500, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1042, '日志导出', 'system:operate-log:export', 3, 2, 500, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1043, '登录查询', 'system:login-log:query', 3, 1, 501, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1045, '日志导出', 'system:login-log:export', 3, 3, 501, '#', '#', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1046, '令牌列表', 'system:oauth2-token:page', 3, 1, 109, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-05-09 23:54:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (1048, '令牌删除', 'system:oauth2-token:delete', 3, 2, 109, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-05-09 23:54:53', 0, NULL);
+INSERT INTO public.system_menu VALUES (1050, '任务新增', 'infra:job:create', 3, 2, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1051, '任务修改', 'infra:job:update', 3, 3, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1052, '任务删除', 'infra:job:delete', 3, 4, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1053, '状态修改', 'infra:job:update', 3, 5, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1054, '任务导出', 'infra:job:export', 3, 7, 110, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1056, '生成修改', 'infra:codegen:update', 3, 2, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1057, '生成删除', 'infra:codegen:delete', 3, 3, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1058, '导入代码', 'infra:codegen:create', 3, 2, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1059, '预览代码', 'infra:codegen:preview', 3, 4, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1060, '生成代码', 'infra:codegen:download', 3, 5, 115, '', '', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1063, '设置角色菜单权限', 'system:permission:assign-role-menu', 3, 6, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-06 17:53:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1064, '设置角色数据权限', 'system:permission:assign-role-data-scope', 3, 7, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-06 17:56:31', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1065, '设置用户角色', 'system:permission:assign-user-role', 3, 8, 101, '', '', '', NULL, 0, true, true, true, '', '2021-01-07 10:23:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1066, '获得 Redis 监控信息', 'infra:redis:get-monitor-info', 3, 1, 113, '', '', '', NULL, 0, true, true, true, '', '2021-01-26 01:02:31', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1067, '获得 Redis Key 列表', 'infra:redis:get-key-list', 3, 2, 113, '', '', '', NULL, 0, true, true, true, '', '2021-01-26 01:02:52', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1070, '代码生成案例', '', 1, 1, 2, 'demo', 'ep:aim', 'infra/testDemo/index', NULL, 0, true, true, true, '', '2021-02-06 12:42:49', '1', '2023-11-15 23:45:53', 0, NULL);
+INSERT INTO public.system_menu VALUES (1075, '任务触发', 'infra:job:trigger', 3, 8, 110, '', '', '', NULL, 0, true, true, true, '', '2021-02-07 13:03:10', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1078, '访问日志', '', 2, 1, 1083, 'api-access-log', 'ep:place', 'infra/apiAccessLog/index', 'InfraApiAccessLog', 0, true, true, true, '', '2021-02-26 01:32:59', '1', '2024-02-29 08:54:57', 0, NULL);
+INSERT INTO public.system_menu VALUES (1082, '日志导出', 'infra:api-access-log:export', 3, 2, 1078, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 01:32:59', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1083, 'API 日志', '', 2, 4, 2, 'log', 'fa:tasks', NULL, NULL, 0, true, true, true, '', '2021-02-26 02:18:24', '1', '2024-04-22 23:58:36', 0, NULL);
+INSERT INTO public.system_menu VALUES (1084, '错误日志', 'infra:api-error-log:query', 2, 2, 1083, 'api-error-log', 'ep:warning-filled', 'infra/apiErrorLog/index', 'InfraApiErrorLog', 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2024-02-29 08:55:17', 0, NULL);
+INSERT INTO public.system_menu VALUES (1085, '日志处理', 'infra:api-error-log:update-status', 3, 2, 1084, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1086, '日志导出', 'infra:api-error-log:export', 3, 3, 1084, '', '', '', NULL, 0, true, true, true, '', '2021-02-26 07:53:20', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1087, '任务查询', 'infra:job:query', 3, 1, 110, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:26:19', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1088, '日志查询', 'infra:api-access-log:query', 3, 1, 1078, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:28:04', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1089, '日志查询', 'infra:api-error-log:query', 3, 1, 1084, '', '', '', NULL, 0, true, true, true, '1', '2021-03-10 01:29:09', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1090, '文件列表', '', 2, 5, 1243, 'file', 'ep:upload-filled', 'infra/file/index', 'InfraFile', 0, true, true, true, '', '2021-03-12 20:16:20', '1', '2024-02-29 08:53:02', 0, NULL);
+INSERT INTO public.system_menu VALUES (1091, '文件查询', 'infra:file:query', 3, 1, 1090, '', '', '', NULL, 0, true, true, true, '', '2021-03-12 20:16:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1092, '文件删除', 'infra:file:delete', 3, 4, 1090, '', '', '', NULL, 0, true, true, true, '', '2021-03-12 20:16:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1095, '短信渠道查询', 'system:sms-channel:query', 3, 1, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1096, '短信渠道创建', 'system:sms-channel:create', 3, 2, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1097, '短信渠道更新', 'system:sms-channel:update', 3, 3, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1098, '短信渠道删除', 'system:sms-channel:delete', 3, 4, 1094, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 11:07:15', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1101, '短信模板查询', 'system:sms-template:query', 3, 1, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1102, '短信模板创建', 'system:sms-template:create', 3, 2, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1103, '短信模板更新', 'system:sms-template:update', 3, 3, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1093, '短信管理', '', 1, 1, 2739, 'sms', 'ep:message', NULL, NULL, 0, true, true, true, '1', '2021-04-05 01:10:16', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (1077, '请求链路', '', 2, 4, 2740, 'traces', 'lucide:route', 'infra/skywalking/index', 'InfraRequestTraces', 0, true, true, true, '', '2021-02-08 20:41:31', 'system', '2026-07-17 05:04:14.954699', 0, NULL);
+INSERT INTO public.system_menu VALUES (1104, '短信模板删除', 'system:sms-template:delete', 3, 4, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1105, '短信模板导出', 'system:sms-template:export', 3, 5, 1100, '', '', '', NULL, 0, true, true, true, '', '2021-04-01 17:35:17', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1106, '发送测试短信', 'system:sms-template:send-sms', 3, 6, 1100, '', '', '', NULL, 0, true, true, true, '1', '2021-04-11 00:26:40', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1108, '短信日志查询', 'system:sms-log:query', 3, 1, 1107, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1109, '短信日志导出', 'system:sms-log:export', 3, 5, 1107, '', '', '', NULL, 0, true, true, true, '', '2021-04-11 08:37:05', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1139, '租户查询', 'system:tenant:query', 3, 1, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1140, '租户创建', 'system:tenant:create', 3, 2, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1141, '租户更新', 'system:tenant:update', 3, 3, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1142, '租户删除', 'system:tenant:delete', 3, 4, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1143, '租户导出', 'system:tenant:export', 3, 5, 1138, '', '', '', NULL, 0, true, true, true, '', '2021-12-14 12:31:44', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1186, '流程管理', '', 1, 10, 1185, 'manager', 'fa:dedent', NULL, NULL, 0, true, true, true, '1', '2021-12-30 20:28:30', '1', '2024-02-29 12:36:02', 0, NULL);
+INSERT INTO public.system_menu VALUES (1187, '流程表单', '', 2, 2, 1186, 'form', 'fa:hdd-o', 'bpm/form/index', 'BpmForm', 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2024-03-19 12:25:25', 0, NULL);
+INSERT INTO public.system_menu VALUES (1188, '表单查询', 'bpm:form:query', 3, 1, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1189, '表单创建', 'bpm:form:create', 3, 2, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1190, '表单更新', 'bpm:form:update', 3, 3, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1191, '表单删除', 'bpm:form:delete', 3, 4, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1192, '表单导出', 'bpm:form:export', 3, 5, 1187, '', '', '', NULL, 0, true, true, true, '', '2021-12-30 12:38:22', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1193, '流程模型', '', 2, 1, 1186, 'model', 'fa-solid:project-diagram', 'bpm/model/index', 'BpmModel', 0, true, true, true, '1', '2021-12-31 23:24:58', '1', '2024-03-19 12:25:19', 0, NULL);
+INSERT INTO public.system_menu VALUES (1194, '模型查询', 'bpm:model:query', 3, 1, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:01:10', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1195, '模型创建', 'bpm:model:create', 3, 2, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:01:24', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1197, '模型更新', 'bpm:model:update', 3, 4, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:02:28', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1198, '模型删除', 'bpm:model:delete', 3, 5, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:02:43', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1199, '模型发布', 'bpm:model:deploy', 3, 6, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-03 19:03:24', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1200, '审批中心', '', 2, 20, 1185, 'task', 'fa:tasks', NULL, NULL, 0, true, true, true, '1', '2022-01-07 23:51:48', '1', '2024-03-21 00:33:15', 0, NULL);
+INSERT INTO public.system_menu VALUES (1201, '我的流程', '', 2, 1, 1200, 'my', 'fa-solid:book', 'bpm/processInstance/index', 'BpmProcessInstanceMy', 0, true, true, true, '', '2022-01-07 15:53:44', '1', '2024-03-21 23:52:12', 0, NULL);
+INSERT INTO public.system_menu VALUES (1202, '流程实例的查询', 'bpm:process-instance:query', 3, 1, 1201, '', '', '', NULL, 0, true, true, true, '', '2022-01-07 15:53:44', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1207, '待办任务', '', 2, 10, 1200, 'todo', 'fa:slack', 'bpm/task/todo/index', 'BpmTodoTask', 0, true, true, true, '1', '2022-01-08 10:33:37', '1', '2024-02-29 12:37:39', 0, NULL);
+INSERT INTO public.system_menu VALUES (1208, '已办任务', '', 2, 20, 1200, 'done', 'fa:delicious', 'bpm/task/done/index', 'BpmDoneTask', 0, true, true, true, '1', '2022-01-08 10:34:13', '1', '2024-02-29 12:37:54', 0, NULL);
+INSERT INTO public.system_menu VALUES (1209, '用户分组', '', 2, 4, 1186, 'user-group', 'fa:user-secret', 'bpm/group/index', 'BpmUserGroup', 0, true, true, true, '', '2022-01-14 02:14:20', '1', '2024-03-21 23:55:29', 0, NULL);
+INSERT INTO public.system_menu VALUES (1210, '用户组查询', 'bpm:user-group:query', 3, 1, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1118, '请假查询', '', 2, 0, 5, 'leave', 'fa:leanpub', 'bpm/oa/leave/index', 'BpmOALeave', 0, true, true, true, '', '2021-09-20 08:51:03', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (1119, '请假申请查询', 'bpm:oa-leave:query', 3, 1, 1118, '', '', '', NULL, 0, true, true, true, '', '2021-09-20 08:51:03', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (1120, '请假申请创建', 'bpm:oa-leave:create', 3, 2, 1118, '', '', '', NULL, 0, true, true, true, '', '2021-09-20 08:51:03', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6124, '商机跟进', 'bid:opportunity:follow', 3, 4, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (1211, '用户组创建', 'bpm:user-group:create', 3, 2, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1212, '用户组更新', 'bpm:user-group:update', 3, 3, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1213, '用户组删除', 'bpm:user-group:delete', 3, 4, 1209, '', '', '', NULL, 0, true, true, true, '', '2022-01-14 02:14:20', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1215, '流程定义查询', 'bpm:process-definition:query', 3, 10, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:21:43', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1216, '流程任务分配规则查询', 'bpm:task-assign-rule:query', 3, 20, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:26:53', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1217, '流程任务分配规则创建', 'bpm:task-assign-rule:create', 3, 21, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:28:15', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1218, '流程任务分配规则更新', 'bpm:task-assign-rule:update', 3, 22, 1193, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:28:41', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1219, '流程实例的创建', 'bpm:process-instance:create', 3, 2, 1201, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:36:15', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1220, '流程实例的取消', 'bpm:process-instance:cancel', 3, 3, 1201, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:36:33', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1221, '流程任务的查询', 'bpm:task:query', 3, 1, 1207, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:38:52', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1222, '流程任务的更新', 'bpm:task:update', 3, 2, 1207, '', '', '', NULL, 0, true, true, true, '1', '2022-01-23 00:39:24', '1', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1226, '租户套餐查询', 'system:tenant-package:query', 3, 1, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1227, '租户套餐创建', 'system:tenant-package:create', 3, 2, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1228, '租户套餐更新', 'system:tenant-package:update', 3, 3, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1229, '租户套餐删除', 'system:tenant-package:delete', 3, 4, 1225, '', '', '', NULL, 0, true, true, true, '', '2022-02-19 17:44:06', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1237, '文件配置', '', 2, 0, 1243, 'file-config', 'fa-solid:file-signature', 'infra/fileConfig/index', 'InfraFileConfig', 0, true, true, true, '', '2022-03-15 14:35:28', '1', '2024-02-29 08:52:54', 0, NULL);
+INSERT INTO public.system_menu VALUES (1238, '文件配置查询', 'infra:file-config:query', 3, 1, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1239, '文件配置创建', 'infra:file-config:create', 3, 2, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1240, '文件配置更新', 'infra:file-config:update', 3, 3, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1241, '文件配置删除', 'infra:file-config:delete', 3, 4, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1242, '文件配置导出', 'infra:file-config:export', 3, 5, 1237, '', '', '', NULL, 0, true, true, true, '', '2022-03-15 14:35:28', '', '2022-04-20 17:03:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (1243, '文件管理', '', 2, 6, 2, 'file', 'ep:files', NULL, '', 0, true, true, true, '1', '2022-03-16 23:47:40', '1', '2024-04-23 00:02:11', 0, NULL);
+INSERT INTO public.system_menu VALUES (1255, '数据源配置', '', 2, 1, 2, 'data-source-config', 'ep:data-analysis', 'infra/dataSourceConfig/index', 'InfraDataSourceConfig', 0, true, true, true, '', '2022-04-27 14:37:32', '1', '2024-02-29 08:51:25', 0, NULL);
+INSERT INTO public.system_menu VALUES (1256, '数据源配置查询', 'infra:data-source-config:query', 3, 1, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (1257, '数据源配置创建', 'infra:data-source-config:create', 3, 2, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (1258, '数据源配置更新', 'infra:data-source-config:update', 3, 3, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (1259, '数据源配置删除', 'infra:data-source-config:delete', 3, 4, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (1260, '数据源配置导出', 'infra:data-source-config:export', 3, 5, 1255, '', '', '', NULL, 0, true, true, true, '', '2022-04-27 14:37:32', '', '2022-04-27 14:37:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (1264, '客户端查询', 'system:oauth2-client:query', 3, 1, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:06', 0, NULL);
+INSERT INTO public.system_menu VALUES (1265, '客户端创建', 'system:oauth2-client:create', 3, 2, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:23', 0, NULL);
+INSERT INTO public.system_menu VALUES (1266, '客户端更新', 'system:oauth2-client:update', 3, 3, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:28', 0, NULL);
+INSERT INTO public.system_menu VALUES (1267, '客户端删除', 'system:oauth2-client:delete', 3, 4, 1263, '', '', '', NULL, 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2022-05-11 00:31:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (2132, '账号查询', 'system:mail-account:query', 3, 1, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0, NULL);
+INSERT INTO public.system_menu VALUES (2133, '账号创建', 'system:mail-account:create', 3, 2, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0, NULL);
+INSERT INTO public.system_menu VALUES (2134, '账号更新', 'system:mail-account:update', 3, 3, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0, NULL);
+INSERT INTO public.system_menu VALUES (2135, '账号删除', 'system:mail-account:delete', 3, 4, 2131, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 09:33:48', '', '2023-01-25 09:33:48', 0, NULL);
+INSERT INTO public.system_menu VALUES (6145, '爬虫配置管理', 'bid:crawler:config', 3, 5, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:57:21.707523', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6151, '预警处理', 'bid:subscription:process', 3, 5, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6111, '公告新增', 'bid:notice:create', 3, 1, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6112, '公告修改', 'bid:notice:update', 3, 2, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6113, '公告删除', 'bid:notice:delete', 3, 3, 6101, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6121, '商机新增', 'bid:opportunity:create', 3, 1, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6122, '商机指派', 'bid:opportunity:assign', 3, 2, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6123, '商机决策', 'bid:opportunity:decision', 3, 3, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2137, '模版查询', 'system:mail-template:query', 3, 1, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0, NULL);
+INSERT INTO public.system_menu VALUES (2138, '模版创建', 'system:mail-template:create', 3, 2, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0, NULL);
+INSERT INTO public.system_menu VALUES (2139, '模版更新', 'system:mail-template:update', 3, 3, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0, NULL);
+INSERT INTO public.system_menu VALUES (2140, '模版删除', 'system:mail-template:delete', 3, 4, 2136, '', '', '', NULL, 0, true, true, true, '', '2023-01-25 12:05:31', '', '2023-01-25 12:05:31', 0, NULL);
+INSERT INTO public.system_menu VALUES (2142, '日志查询', 'system:mail-log:query', 3, 1, 2141, '', '', '', NULL, 0, true, true, true, '', '2023-01-26 02:16:50', '', '2023-01-26 02:16:50', 0, NULL);
+INSERT INTO public.system_menu VALUES (2143, '发送测试邮件', 'system:mail-template:send-mail', 3, 5, 2136, '', '', '', NULL, 0, true, true, true, '1', '2023-01-26 23:29:15', '1', '2023-01-26 23:29:15', 0, NULL);
+INSERT INTO public.system_menu VALUES (2146, '站内信模板查询', 'system:notify-template:query', 3, 1, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (2147, '站内信模板创建', 'system:notify-template:create', 3, 2, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (2148, '站内信模板更新', 'system:notify-template:update', 3, 3, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (2149, '站内信模板删除', 'system:notify-template:delete', 3, 4, 2145, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 02:26:42', '', '2023-01-28 02:26:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (2150, '发送测试站内信', 'system:notify-template:send-notify', 3, 5, 2145, '', '', '', NULL, 0, true, true, true, '1', '2023-01-28 10:54:43', '1', '2023-01-28 10:54:43', 0, NULL);
+INSERT INTO public.system_menu VALUES (2152, '站内信消息查询', 'system:notify-message:query', 3, 1, 2151, '', '', '', NULL, 0, true, true, true, '', '2023-01-28 04:28:22', '', '2023-01-28 04:28:22', 0, NULL);
+INSERT INTO public.system_menu VALUES (2449, '三方应用查询', 'system:social-client:query', 3, 1, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:43:12', '1', '2023-11-04 12:43:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (2450, '三方应用创建', 'system:social-client:create', 3, 2, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:43:58', '1', '2023-11-04 12:43:58', 0, NULL);
+INSERT INTO public.system_menu VALUES (2451, '三方应用更新', 'system:social-client:update', 3, 3, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:44:27', '1', '2023-11-04 12:44:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2452, '三方应用删除', 'system:social-client:delete', 3, 4, 2448, '', '', '', '', 0, true, true, true, '1', '2023-11-04 12:44:43', '1', '2023-11-04 12:44:43', 0, NULL);
+INSERT INTO public.system_menu VALUES (2472, '主子表（内嵌）', '', 2, 12, 1070, 'demo03-inner', 'fa:power-off', 'infra/demo/demo03/inner/index', 'Demo03StudentInner', 0, true, true, true, '', '2023-11-13 04:39:51', '1', '2023-11-16 23:53:46', 0, NULL);
+INSERT INTO public.system_menu VALUES (2478, '单表（增删改查）', '', 2, 1, 1070, 'demo01-contact', 'ep:bicycle', 'infra/demo/demo01/index', 'Demo01Contact', 0, true, true, true, '', '2023-11-15 14:42:30', '1', '2023-11-16 20:34:40', 0, NULL);
+INSERT INTO public.system_menu VALUES (2479, '示例联系人查询', 'infra:demo01-contact:query', 3, 1, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2480, '示例联系人创建', 'infra:demo01-contact:create', 3, 2, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2481, '示例联系人更新', 'infra:demo01-contact:update', 3, 3, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2482, '示例联系人删除', 'infra:demo01-contact:delete', 3, 4, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2483, '示例联系人导出', 'infra:demo01-contact:export', 3, 5, 2478, '', '', '', NULL, 0, true, true, true, '', '2023-11-15 14:42:30', '', '2023-11-15 14:42:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2484, '树表（增删改查）', '', 2, 2, 1070, 'demo02-category', 'fa:tree', 'infra/demo/demo02/index', 'Demo02Category', 0, true, true, true, '', '2023-11-16 12:18:27', '1', '2023-11-16 20:35:01', 0, NULL);
+INSERT INTO public.system_menu VALUES (2485, '示例分类查询', 'infra:demo02-category:query', 3, 1, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2486, '示例分类创建', 'infra:demo02-category:create', 3, 2, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2487, '示例分类更新', 'infra:demo02-category:update', 3, 3, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2488, '示例分类删除', 'infra:demo02-category:delete', 3, 4, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2489, '示例分类导出', 'infra:demo02-category:export', 3, 5, 2484, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:18:27', '', '2023-11-16 12:18:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2490, '主子表（标准）', '', 2, 10, 1070, 'demo03-normal', 'fa:battery-3', 'infra/demo/demo03/normal/index', 'Demo03StudentNormal', 0, true, true, true, '', '2023-11-16 12:53:37', '1', '2023-11-16 23:10:03', 0, NULL);
+INSERT INTO public.system_menu VALUES (2491, '学生查询', 'infra:demo03-student:query', 3, 1, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2492, '学生创建', 'infra:demo03-student:create', 3, 2, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2493, '学生更新', 'infra:demo03-student:update', 3, 3, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2494, '学生删除', 'infra:demo03-student:delete', 3, 4, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2495, '学生导出', 'infra:demo03-student:export', 3, 5, 2490, '', '', '', NULL, 0, true, true, true, '', '2023-11-16 12:53:37', '', '2023-11-16 12:53:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2497, '主子表（ERP）', '', 2, 11, 1070, 'demo03-erp', 'ep:calendar', 'infra/demo/demo03/erp/index', 'Demo03StudentERP', 0, true, true, true, '', '2023-11-16 15:50:59', '1', '2023-11-17 13:19:56', 0, NULL);
+INSERT INTO public.system_menu VALUES (2525, 'WebSocket', '', 2, 5, 2, 'websocket', 'ep:connection', 'infra/webSocket/index', 'InfraWebSocket', 0, true, true, true, '1', '2023-11-23 19:41:55', '1', '2024-04-23 00:02:00', 0, NULL);
+INSERT INTO public.system_menu VALUES (2713, '抄送我的', 'bpm:process-instance-cc:query', 2, 30, 1200, 'copy', 'ep:copy-document', 'bpm/task/copy/index', 'BpmProcessInstanceCopy', 0, true, true, true, '1', '2024-03-17 21:50:23', '1', '2024-04-24 19:55:12', 0, NULL);
+INSERT INTO public.system_menu VALUES (2714, '流程分类', '', 2, 3, 1186, 'category', 'fa:object-ungroup', 'bpm/category/index', 'BpmCategory', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-21 23:51:18', 0, NULL);
+INSERT INTO public.system_menu VALUES (2715, '分类查询', 'bpm:category:query', 3, 1, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:25', 0, NULL);
+INSERT INTO public.system_menu VALUES (2716, '分类创建', 'bpm:category:create', 3, 2, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:31', 0, NULL);
+INSERT INTO public.system_menu VALUES (2717, '分类更新', 'bpm:category:update', 3, 3, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:35', 0, NULL);
+INSERT INTO public.system_menu VALUES (2718, '分类删除', 'bpm:category:delete', 3, 4, 2714, '', '', '', '', 0, true, true, true, '', '2024-03-08 02:00:51', '1', '2024-03-19 14:36:41', 0, NULL);
+INSERT INTO public.system_menu VALUES (2720, '发起流程', '', 2, 0, 1200, 'create', 'fa-solid:grin-stars', 'bpm/processInstance/create/index', 'BpmProcessInstanceCreate', 0, true, false, true, '1', '2024-03-19 19:46:05', '1', '2024-03-23 19:03:42', 0, NULL);
+INSERT INTO public.system_menu VALUES (2721, '流程实例', '', 2, 10, 1186, 'process-instance/manager', 'fa:square', 'bpm/processInstance/manager/index', 'BpmProcessInstanceManager', 0, true, true, true, '1', '2024-03-21 23:57:30', '1', '2024-03-21 23:57:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2722, '流程实例的查询（管理员）', 'bpm:process-instance:manager-query', 3, 1, 2721, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:18:27', '1', '2024-03-22 08:19:05', 0, NULL);
+INSERT INTO public.system_menu VALUES (2723, '流程实例的取消（管理员）', 'bpm:process-instance:cancel-by-admin', 3, 2, 2721, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:19:25', '1', '2024-03-22 08:19:25', 0, NULL);
+INSERT INTO public.system_menu VALUES (2724, '流程任务', '', 2, 11, 1186, 'process-tasnk', 'ep:collection-tag', 'bpm/task/manager/index', 'BpmManagerTask', 0, true, true, true, '1', '2024-03-22 08:43:22', '1', '2024-03-22 08:43:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2725, '流程任务的查询（管理员）', 'bpm:task:manager-query', 3, 1, 2724, '', '', '', '', 0, true, true, true, '1', '2024-03-22 08:43:49', '1', '2025-12-23 23:04:44', 0, NULL);
+INSERT INTO public.system_menu VALUES (2726, '流程监听器', '', 2, 5, 1186, 'process-listener', 'fa:assistive-listening-systems', 'bpm/processListener/index', 'BpmProcessListener', 0, true, true, true, '', '2024-03-09 16:05:34', '1', '2024-03-23 13:13:38', 0, NULL);
+INSERT INTO public.system_menu VALUES (2727, '流程监听器查询', 'bpm:process-listener:query', 3, 1, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2728, '流程监听器创建', 'bpm:process-listener:create', 3, 2, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2729, '流程监听器更新', 'bpm:process-listener:update', 3, 3, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2730, '流程监听器删除', 'bpm:process-listener:delete', 3, 4, 2726, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 16:05:34', '', '2024-03-09 16:05:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2731, '流程表达式', '', 2, 6, 1186, 'process-expression', 'fa:wpexplorer', 'bpm/processExpression/index', 'BpmProcessExpression', 0, true, true, true, '', '2024-03-09 22:35:08', '1', '2024-03-23 19:43:05', 0, NULL);
+INSERT INTO public.system_menu VALUES (2732, '流程表达式查询', 'bpm:process-expression:query', 3, 1, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0, NULL);
+INSERT INTO public.system_menu VALUES (2733, '流程表达式创建', 'bpm:process-expression:create', 3, 2, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0, NULL);
+INSERT INTO public.system_menu VALUES (2734, '流程表达式更新', 'bpm:process-expression:update', 3, 3, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0, NULL);
+INSERT INTO public.system_menu VALUES (2735, '流程表达式删除', 'bpm:process-expression:delete', 3, 4, 2731, '', '', '', NULL, 0, true, true, true, '', '2024-03-09 22:35:08', '', '2024-03-09 22:35:08', 0, NULL);
+INSERT INTO public.system_menu VALUES (2740, '监控中心', '', 1, 10, 2, 'monitors', 'ep:monitor', '', '', 0, true, true, true, '1', '2024-04-23 00:04:44', '1', '2024-04-23 00:04:44', 0, NULL);
+INSERT INTO public.system_menu VALUES (2759, 'AI 对话', '', 2, 1, 2758, 'chat', 'ep:message', 'ai/chat/index/index.vue', 'AiChat', 0, true, true, true, '1', '2024-05-07 15:09:14', '1', '2024-07-07 17:15:36', 0, NULL);
+INSERT INTO public.system_menu VALUES (2768, '聊天模型查询', 'ai:model:query', 3, 1, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:19:46', 0, NULL);
+INSERT INTO public.system_menu VALUES (2769, '聊天模型创建', 'ai:model:create', 3, 2, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (2770, '聊天模型更新', 'ai:model:update', 3, 3, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:14', 0, NULL);
+INSERT INTO public.system_menu VALUES (2771, '聊天模型删除', 'ai:model:delete', 3, 4, 2767, '', '', '', '', 0, true, true, true, '', '2024-05-10 14:42:48', '1', '2025-03-03 09:20:27', 0, NULL);
+INSERT INTO public.system_menu VALUES (2774, '聊天角色查询', 'ai:chat-role:query', 3, 1, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0, NULL);
+INSERT INTO public.system_menu VALUES (2775, '聊天角色创建', 'ai:chat-role:create', 3, 2, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0, NULL);
+INSERT INTO public.system_menu VALUES (2776, '聊天角色更新', 'ai:chat-role:update', 3, 3, 2773, '', '', '', NULL, 0, true, true, true, '', '2024-05-13 12:39:28', '', '2024-05-13 12:39:28', 0, NULL);
+INSERT INTO public.system_menu VALUES (2777, '聊天角色删除', 'ai:chat-role:delete', 3, 4, 2773, '', '', '', '', 0, true, true, true, '1', '2024-05-13 21:43:38', '1', '2024-05-13 21:43:38', 0, NULL);
+INSERT INTO public.system_menu VALUES (2779, '会话查询', 'ai:chat-conversation:query', 3, 1, 2778, '', '', '', '', 0, true, true, true, '', '2024-05-24 15:39:18', '1', '2024-05-25 08:38:30', 0, NULL);
+INSERT INTO public.system_menu VALUES (2780, '会话删除', 'ai:chat-conversation:delete', 3, 2, 2778, '', '', '', '', 0, true, true, true, '', '2024-05-24 15:39:18', '1', '2024-05-25 08:38:40', 0, NULL);
+INSERT INTO public.system_menu VALUES (2781, '消息查询', 'ai:chat-message:query', 3, 11, 2778, '', '', '', '', 0, true, true, true, '1', '2024-05-25 08:38:56', '1', '2024-05-25 08:38:56', 0, NULL);
+INSERT INTO public.system_menu VALUES (2782, '消息删除', 'ai:chat-message:delete', 3, 12, 2778, '', '', '', '', 0, true, true, true, '1', '2024-05-25 08:39:10', '1', '2024-05-25 08:39:10', 0, NULL);
+INSERT INTO public.system_menu VALUES (2783, 'AI 绘画', '', 2, 2, 2758, 'image', 'ep:picture-rounded', 'ai/image/index/index.vue', 'AiImage', 0, true, true, true, '1', '2024-05-26 11:45:17', '1', '2024-07-07 17:18:59', 0, NULL);
+INSERT INTO public.system_menu VALUES (2785, '绘画查询', 'ai:image:query', 3, 1, 2784, '', '', '', '', 0, true, true, true, '', '2024-06-26 13:32:31', '1', '2024-06-26 22:21:57', 0, NULL);
+INSERT INTO public.system_menu VALUES (2786, '绘画删除', 'ai:image:delete', 3, 4, 2784, '', '', '', '', 0, true, true, true, '', '2024-06-26 13:32:31', '1', '2024-06-26 22:22:08', 0, NULL);
+INSERT INTO public.system_menu VALUES (2787, '绘图更新', 'ai:image:update', 3, 2, 2784, '', '', '', '', 0, true, true, true, '1', '2024-06-26 22:47:56', '1', '2024-08-31 09:21:35', 0, NULL);
+INSERT INTO public.system_menu VALUES (2789, '音乐查询', 'ai:music:query', 3, 1, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (2790, '音乐更新', 'ai:music:update', 3, 3, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (2791, '音乐删除', 'ai:music:delete', 3, 4, 2788, '', '', '', NULL, 0, true, true, true, '', '2024-06-27 15:03:33', '', '2024-06-27 15:03:33', 0, NULL);
+INSERT INTO public.system_menu VALUES (2792, 'AI 写作', '', 2, 3, 2758, 'write', 'fa-solid:book-reader', 'ai/write/index/index.vue', 'AiWrite', 0, true, true, true, '1', '2024-07-08 09:26:44', '1', '2024-07-16 13:03:06', 0, NULL);
+INSERT INTO public.system_menu VALUES (2758, 'AI 大模型', '', 1, 30, 0, '/ai', 'tabler:ai', '', 'Ai', 0, true, true, true, '1', '2024-05-07 15:07:56', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2739, '消息中心', '', 1, 7, 1, 'messages', 'ep:chat-dot-round', '', '', 0, true, true, true, '1', '2024-04-22 23:54:30', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (2762, 'API 密钥查询', 'ai:api-key:query', 3, 1, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2763, 'API 密钥创建', 'ai:api-key:create', 3, 2, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2764, 'API 密钥更新', 'ai:api-key:update', 3, 3, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2765, 'API 密钥删除', 'ai:api-key:delete', 3, 4, 2761, '', '', '', '', 0, true, true, true, '', '2024-05-09 14:52:56', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2794, 'AI 写作查询', 'ai:write:query', 3, 1, 2793, '', '', '', NULL, 0, true, true, true, '', '2024-07-10 13:24:34', '', '2024-07-10 13:24:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2795, 'AI 写作删除', 'ai:write:delete', 3, 4, 2793, '', '', '', NULL, 0, true, true, true, '', '2024-07-10 13:24:34', '', '2024-07-10 13:24:34', 0, NULL);
+INSERT INTO public.system_menu VALUES (2796, 'AI 音乐', '', 2, 4, 2758, 'music', 'fa:music', 'ai/music/index/index.vue', 'AiMusic', 0, true, true, true, '1', '2024-07-17 09:21:12', '1', '2024-07-29 21:11:52', 0, NULL);
+INSERT INTO public.system_menu VALUES (2913, '流程清理', 'bpm:model:clean', 3, 7, 1193, '', '', '', '', 0, true, true, true, '1', '2025-01-17 19:32:06', '1', '2025-01-17 19:32:06', 0, NULL);
+INSERT INTO public.system_menu VALUES (2915, 'AI 知识库', '', 2, 5, 2758, 'knowledge', 'ep:notebook', 'ai/knowledge/knowledge/index', 'AiKnowledge', 0, true, true, true, '', '2025-02-28 07:04:21', '1', '2025-03-02 18:58:37', 0, NULL);
+INSERT INTO public.system_menu VALUES (2916, 'AI 知识库查询', 'ai:knowledge:query', 3, 1, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0, NULL);
+INSERT INTO public.system_menu VALUES (2917, 'AI 知识库创建', 'ai:knowledge:create', 3, 2, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0, NULL);
+INSERT INTO public.system_menu VALUES (2918, 'AI 知识库更新', 'ai:knowledge:update', 3, 3, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0, NULL);
+INSERT INTO public.system_menu VALUES (2919, 'AI 知识库删除', 'ai:knowledge:delete', 3, 4, 2915, '', '', '', NULL, 0, true, true, true, '', '2025-02-28 07:04:21', '', '2025-02-28 07:04:21', 0, NULL);
+INSERT INTO public.system_menu VALUES (2921, '工具查询', 'ai:tool:query', 3, 1, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0, NULL);
+INSERT INTO public.system_menu VALUES (2922, '工具创建', 'ai:tool:create', 3, 2, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0, NULL);
+INSERT INTO public.system_menu VALUES (2923, '工具更新', 'ai:tool:update', 3, 3, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0, NULL);
+INSERT INTO public.system_menu VALUES (2924, '工具删除', 'ai:tool:delete', 3, 4, 2920, '', '', '', NULL, 0, true, true, true, '', '2025-03-14 11:19:29', '', '2025-03-14 11:19:29', 0, NULL);
+INSERT INTO public.system_menu VALUES (5010, '租户切换', 'system:tenant:visit', 3, 999, 1138, '', '', '', '', 0, true, true, true, '1', '2025-05-05 15:25:32', '1', '2025-05-05 15:25:32', 0, NULL);
+INSERT INTO public.system_menu VALUES (20010, '项目创建', 'toon:project:create', 3, 1, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20011, '项目更新', 'toon:project:update', 3, 2, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20012, '项目删除', 'toon:project:delete', 3, 3, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20013, '剧本读取', 'toon:episode:read', 3, 4, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20014, '剧本创建', 'toon:episode:create', 3, 5, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20015, '剧本更新', 'toon:episode:update', 3, 6, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20016, '剧本删除', 'toon:episode:delete', 3, 7, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20017, '分镜读取', 'toon:scene:read', 3, 8, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20018, '分镜创建', 'toon:scene:create', 3, 9, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20019, '分镜更新', 'toon:scene:update', 3, 10, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (20020, '分镜删除', 'toon:scene:delete', 3, 11, 20001, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.423799', 0, NULL);
+INSERT INTO public.system_menu VALUES (2798, 'AI 思维导图', '', 2, 6, 2758, 'mind-map', 'fa:sitemap', 'ai/mindmap/index/index.vue', 'AiMindMap', 0, true, true, true, '1', '2024-07-29 21:31:59', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (20001, '项目工作台', 'toon:project:read', 2, 1, 20000, 'projects', 'lucide:layout-dashboard', 'toonflow/projects/index', 'ToonflowProjects', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.487306', 0, NULL);
+INSERT INTO public.system_menu VALUES (30000, 'AI 大模型', '', 1, 40, 0, '/ai', 'tabler:ai', '', 'Ai', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30001, 'AI 对话', '', 2, 1, 30000, 'chat', 'lucide:message-circle', 'ai/chat/index/index', 'AiChat', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30002, 'AI 绘图', '', 2, 2, 30000, 'image', 'lucide:image', 'ai/image/index/index', 'AiImage', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30003, 'AI 写作', '', 2, 3, 30000, 'write', 'lucide:pen-line', 'ai/write/index/index', 'AiWrite', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (20007, '创作手册', 'toon:project:read', 2, 2, 20000, 'manuals', 'lucide:notebook-tabs', 'toonflow/manuals/index', 'ToonflowManuals', 0, true, true, true, 'system', '2026-07-16 05:03:23.546161', 'system', '2026-07-16 05:03:23.546161', 0, NULL);
+INSERT INTO public.system_menu VALUES (20002, '风格库', 'toon:project:read', 2, 3, 20000, 'styles', 'lucide:palette', 'toonflow/styles/index', 'ToonflowStyles', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0, NULL);
+INSERT INTO public.system_menu VALUES (20003, '任务中心', 'toon:project:read', 2, 4, 20000, 'tasks', 'lucide:list-checks', 'toonflow/tasks/index', 'ToonflowTasks', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0, NULL);
+INSERT INTO public.system_menu VALUES (20004, '提示词与 Skill', 'toon:project:read', 2, 5, 20000, 'prompts', 'lucide:wand-sparkles', 'toonflow/prompts/index', 'ToonflowPrompts', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0, NULL);
+INSERT INTO public.system_menu VALUES (20005, '模型与 Agent', 'toon:project:read', 2, 6, 20000, 'settings', 'lucide:bot', 'toonflow/settings/index', 'ToonflowSettings', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-16 05:03:23.55964', 0, NULL);
+INSERT INTO public.system_menu VALUES (20006, '项目详情', 'toon:project:read', 2, 6, 20000, 'projects/:id', 'lucide:file-stack', 'toonflow/projects/detail', 'ToonflowProjectDetail', 0, false, false, false, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-17 02:02:24.52913', 0, 20001);
+INSERT INTO public.system_menu VALUES (2920, '工具管理', '', 2, 0, 2760, 'tool', 'lucide:wrench', 'ai/model/tool/index.vue', 'AiTool', 0, true, true, true, '', '2025-03-14 11:19:29', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (20000, '短剧工厂', '', 1, 20, 0, '/toonflow', 'lucide:clapperboard', '', 'Toonflow', 0, true, true, true, 'system', '2026-07-16 05:03:23.423799', 'system', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2800, '思维导图查询', 'ai:mind-map:query', 3, 1, 2799, '', '', '', NULL, 0, true, true, true, '', '2024-08-10 09:15:09', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2801, '思维导图删除', 'ai:mind-map:delete', 3, 4, 2799, '', '', '', NULL, 0, true, true, true, '', '2024-08-10 09:15:09', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5000, 'AI 工作流', '', 2, 5, 2758, 'workflow', 'fa:hand-grab-o', 'ai/workflow/index.vue', 'AiWorkflow', 0, true, true, true, '1', '2025-03-25 09:50:27', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5001, 'AI 工作流查询', 'ai:workflow:query', 3, 1, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:11', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (30004, 'AI 音乐', '', 2, 4, 30000, 'music', 'lucide:music', 'ai/music/index/index', 'AiMusic', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30005, '知识库', 'ai:knowledge:query', 2, 5, 30000, 'knowledge', 'lucide:database', 'ai/knowledge/knowledge/index', 'AiKnowledge', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30006, '模型管理', 'ai:model:query', 2, 6, 30000, 'model', 'lucide:brain-circuit', 'ai/model/model/index', 'AiModel', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30007, '聊天角色', 'ai:chat-role:query', 2, 7, 30000, 'model/chat-role', 'lucide:bot', 'ai/model/chatRole/index', 'AiModelChatRole', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (30008, '工具管理', 'ai:tool:query', 2, 8, 30000, 'model/tool', 'lucide:wrench', 'ai/model/tool/index', 'AiModelTool', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-16 08:12:35.316268', 1, NULL);
+INSERT INTO public.system_menu VALUES (2760, '控制台', '', 1, 100, 2758, 'console', 'lucide:settings-2', '', '', 0, true, true, true, '1', '2024-05-09 22:39:09', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2767, '模型配置', '', 2, 0, 2760, 'model', 'lucide:brain-circuit', 'ai/model/model/index.vue', 'AiModel', 0, true, true, true, '', '2024-05-10 14:42:48', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2773, '聊天角色', '', 2, 0, 2760, 'chat-role', 'lucide:bot', 'ai/model/chatRole/index.vue', 'AiChatRole', 0, true, true, true, '', '2024-05-13 12:39:28', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2778, '聊天管理', '', 2, 10, 2760, 'chat-conversation', 'lucide:messages-square', 'ai/chat/manager/index.vue', 'AiChatManager', 0, true, true, true, '', '2024-05-24 15:39:18', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2784, '绘画管理', '', 2, 11, 2760, 'image', 'lucide:images', 'ai/image/manager/index.vue', 'AiImageManager', 0, true, true, true, '', '2024-06-26 13:32:31', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2788, '音乐管理', '', 2, 12, 2760, 'music', 'lucide:list-music', 'ai/music/manager/index.vue', 'AiMusicManager', 0, true, true, true, '', '2024-06-27 15:03:33', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (2793, '写作管理', '', 2, 13, 2760, 'write', 'lucide:book-text', 'ai/write/manager/index.vue', 'AiWriteManager', 0, true, true, true, '', '2024-07-10 13:24:34', 'system', '2026-07-17 01:13:48.097106', 0, NULL);
+INSERT INTO public.system_menu VALUES (30101, '模型查询', 'ai:model:query', 3, 1, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:39.834971', 1, NULL);
+INSERT INTO public.system_menu VALUES (30111, '知识库创建', 'ai:knowledge:create', 3, 1, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:41.726946', 1, NULL);
+INSERT INTO public.system_menu VALUES (30121, '角色创建', 'ai:chat-role:create', 3, 1, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:43.474946', 1, NULL);
+INSERT INTO public.system_menu VALUES (30131, '工具创建', 'ai:tool:create', 3, 1, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:45.030092', 1, NULL);
+INSERT INTO public.system_menu VALUES (30102, '模型创建', 'ai:model:create', 3, 2, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:46.999118', 1, NULL);
+INSERT INTO public.system_menu VALUES (30104, '模型删除', 'ai:model:delete', 3, 4, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:51.00945', 1, NULL);
+INSERT INTO public.system_menu VALUES (30123, '角色删除', 'ai:chat-role:delete', 3, 3, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:53.230952', 1, NULL);
+INSERT INTO public.system_menu VALUES (30133, '工具删除', 'ai:tool:delete', 3, 3, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:55.362036', 1, NULL);
+INSERT INTO public.system_menu VALUES (30113, '知识库删除', 'ai:knowledge:delete', 3, 3, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:57.281626', 1, NULL);
+INSERT INTO public.system_menu VALUES (30103, '模型更新', 'ai:model:update', 3, 3, 30006, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:21:59.506947', 1, NULL);
+INSERT INTO public.system_menu VALUES (30132, '工具更新', 'ai:tool:update', 3, 2, 30008, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:22:01.05254', 1, NULL);
+INSERT INTO public.system_menu VALUES (30122, '角色更新', 'ai:chat-role:update', 3, 2, 30007, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:22:02.775135', 1, NULL);
+INSERT INTO public.system_menu VALUES (30112, '知识库更新', 'ai:knowledge:update', 3, 2, 30005, '', '', '', '', 0, true, true, true, 'system', '2026-07-16 05:03:23.711366', 'system', '2026-07-17 01:22:04.945537', 1, NULL);
+INSERT INTO public.system_menu VALUES (30200, '仪表盘', '', 1, -10, 0, '/dashboard', 'lucide:layout-dashboard', '', 'Dashboard', 0, true, true, true, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 01:29:09.910057', 0, NULL);
+INSERT INTO public.system_menu VALUES (30201, '工作台', '', 2, 1, 30200, '/workspace', 'carbon:workspace', 'dashboard/workspace/index', 'Workspace', 0, true, true, true, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 01:29:09.910057', 0, NULL);
+INSERT INTO public.system_menu VALUES (30202, '分析页', '', 2, 2, 30200, '/analytics', 'lucide:area-chart', 'dashboard/analytics/index', 'Analytics', 0, true, true, true, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 01:29:09.910057', 0, NULL);
+INSERT INTO public.system_menu VALUES (30203, '个人中心', '', 2, 99, 1, '/profile', 'lucide:user-round', '_core/profile/index', 'Profile', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 01:29:09.910057', 0, NULL);
+INSERT INTO public.system_menu VALUES (2761, 'API 密钥', '', 2, 0, 2760, 'api-key', 'lucide:key-round', 'ai/model/apiKey/index.vue', 'AiApiKey', 0, true, true, true, '', '2024-05-09 14:52:56', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (30210, '绘图作品', 'ai:image:query', 2, 90, 2758, 'image/square', 'lucide:images', 'ai/image/square/index', 'AiImageSquare', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2783);
+INSERT INTO public.system_menu VALUES (30211, '知识库文档', 'ai:knowledge:query', 2, 91, 2758, 'knowledge/document', 'lucide:files', 'ai/knowledge/document/index', 'AiKnowledgeDocument', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2915);
+INSERT INTO public.system_menu VALUES (30212, '创建文档', 'ai:knowledge:create', 2, 92, 2758, 'knowledge/document/create', 'lucide:file-plus-2', 'ai/knowledge/document/form/index', 'AiKnowledgeDocumentCreate', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2915);
+INSERT INTO public.system_menu VALUES (30240, '基础设置', '', 1, 11, 0, '/system/basic', 'lucide:sliders-horizontal', '', 'SystemBasic', 0, true, true, true, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (30241, '信息中心', '', 1, 12, 0, '/system/message', 'lucide:mail', '', 'SystemMessage', 0, true, true, true, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1, '系统功能', '', 1, 10, 0, '/system', 'lucide:settings', NULL, 'System', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2, '基础功能', '', 1, 21, 0, '/infra', 'lucide:blocks', NULL, 'Infra', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1185, '工作流', '', 1, 50, 0, '/bpm', 'fa:medium', NULL, 'bpm', 0, true, true, true, '1', '2021-12-30 20:26:36', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (500, '操作日志', '', 2, 8, 1, 'operatelog', 'ep:position', 'system/operatelog/index', 'SystemOperateLog', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (501, '登录日志', '', 2, 9, 1, 'loginlog', 'ep:promotion', 'system/loginlog/index', 'SystemLoginLog', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (107, '通知公告', '', 2, 7, 1, 'notice', 'ep:takeaway-box', 'system/notice/index', 'SystemNotice', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1138, '租户管理', '', 2, 1, 30240, '/system/tenant', 'ep:house', 'system/tenant/index', 'SystemTenant', 0, true, true, true, '', '2021-12-14 12:31:43', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1225, '租户套餐', '', 2, 2, 30240, '/system/tenant-package', 'fa:bars', 'system/tenantPackage/index', 'SystemTenantPackage', 0, true, true, true, '', '2022-02-19 17:44:06', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2083, '地区管理', '', 2, 3, 30240, '/system/area', 'fa:map-marker', 'system/area/index', 'SystemArea', 0, true, true, true, '1', '2022-12-23 17:35:05', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2448, '社交客户端', '', 2, 4, 30240, '/system/social-client', 'ep:set-up', 'system/social/client/index.vue', 'SystemSocialClient', 0, true, true, true, '1', '2023-11-04 12:17:19', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2453, '社交用户', 'system:social-user:query', 2, 5, 30240, '/system/social-user', 'ep:avatar', 'system/social/user/index.vue', 'SystemSocialUser', 0, true, true, true, '1', '2023-11-04 14:01:05', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1263, 'OAuth2 客户端', '', 2, 6, 30240, '/system/oauth2-client', 'fa:hdd-o', 'system/oauth2/client/index', 'SystemOauth2Client', 0, true, true, true, '', '2022-05-10 16:26:33', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (109, 'OAuth2 令牌', '', 2, 7, 30240, '/system/oauth2-token', 'fa:key', 'system/oauth2/token/index', 'SystemOauth2Token', 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2145, '站内信模板', '', 2, 1, 30241, '/system/notify-template', 'fa:archive', 'system/notify/template/index', 'SystemNotifyTemplate', 0, true, true, true, '', '2023-01-28 02:26:42', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2151, '站内信消息', '', 2, 2, 30241, '/system/notify-message-list', 'fa:edit', 'system/notify/message/index', 'SystemNotifyMessage', 0, true, true, true, '', '2023-01-28 04:28:22', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2131, '邮箱账号', '', 2, 3, 30241, '/system/mail-account', 'fa:universal-access', 'system/mail/account/index', 'SystemMailAccount', 0, true, true, true, '', '2023-01-25 09:33:48', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2136, '邮件模板', '', 2, 4, 30241, '/system/mail-template', 'fa:tag', 'system/mail/template/index', 'SystemMailTemplate', 0, true, true, true, '', '2023-01-25 12:05:31', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (2141, '邮件日志', '', 2, 5, 30241, '/system/mail-log', 'fa:edit', 'system/mail/log/index', 'SystemMailLog', 0, true, true, true, '', '2023-01-26 02:16:50', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1094, '短信渠道', '', 2, 6, 30241, '/system/sms-channel', 'fa:stack-exchange', 'system/sms/channel/index', 'SystemSmsChannel', 0, true, true, true, '', '2021-04-01 11:07:15', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1100, '短信模板', '', 2, 7, 30241, '/system/sms-template', 'ep:connection', 'system/sms/template/index', 'SystemSmsTemplate', 0, true, true, true, '', '2021-04-01 17:35:17', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (1107, '短信日志', '', 2, 8, 30241, '/system/sms-log', 'fa:edit', 'system/sms/log/index', 'SystemSmsLog', 0, true, true, true, '', '2021-04-11 08:37:05', '1', '2026-07-17 01:35:39.386526', 0, NULL);
+INSERT INTO public.system_menu VALUES (108, '审计日志', '', 1, 9, 1, 'log', 'ep:document-copy', '', NULL, 0, true, true, true, 'admin', '2021-01-05 17:03:48', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (1224, '租户管理', '', 2, 0, 1, 'tenant', 'fa-solid:house-user', NULL, NULL, 0, true, true, true, '1', '2022-02-20 01:41:13', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (1261, 'OAuth 2.0', '', 2, 10, 1, 'oauth2', 'fa:dashcube', NULL, NULL, 0, true, true, true, '1', '2022-05-09 23:38:17', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (2130, '邮箱管理', '', 2, 2, 2739, 'mail', 'fa-solid:mail-bulk', NULL, NULL, 0, true, true, true, '1', '2023-01-25 17:27:44', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (2144, '站内信管理', '', 1, 3, 2739, 'notify', 'ep:message-box', NULL, NULL, 0, true, true, true, '1', '2023-01-28 10:25:18', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (2447, '三方登录', '', 1, 10, 1, 'social', 'fa:rocket', '', '', 0, true, true, true, '1', '2023-11-04 12:12:01', '1', '2026-07-17 01:35:39.386526', 1, NULL);
+INSERT INTO public.system_menu VALUES (6101, '招标公告', 'bid:notice:query', 2, 1, 6100, 'notice', 'ant-design:notification-outlined', 'bid/notice/index', 'BidNotice', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6100, '招标管理', '', 1, 22, 0, '/bid', 'ant-design:solution-outlined', NULL, NULL, 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6102, '投标商机', 'bid:opportunity:query', 2, 2, 6100, 'opportunity', 'ant-design:bulb-outlined', 'bid/opportunity/index', 'BidOpportunity', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6103, '投标项目', 'bid:project:query', 2, 3, 6100, 'project', 'ant-design:project-outlined', 'bid/project/index', 'BidProject', 0, true, true, true, 'system', '2026-07-14 06:07:11.723882', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6125, '商机转项目', 'bid:opportunity:convert', 3, 5, 6102, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6131, '项目修改', 'bid:project:update', 3, 1, 6103, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-14 08:22:10.528054', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6104, '爬虫管理', 'bid:crawler:query', 2, 4, 6100, 'crawler', 'ant-design:bug-outlined', 'bid/crawler/index', 'BidCrawler', 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6141, '爬虫查询', 'bid:crawler:query', 3, 1, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6142, '爬虫任务创建', 'bid:crawler:create', 3, 2, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6143, '爬虫任务重试', 'bid:crawler:retry', 3, 3, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6144, '爬虫调度管理', 'bid:crawler:schedule', 3, 4, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 00:40:22.525741', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6105, '订阅预警', 'bid:subscription:query', 2, 5, 6100, 'subscription', 'ant-design:bell-outlined', 'bid/subscription/index', 'BidSubscription', 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6147, '订阅预警查询', 'bid:subscription:query', 3, 1, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6148, '订阅规则创建', 'bid:subscription:create', 3, 2, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6149, '订阅规则修改', 'bid:subscription:update', 3, 3, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6150, '订阅规则删除', 'bid:subscription:delete', 3, 4, 6105, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 10:45:40.244018', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (6146, '爬虫登录态管理', 'bid:crawler:login', 3, 6, 6104, '', '', '', NULL, 0, true, true, true, 'system', '2026-07-15 01:11:30.159654', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5002, 'AI 工作流创建', 'ai:workflow:create', 3, 2, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:28', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5003, 'AI 工作流更新', 'ai:workflow:update', 3, 3, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:42', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5004, 'AI 工作流删除', 'ai:workflow:delete', 3, 4, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-25 09:51:55', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (5005, 'AI 工作流测试', 'ai:workflow:test', 3, 5, 5000, '', '', '', '', 0, true, true, true, '1', '2025-03-30 10:29:41', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (2799, '导图管理', '', 2, 14, 2760, 'mind-map', 'lucide:network', 'ai/mindmap/manager/index', 'AiMindMapManager', 0, true, true, true, '', '2024-08-10 09:15:09', 'system', '2026-07-17 01:44:04.417394', 1, NULL);
+INSERT INTO public.system_menu VALUES (30213, '修改文档', 'ai:knowledge:update', 2, 93, 2758, 'knowledge/document/update', 'lucide:file-pen-line', 'ai/knowledge/document/form/index', 'AiKnowledgeDocumentUpdate', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2915);
+INSERT INTO public.system_menu VALUES (30214, '文档召回测试', 'ai:knowledge:query', 2, 94, 2758, 'knowledge/retrieval', 'lucide:search-check', 'ai/knowledge/knowledge/retrieval/index', 'AiKnowledgeRetrieval', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2915);
+INSERT INTO public.system_menu VALUES (30215, '知识库分段', 'ai:knowledge:query', 2, 95, 2758, 'knowledge/segment', 'lucide:blocks', 'ai/knowledge/segment/index', 'AiKnowledgeSegment', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2915);
+INSERT INTO public.system_menu VALUES (30220, '流程详情', 'bpm:process-instance:query', 2, 90, 1185, 'process-instance/detail', 'lucide:file-search', 'bpm/processInstance/detail/index', 'BpmProcessInstanceDetail', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1201);
+INSERT INTO public.system_menu VALUES (30221, '设计流程表单', 'bpm:form:update', 2, 91, 1185, 'manager/form/edit', 'lucide:file-pen-line', 'bpm/form/designer/index', 'BpmFormEditor', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1187);
+INSERT INTO public.system_menu VALUES (30222, '创建流程', 'bpm:model:create', 2, 92, 1185, 'manager/model/create', 'lucide:workflow', 'bpm/model/form/index', 'BpmModelCreate', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1193);
+INSERT INTO public.system_menu VALUES (30223, '修改流程', 'bpm:model:update', 2, 93, 1185, 'manager/model/:type/:id', 'lucide:workflow', 'bpm/model/form/index', 'BpmModelUpdate', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1193);
+INSERT INTO public.system_menu VALUES (30224, '流程定义', 'bpm:definition:query', 2, 94, 1185, 'manager/definition', 'lucide:file-cog', 'bpm/model/definition/index', 'BpmProcessDefinition', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1193);
+INSERT INTO public.system_menu VALUES (30225, '流程数据报表', 'bpm:process-instance:query', 2, 95, 1185, 'process-instance/report', 'lucide:chart-no-axes-combined', 'bpm/processInstance/report/index', 'BpmProcessInstanceReport', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 1193);
+INSERT INTO public.system_menu VALUES (30230, '调度日志', 'infra:job:query', 2, 90, 2, '/infra/job/log', 'lucide:scroll-text', 'infra/job/logger/index', 'InfraJobLog', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 110);
+INSERT INTO public.system_menu VALUES (30231, '生成配置修改', 'infra:codegen:update', 2, 91, 2, '/infra/codegen/edit', 'lucide:file-cog', 'infra/codegen/edit/index', 'InfraCodegenEdit', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 115);
+INSERT INTO public.system_menu VALUES (30232, '我的站内信', 'system:notify-message:query', 2, 90, 1, '/system/notify-message', 'lucide:mail', 'system/notify/my/index', 'MyNotifyMessage', 0, false, false, false, 'system', '2026-07-17 01:29:09.910057', 'system', '2026-07-17 02:02:24.52913', 0, 2151);
 
 
 --
@@ -8146,10 +8191,10 @@ INSERT INTO public.system_notify_template VALUES (2, 'Codex测试', 'codex_test_
 -- Data for Name: system_oauth2_client; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_oauth2_client VALUES (1, 'default', '', '芋道源码', 'http://test.yudao.iocoder.cn/20250502/sort2_1746189740718.png', '我是描述', 0, 1800, 2592000, '["https://www.iocoder.cn","https://doc.iocoder.cn"]', '["password","authorization_code","implicit","refresh_token","client_credentials"]', '["user.read","user.write"]', '[]', '["user.read","user.write"]', '[]', '{}', '1', '2022-05-11 21:47:12', '1', '2025-12-07 20:07:09', 0);
-INSERT INTO public.system_oauth2_client VALUES (40, 'test', '', 'biubiu', 'http://test.yudao.iocoder.cn/20251227/javayuanma_1766829882970.jpg', '啦啦啦啦', 0, 1800, 43200, '["https://www.iocoder.cn"]', '["password","authorization_code","implicit"]', '["user_info","projects"]', '["user_info"]', '[]', '[]', '{}', '1', '2022-05-12 00:28:20', '1', '2025-12-27 18:04:44', 0);
-INSERT INTO public.system_oauth2_client VALUES (41, 'yudao-sso-demo-by-code', '', '基于授权码模式，如何实现 SSO 单点登录？', 'http://test.yudao.iocoder.cn/it/20250502/sign_1746181948685.png', NULL, 0, 1800, 43200, '["http://127.0.0.1:18080"]', '["authorization_code","refresh_token"]', '["user.read","user.write"]', '[]', '[]', '[]', NULL, '1', '2022-09-29 13:28:31', '1', '2025-05-02 18:32:30', 0);
-INSERT INTO public.system_oauth2_client VALUES (42, 'yudao-sso-demo-by-password', '', '基于密码模式，如何实现 SSO 单点登录？', 'http://test.yudao.iocoder.cn/20251025/images (3)_1761360515810.jpeg', NULL, 0, 1800, 43200, '["http://127.0.0.1:18080"]', '["password","refresh_token"]', '["user.read","user.write"]', '[]', '[]', '[]', NULL, '1', '2022-10-04 17:40:16', '1', '2025-10-25 10:49:40', 0);
+INSERT INTO public.system_oauth2_client VALUES (1, 'default', 'admin123', '芋道源码', 'http://test.yudao.iocoder.cn/20250502/sort2_1746189740718.png', '我是描述', 0, 1800, 2592000, '["https://www.iocoder.cn","https://doc.iocoder.cn"]', '["password","authorization_code","implicit","refresh_token","client_credentials"]', '["user.read","user.write"]', '[]', '["user.read","user.write"]', '[]', '{}', '1', '2022-05-11 21:47:12', '1', '2025-12-07 20:07:09', 0);
+INSERT INTO public.system_oauth2_client VALUES (40, 'test', 'test2', 'biubiu', 'http://test.yudao.iocoder.cn/20251227/javayuanma_1766829882970.jpg', '啦啦啦啦', 0, 1800, 43200, '["https://www.iocoder.cn"]', '["password","authorization_code","implicit"]', '["user_info","projects"]', '["user_info"]', '[]', '[]', '{}', '1', '2022-05-12 00:28:20', '1', '2025-12-27 18:04:44', 0);
+INSERT INTO public.system_oauth2_client VALUES (41, 'yudao-sso-demo-by-code', 'test', '基于授权码模式，如何实现 SSO 单点登录？', 'http://test.yudao.iocoder.cn/it/20250502/sign_1746181948685.png', NULL, 0, 1800, 43200, '["http://127.0.0.1:18080"]', '["authorization_code","refresh_token"]', '["user.read","user.write"]', '[]', '[]', '[]', NULL, '1', '2022-09-29 13:28:31', '1', '2025-05-02 18:32:30', 0);
+INSERT INTO public.system_oauth2_client VALUES (42, 'yudao-sso-demo-by-password', 'test', '基于密码模式，如何实现 SSO 单点登录？', 'http://test.yudao.iocoder.cn/20251025/images (3)_1761360515810.jpeg', NULL, 0, 1800, 43200, '["http://127.0.0.1:18080"]', '["password","refresh_token"]', '["user.read","user.write"]', '[]', '[]', '[]', NULL, '1', '2022-10-04 17:40:16', '1', '2025-10-25 10:49:40', 0);
 
 
 --
@@ -8885,6 +8930,12 @@ INSERT INTO public.system_role_menu VALUES (330123, 1, 30123, 'system', '2026-07
 INSERT INTO public.system_role_menu VALUES (330131, 1, 30131, 'system', '2026-07-16 05:03:23.720981', 'system', '2026-07-16 05:03:23.720981', 0, 1);
 INSERT INTO public.system_role_menu VALUES (330132, 1, 30132, 'system', '2026-07-16 05:03:23.720981', 'system', '2026-07-16 05:03:23.720981', 0, 1);
 INSERT INTO public.system_role_menu VALUES (330133, 1, 30133, 'system', '2026-07-16 05:03:23.720981', 'system', '2026-07-16 05:03:23.720981', 0, 1);
+INSERT INTO public.system_role_menu VALUES (330134, 2, 30240, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
+INSERT INTO public.system_role_menu VALUES (330135, 109, 30240, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
+INSERT INTO public.system_role_menu VALUES (330136, 111, 30240, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
+INSERT INTO public.system_role_menu VALUES (330137, 2, 30241, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
+INSERT INTO public.system_role_menu VALUES (330138, 109, 30241, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
+INSERT INTO public.system_role_menu VALUES (330139, 111, 30241, 'system', '2026-07-17 01:35:39.386526', 'system', '2026-07-17 01:35:39.386526', 0, 0);
 
 
 --
@@ -8906,8 +8957,6 @@ INSERT INTO public.system_sms_channel VALUES (7, 'mock腾讯云', 'TENCENT', 0, 
 -- Data for Name: system_sms_log; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_sms_log VALUES (2, 4, 'DEBUG_DING_TALK', 2, 'test_01', 1, '正在进行登录操作login，您的验证码是1234', '{"code":"1234","operation":"login"}', '4383920', '13800138000', NULL, 2, 30, '2026-07-16 07:29:59.682171', 'NOT_CONFIGURED', 'sms provider is not configured', NULL, NULL, 0, NULL, NULL, NULL, 'admin', '2026-07-16 07:29:59.682171', 'admin', '2026-07-16 07:29:59.682171', 0);
-INSERT INTO public.system_sms_log VALUES (3, 4, 'DEBUG_DING_TALK', 2, 'test_01', 1, '正在进行登录操作{operation}，您的验证码是123456', '{"code":"123456"}', '4383920', '13800138000', NULL, 2, 30, '2026-07-16 07:41:03.365878', 'NOT_CONFIGURED', 'sms provider is not configured', NULL, NULL, 0, NULL, NULL, NULL, 'admin', '2026-07-16 07:41:03.365878', 'admin', '2026-07-16 07:41:03.365878', 0);
 
 
 --
@@ -8935,14 +8984,14 @@ INSERT INTO public.system_sms_template VALUES (19, 1, 0, 'admin-sms-login', '后
 -- Data for Name: system_social_client; Type: TABLE DATA; Schema: public; Owner: -
 --
 
-INSERT INTO public.system_social_client VALUES (1, '钉钉', 20, 2, 'dingvrnreaje3yqvzhxg', '', NULL, NULL, 0, '', '2023-10-18 11:21:18', '1', '2023-12-20 21:28:26', 1, 1);
-INSERT INTO public.system_social_client VALUES (2, '钉钉（王土豆）', 20, 2, 'dingtsu9hpepjkbmthhw', '', NULL, NULL, 0, '', '2023-10-18 11:21:18', '', '2023-12-20 21:28:26', 1, 121);
-INSERT INTO public.system_social_client VALUES (3, '微信公众号', 31, 1, 'wx5b23ba7a5589ecbb', '', NULL, NULL, 0, '', '2023-10-18 16:07:46', '1', '2023-12-20 21:28:23', 1, 1);
-INSERT INTO public.system_social_client VALUES (43, '微信小程序', 34, 1, 'wx63c280fe3248a3e7', '', NULL, NULL, 0, '', '2023-10-19 13:37:41', '1', '2023-12-20 21:28:25', 1, 1);
-INSERT INTO public.system_social_client VALUES (44, '1', 10, 1, '2', '', NULL, NULL, 0, '1', '2025-04-06 20:36:28', '1', '2025-04-06 20:43:12', 1, 1);
-INSERT INTO public.system_social_client VALUES (45, '1', 10, 1, '2', '', NULL, NULL, 1, '1', '2025-09-06 20:26:15', '1', '2025-09-06 20:27:55', 1, 1);
-INSERT INTO public.system_social_client VALUES (46, '1', 10, 1, '2', '', NULL, NULL, 0, '1', '2025-11-29 16:04:23', '1', '2025-11-29 16:04:26', 1, 1);
-INSERT INTO public.system_social_client VALUES (47, '123', 10, 1, '1', '', '3', NULL, 0, '1', '2025-12-21 10:27:02', '1', '2025-12-21 10:27:20', 1, 1);
+INSERT INTO public.system_social_client VALUES (1, '钉钉', 20, 2, '', '', '', '', 0, '', '2023-10-18 11:21:18', '1', '2023-12-20 21:28:26', 1, 1);
+INSERT INTO public.system_social_client VALUES (2, '钉钉（王土豆）', 20, 2, '', '', '', '', 0, '', '2023-10-18 11:21:18', '', '2023-12-20 21:28:26', 1, 121);
+INSERT INTO public.system_social_client VALUES (3, '微信公众号', 31, 1, '', '', '', '', 0, '', '2023-10-18 16:07:46', '1', '2023-12-20 21:28:23', 1, 1);
+INSERT INTO public.system_social_client VALUES (43, '微信小程序', 34, 1, '', '', '', '', 0, '', '2023-10-19 13:37:41', '1', '2023-12-20 21:28:25', 1, 1);
+INSERT INTO public.system_social_client VALUES (44, '1', 10, 1, '', '', '', '', 0, '1', '2025-04-06 20:36:28', '1', '2025-04-06 20:43:12', 1, 1);
+INSERT INTO public.system_social_client VALUES (45, '1', 10, 1, '', '', '', '', 1, '1', '2025-09-06 20:26:15', '1', '2025-09-06 20:27:55', 1, 1);
+INSERT INTO public.system_social_client VALUES (46, '1', 10, 1, '', '', '', '', 0, '1', '2025-11-29 16:04:23', '1', '2025-11-29 16:04:26', 1, 1);
+INSERT INTO public.system_social_client VALUES (47, '123', 10, 1, '', '', '', '', 0, '1', '2025-12-21 10:27:02', '1', '2025-12-21 10:27:20', 1, 1);
 
 
 --
@@ -9026,7 +9075,6 @@ INSERT INTO public.system_users VALUES (107, 'admin107', '$2a$10$dYOOBKMO93v/.Re
 INSERT INTO public.system_users VALUES (108, 'admin108', '$2a$10$y6mfvKoNYL1GXWak8nYwVOH.kCWqjactkzdoIDgiKl93WN3Ejg.Lu', '芋艿', NULL, NULL, NULL, '', '15601691300', 0, NULL, 0, '', NULL, '1', '2022-02-20 23:00:50', '1', '2025-04-21 14:23:08', 0, 119);
 INSERT INTO public.system_users VALUES (109, 'admin109', '$2a$10$JAqvH0tEc0I7dfDVBI7zyuB4E3j.uH6daIjV53.vUS6PknFkDJkuK', '芋艿', NULL, NULL, NULL, '', '15601691300', 0, NULL, 0, '', NULL, '1', '2022-02-20 23:11:50', '1', '2025-04-21 14:23:08', 0, 120);
 INSERT INTO public.system_users VALUES (115, 'aotemane', '$2a$04$GcyP0Vyzb2F2Yni5PuIK9ueGxM0tkZGMtDwVRwrNbtMvorzbpNsV2', '阿呆', '11222', 102, '[1,2]', '7648@qq.com', '15601691229', 2, NULL, 0, '', NULL, '1', '2022-04-30 02:55:43', '1', '2025-04-21 14:23:08', 0, 1);
-INSERT INTO public.system_users VALUES (1, 'admin', '$2a$04$.vd8nPeLwxt6hnSzmAoAyul8BOLX7Cib6QhcxRe30rfvrIPQHH1OG', '芋道源码', '管理员', 103, '[1,2]', '13aoteman@126.com', '18818260272', 1, '', 0, '', NULL, 'admin', '2021-01-05 17:03:47', NULL, '2026-07-17 00:52:52.922132', 0, 1);
 INSERT INTO public.system_users VALUES (103, 'yuanma', '$2a$04$fUBSmjKCPYAUmnMzOb6qE.eZCGPhHi1JmAKclODbfS/O7fHOl2bH6', '源码', NULL, 106, NULL, 'yuanma@iocoder.cn', '15601701300', 0, NULL, 0, '', NULL, '', '2021-01-13 23:50:35', '1', '2025-07-09 23:41:58', 0, 1);
 INSERT INTO public.system_users VALUES (104, 'test', '$2a$04$BrwaYn303hjA/6TnXqdGoOLhyHOAA0bVrAFu6.1dJKycqKUnIoRz2', '测试号', NULL, 107, '[1,2]', '111@qq.com', '15601691200', 1, NULL, 0, '', NULL, '', '2021-01-21 02:13:53', NULL, '2026-01-04 18:09:54', 0, 1);
 INSERT INTO public.system_users VALUES (112, 'newobject', '$2a$04$dB0z8Q819fJWz0hbaLe6B.VfHCjYgWx6LFfET5lyz3JwcqlyCkQ4C', '新对象', NULL, 100, '[]', '', '15601691235', 1, NULL, 0, '', NULL, '1', '2022-02-23 19:08:03', NULL, '2025-04-21 14:23:08', 0, 1);
@@ -9040,6 +9088,7 @@ INSERT INTO public.system_users VALUES (142, 'test01', '$2a$04$4bCYWZkjxxOC4QE0L
 INSERT INTO public.system_users VALUES (143, 'a00001', '$2a$04$GhVHFviOw/SsTmiQtifHJesDYFlHMeGK7OWh7aGCCjGGVCmbHVAwa', 'a00001', NULL, 104, NULL, '', '', 0, '', 0, '', NULL, NULL, '2025-12-01 16:10:13', '1', '2025-12-05 21:34:05', 0, 1);
 INSERT INTO public.system_users VALUES (144, 'aoteman001', '$2a$04$omQOmhz8OyUFBKw77nr8KOtMp6xdvoQ1gWStjk9r8.OYT3Bv6oEYe', 'aoteman001', NULL, 116, NULL, '', '', 0, '', 1, '', NULL, '1', '2025-12-01 17:05:27', '1', '2025-12-15 15:55:54', 0, 1);
 INSERT INTO public.system_users VALUES (110, 'admin110', '$2a$10$mRMIYLDtRHlf6.9ipiqH1.Z.bh/R9dO9d5iHiGYPigi6r5KOoR2Wm', '小王', NULL, NULL, NULL, '', '15601691300', 0, NULL, 0, '', NULL, '1', '2022-02-22 00:56:14', NULL, '2026-07-16 06:25:39.039366', 0, 121);
+INSERT INTO public.system_users VALUES (1, 'admin', '$2a$04$.vd8nPeLwxt6hnSzmAoAyul8BOLX7Cib6QhcxRe30rfvrIPQHH1OG', '芋道源码', '管理员', 103, '[1,2]', '13aoteman@126.com', '18818260272', 1, '', 0, '', NULL, 'admin', '2021-01-05 17:03:47', NULL, '2026-07-17 05:05:16.62041', 0, 1);
 INSERT INTO public.system_users VALUES (100, 'yudao', '$2a$04$h.aaPKgO.odHepnk5PCsWeEwKdojFWdTItxGKfx1r0e1CSeBzsTJ6', '芋道', '不要吓我', 104, '[1]', 'yudao@iocoder.cn', '15601691300', 1, NULL, 0, '', NULL, '', '2021-01-07 09:07:17', NULL, '2026-07-16 05:30:28.709765', 0, 1);
 INSERT INTO public.system_users VALUES (111, 'test', '$2a$10$mRMIYLDtRHlf6.9ipiqH1.Z.bh/R9dO9d5iHiGYPigi6r5KOoR2Wm', '测试用户', NULL, NULL, '[]', '', '', 0, NULL, 0, '', NULL, '110', '2022-02-23 13:14:33', NULL, '2026-07-16 06:12:57.86539', 0, 121);
 
@@ -9287,7 +9336,7 @@ INSERT INTO toonflow.settings VALUES ('switchAiDevTool', '0');
 -- Name: infra_api_access_log_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.infra_api_access_log_seq', 1, false);
+SELECT pg_catalog.setval('public.infra_api_access_log_seq', 28, true);
 
 
 --
@@ -9378,7 +9427,7 @@ SELECT pg_catalog.setval('public.system_dict_type_seq', 2139, true);
 -- Name: system_login_log_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_login_log_seq', 111, true);
+SELECT pg_catalog.setval('public.system_login_log_seq', 143, true);
 
 
 --
@@ -9406,7 +9455,7 @@ SELECT pg_catalog.setval('public.system_mail_template_seq', 16, true);
 -- Name: system_menu_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_menu_seq', 30133, true);
+SELECT pg_catalog.setval('public.system_menu_seq', 30241, true);
 
 
 --
@@ -9434,7 +9483,7 @@ SELECT pg_catalog.setval('public.system_notify_template_seq', 2, true);
 -- Name: system_oauth2_access_token_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_oauth2_access_token_seq', 150, true);
+SELECT pg_catalog.setval('public.system_oauth2_access_token_seq', 206, true);
 
 
 --
@@ -9462,14 +9511,14 @@ SELECT pg_catalog.setval('public.system_oauth2_code_seq', 1, true);
 -- Name: system_oauth2_refresh_token_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_oauth2_refresh_token_seq', 134, true);
+SELECT pg_catalog.setval('public.system_oauth2_refresh_token_seq', 190, true);
 
 
 --
 -- Name: system_operate_log_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_operate_log_seq', 36, true);
+SELECT pg_catalog.setval('public.system_operate_log_seq', 64, true);
 
 
 --
@@ -9483,7 +9532,7 @@ SELECT pg_catalog.setval('public.system_post_seq', 8, true);
 -- Name: system_role_menu_seq; Type: SEQUENCE SET; Schema: public; Owner: -
 --
 
-SELECT pg_catalog.setval('public.system_role_menu_seq', 330133, true);
+SELECT pg_catalog.setval('public.system_role_menu_seq', 330139, true);
 
 
 --
@@ -10601,6 +10650,13 @@ CREATE INDEX idx_system_login_log_02 ON public.system_login_log USING btree (cre
 
 
 --
+-- Name: idx_system_menu_active_menu; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_system_menu_active_menu ON public.system_menu USING btree (active_menu_id) WHERE ((deleted = 0) AND (active_menu_id IS NOT NULL));
+
+
+--
 -- Name: idx_system_menu_tree_active; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -11282,6 +11338,6 @@ ALTER TABLE ONLY toonflow.videos
 -- PostgreSQL database dump complete
 --
 
--- pg_dump clears search_path for restore safety. Restore the application
--- default because the gateway uses unqualified Yudao table names.
-SELECT pg_catalog.set_config('search_path', 'public', false);
+
+
+SET search_path TO public;

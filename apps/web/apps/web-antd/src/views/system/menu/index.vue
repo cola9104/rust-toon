@@ -75,7 +75,12 @@ const [Grid, gridApi] = useVbenVxeGrid({
     proxyConfig: {
       ajax: {
         query: async (_params) => {
-          return await getMenuList();
+          const menus = await getMenuList();
+          return menus.map((menu) => ({
+            ...menu,
+            // 隐藏页面按业务归属展示；真实 parentId 继续用于路由。
+            displayParentId: menu.activeMenuId ?? menu.parentId,
+          }));
         },
       },
     },
@@ -87,7 +92,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
       refresh: true,
     },
     treeConfig: {
-      parentField: 'parentId',
+      parentField: 'displayParentId',
       rowField: 'id',
       transform: true,
       reserve: true,

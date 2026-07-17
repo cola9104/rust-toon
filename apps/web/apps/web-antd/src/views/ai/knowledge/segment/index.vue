@@ -3,7 +3,7 @@ import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { AiKnowledgeSegmentApi } from '#/api/ai/knowledge/segment';
 
 import { onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { confirm, Page, useVbenModal } from '@vben/common-ui';
 import { DICT_TYPE } from '@vben/constants';
@@ -21,8 +21,10 @@ import { $t } from '#/locales';
 
 import { useGridColumns, useGridFormSchema } from './data';
 import Form from './modules/form.vue';
+import { ensureKnowledgeRouteContext } from '../route-context';
 
 const route = useRoute();
+const router = useRouter();
 
 const [FormModal, formModalApi] = useVbenModal({
   connectedComponent: Form,
@@ -109,7 +111,20 @@ const [Grid, gridApi] = useVbenVxeGrid({
 });
 
 /** 初始化 */
-onMounted(() => {
+onMounted(async () => {
+  const valid = await ensureKnowledgeRouteContext({
+    errorMessage: '请先选择文档，再查看知识库分段',
+    fallback: route.query.knowledgeId
+      ? {
+          name: 'AiKnowledgeDocument',
+          query: { knowledgeId: route.query.knowledgeId },
+        }
+      : undefined,
+    query: route.query,
+    required: ['documentId'],
+    router,
+  });
+  if (!valid) return;
   gridApi.formApi.setFieldValue('documentId', route.query.documentId);
 });
 </script>

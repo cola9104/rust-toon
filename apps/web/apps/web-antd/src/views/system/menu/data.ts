@@ -197,6 +197,29 @@ export function useFormSchema(): VbenFormSchema[] {
       },
     },
     {
+      fieldName: 'activeMenuId',
+      label: '业务归属菜单',
+      component: 'ApiSelect',
+      componentProps: {
+        allowClear: true,
+        api: async () => {
+          const data = await getMenuList();
+          return data.filter(
+            (menu) =>
+              menu.type === SystemMenuTypeEnum.MENU && menu.visible,
+          );
+        },
+        labelField: 'name',
+        valueField: 'id',
+        placeholder: '请选择进入页面时高亮的菜单',
+      },
+      help: '隐藏页面可归属到一个可见菜单，不改变真实路由父子关系',
+      dependencies: {
+        triggerFields: ['type'],
+        show: (values) => values.type === SystemMenuTypeEnum.MENU,
+      },
+    },
+    {
       fieldName: 'sort',
       label: '显示顺序',
       component: 'InputNumber',
@@ -336,6 +359,12 @@ export function useGridColumns(): VxeTableGridOptions<SystemMenuApi.Menu>['colum
       title: '显示状态',
       minWidth: 100,
       formatter: ({ cellValue }) => (cellValue ? '显示' : '隐藏'),
+    },
+    {
+      field: 'activeMenuName',
+      title: '业务归属',
+      minWidth: 140,
+      formatter: ({ cellValue }) => cellValue || '-',
     },
     {
       field: 'status',

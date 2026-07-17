@@ -212,6 +212,33 @@ fn validate_model(request: &SaveModel) -> Result<(), AppError> {
     }
     Ok(())
 }
+
+async fn resolve_api_key(
+    state: &AiState,
+    request: &SaveModel,
+    current_id: Option<i64>,
+) -> Result<String, AppError> {
+    if !request.api_key.trim().is_empty() {
+        return Ok(request.api_key.trim().to_string());
+    }
+    if AiPlatform::parse(&request.platform) == Some(AiPlatform::Ollama) {
+        return Ok(String::new());
+    }
+    let api_key: Option<String> = sqlx::query_scalar(
+        "SELECT api_key FROM ai.model_configs
+         WHERE platform=$1 AND api_key<>''
+           AND ($2='' OR url=$2)
+         ORDER BY CASE WHEN id=$3 THEN 0 ELSE 1 END, update_time DESC
+         LIMIT 1",
+    )
+    .bind(&request.platform)
+    .bind(request.url.trim())
+    .bind(current_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to resolve AI model credential"))?;
+    api_key.ok_or_else(|| AppError::bad_request("API 密钥不能为空；当前平台没有可复用的已保存密钥"))
+}
 async fn create(
     user: CurrentUser,
     State(state): State<AiState>,
@@ -219,8 +246,9 @@ async fn create(
 ) -> Result<Json<ApiResponse<i64>>, AppError> {
     require(&user, "ai:model:create")?;
     validate_model(&request)?;
+    let api_key = resolve_api_key(&state, &request, None).await?;
     let id = chrono::Utc::now().timestamp_millis();
-    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,api_key,url,status,config,create_time,update_time)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)").bind(id).bind(request.name).bind(request.key).bind(request.platform).bind(request.type_).bind(request.model).bind(request.api_key).bind(request.url).bind(request.status).bind(request.config).bind(id).execute(&state.pool).await.map_err(|error|if error.to_string().contains("unique"){AppError::bad_request("model key already exists")}else{AppError::internal("failed to create AI model")})?;
+    sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,api_key,url,status,config,create_time,update_time)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$11)").bind(id).bind(request.name).bind(request.key).bind(request.platform).bind(request.type_).bind(request.model).bind(api_key).bind(request.url).bind(request.status).bind(request.config).bind(id).execute(&state.pool).await.map_err(|error|if error.to_string().contains("unique"){AppError::bad_request("model key already exists")}else{AppError::internal("failed to create AI model")})?;
     Ok(Json(ApiResponse::new(id)))
 }
 async fn update(
@@ -233,7 +261,8 @@ async fn update(
     let id = request
         .id
         .ok_or_else(|| AppError::bad_request("id is required"))?;
-    let result=sqlx::query("UPDATE ai.model_configs SET name=$2,key=$3,platform=$4,type=$5,model=$6,api_key=$7,url=$8,status=$9,config=$10,update_time=$11 WHERE id=$1").bind(id).bind(request.name).bind(request.key).bind(request.platform).bind(request.type_).bind(request.model).bind(request.api_key).bind(request.url).bind(request.status).bind(request.config).bind(chrono::Utc::now().timestamp_millis()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to update AI model"))?;
+    let api_key = resolve_api_key(&state, &request, Some(id)).await?;
+    let result=sqlx::query("UPDATE ai.model_configs SET name=$2,key=$3,platform=$4,type=$5,model=$6,api_key=$7,url=$8,status=$9,config=$10,update_time=$11 WHERE id=$1").bind(id).bind(request.name).bind(request.key).bind(request.platform).bind(request.type_).bind(request.model).bind(api_key).bind(request.url).bind(request.status).bind(request.config).bind(chrono::Utc::now().timestamp_millis()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to update AI model"))?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("AI model not found"));
     }
@@ -568,8 +597,11 @@ mod tests {
         assert_eq!(discovered_model_type("qwen3-rerank"), "rerank");
         assert_eq!(discovered_model_type("qwen3-vl-rerank"), "rerank");
         assert_eq!(discovered_model_type("text-embedding-v4"), "embedding");
-        assert_eq!(discovered_model_type("doubao-seedance-2-0-260128"), "video");
-        assert_eq!(discovered_model_type("doubao-seedream-5-0-260128"), "image");
+        assert_eq!(
+            discovered_model_type("doubao-seedance-1-5-pro-251215"),
+            "video"
+        );
+        assert_eq!(discovered_model_type("doubao-seedream-4-5-251128"), "image");
         assert_eq!(discovered_model_type("qwen-max"), "chat");
     }
 }

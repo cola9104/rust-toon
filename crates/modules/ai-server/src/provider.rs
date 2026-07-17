@@ -226,9 +226,10 @@ impl OpenAiCompatibleProvider {
             .get("imageGeneratePath")
             .and_then(Value::as_str)
             .unwrap_or("/images/generations");
+        let size = doubao::normalize_seedream_size(&config.model, &request.size);
         let response = self
             .request(config, path)
-            .json(&json!({"model":config.model,"prompt":request.prompt,"size":request.size,"n":1}))
+            .json(&json!({"model":config.model,"prompt":request.prompt,"size":size,"n":1}))
             .send()
             .await
             .map_err(|error| error.to_string())?;

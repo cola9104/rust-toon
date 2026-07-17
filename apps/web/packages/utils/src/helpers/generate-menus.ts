@@ -97,6 +97,34 @@ function generateMenus(
 }
 
 /**
+ * 预先计算服务端菜单的完整路由，供隐藏页面根据 activeMenuId 解析
+ * meta.activePath。业务归属不参与路由嵌套。
+ */
+function buildServerMenuPathMap(
+  menuList: AppRouteRecordRaw[],
+  parent = '',
+  paths = new Map<number, string>(),
+): Map<number, string> {
+  for (const menu of menuList) {
+    let path = menu.path;
+    if (!isHttpUrl(path)) {
+      if (parent && !path.startsWith('/')) {
+        path = `${parent}/${path}`;
+      }
+      if (!path.startsWith('/')) {
+        path = `/${path}`;
+      }
+      path = path.replace(/\/{2,}/g, '/');
+    }
+    paths.set(Number(menu.id), path);
+    if (menu.children && menu.children.length > 0) {
+      buildServerMenuPathMap(menu.children, path, paths);
+    }
+  }
+  return paths;
+}
+
+/**
  * 转换后端菜单数据为路由数据
  * @param menuList 后端菜单数据
  * @param parent 父级菜单
@@ -107,7 +135,10 @@ function convertServerMenuToRouteRecordStringComponent(
   menuList: AppRouteRecordRaw[],
   parent = '',
   nameSet: Set<string> = new Set(),
+  serverMenuPaths?: Map<number, string>,
 ): RouteRecordStringComponent[] {
+  const menuPaths =
+    serverMenuPaths ?? buildServerMenuPathMap(menuList, parent);
   const menus: RouteRecordStringComponent[] = [];
   menuList.forEach((menu) => {
     // 处理外链菜单（顶级或子级）
@@ -192,6 +223,9 @@ function convertServerMenuToRouteRecordStringComponent(
     const buildMenu: RouteRecordStringComponent = {
       component: menu.component,
       meta: {
+        activePath: menu.activeMenuId
+          ? menuPaths.get(menu.activeMenuId)
+          : undefined,
         hideInMenu: !menu.visible,
         icon: menu.icon,
         keepAlive: menu.keepAlive,
@@ -208,6 +242,7 @@ function convertServerMenuToRouteRecordStringComponent(
         menu.children,
         menu.path,
         nameSet,
+        menuPaths,
       );
     }
 

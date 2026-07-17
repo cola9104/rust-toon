@@ -3,6 +3,25 @@ use serde_json::{Map, Value, json};
 
 pub struct DouBaoMediaProvider;
 
+const SEEDREAM_MIN_PIXELS: u64 = 3_686_400;
+
+pub(super) fn normalize_seedream_size(model: &str, size: &str) -> String {
+    if !model.to_ascii_lowercase().contains("seedream") {
+        return size.to_string();
+    }
+    let Some((width, height)) = size.split_once('x').and_then(|(width, height)| {
+        Some((width.parse::<u64>().ok()?, height.parse::<u64>().ok()?))
+    }) else {
+        return size.to_string();
+    };
+    if width == 0 || height == 0 || width.saturating_mul(height) >= SEEDREAM_MIN_PIXELS {
+        return size.to_string();
+    }
+    let scale = (SEEDREAM_MIN_PIXELS as f64 / (width * height) as f64).sqrt();
+    let align = |value: u64| (((value as f64 * scale).ceil() as u64).div_ceil(32)) * 32;
+    format!("{}x{}", align(width), align(height))
+}
+
 impl DouBaoMediaProvider {
     fn client(&self, config: &ModelConfig) -> reqwest::Client {
         let _ = config;
@@ -156,7 +175,7 @@ impl DouBaoMediaProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::DouBaoMediaProvider;
+    use super::{DouBaoMediaProvider, normalize_seedream_size};
     use rust_toon_ai_api::ModelConfig;
     use serde_json::json;
 
@@ -173,6 +192,19 @@ mod tests {
             status: 1,
             config: json!({}),
         }
+    }
+
+    #[test]
+    fn raises_small_seedream_sizes_to_the_provider_minimum() {
+        assert_eq!(
+            normalize_seedream_size("doubao-seedream-4-5-251128", "512x512"),
+            "1920x1920"
+        );
+        assert_eq!(
+            normalize_seedream_size("doubao-seedream-4-5-251128", "512x288"),
+            "2560x1440"
+        );
+        assert_eq!(normalize_seedream_size("dall-e-3", "512x512"), "512x512");
     }
 
     #[test]

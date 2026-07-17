@@ -7,6 +7,7 @@ use rust_toon_framework_web::{AppError, WebConfig, apply_web_layers};
 use serde::Serialize;
 use tracing::warn;
 
+mod audit;
 mod openapi;
 
 const SERVICE_NAME: &str = "gateway";
@@ -33,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     let infra_state = rust_toon_infra_server::InfraState::new(database.clone());
     let ai_state = rust_toon_ai_server::AiState::new(database.clone(), tokens.clone());
     let toon_state = rust_toon_toon_server::ToonState::new(database.clone(), tokens.clone());
-    let media_state = rust_toon_media_server::MediaState::new(database, tokens);
+    let media_state = rust_toon_media_server::MediaState::new(database.clone(), tokens);
     system_state.bootstrap().await?;
     let database_auth = system_state.database_auth_state();
 
@@ -47,6 +48,10 @@ async fn main() -> anyhow::Result<()> {
         .merge(rust_toon_media_server::routes(media_state))
         .merge(health_route(SERVICE_NAME))
         .fallback(not_found)
+        .layer(from_fn_with_state(
+            audit::AuditState::new(database),
+            audit::record,
+        ))
         .layer(from_fn_with_state(
             database_auth,
             rust_toon_system_server::authenticate_from_database,

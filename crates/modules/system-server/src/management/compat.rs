@@ -1440,8 +1440,8 @@ async fn core_create(
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     let id = match kind {
         "menu" => sqlx::query_scalar::<_, i64>(
-            "INSERT INTO system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, status, visible, keep_alive, always_show)
-             VALUES (nextval('system_menu_seq'),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id",
+            "INSERT INTO system_menu (id, name, permission, type, sort, parent_id, path, icon, component, component_name, active_menu_id, status, visible, keep_alive, always_show)
+             VALUES (nextval('system_menu_seq'),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id",
         )
         .bind(str_field(&payload, "name"))
         .bind(str_field_default(&payload, "permission", ""))
@@ -1452,6 +1452,7 @@ async fn core_create(
         .bind(str_field_default(&payload, "icon", "#"))
         .bind(opt_str_field(&payload, "component"))
         .bind(opt_str_field(&payload, "componentName"))
+        .bind(opt_i64_field(&payload, "activeMenuId"))
         .bind(i16_field(&payload, "status", 0))
         .bind(bool_field(&payload, "visible", true))
         .bind(bool_field(&payload, "keepAlive", true))
@@ -1543,7 +1544,7 @@ async fn core_update(
     let id = parse_i64_value(&payload["id"])?;
     let result = match kind {
         "menu" => sqlx::query(
-            "UPDATE system_menu SET name=$2, permission=$3, type=$4, sort=$5, parent_id=$6, path=$7, icon=$8, component=$9, component_name=$10, status=$11, visible=$12, keep_alive=$13, always_show=$14, update_time=now() WHERE id=$1 AND deleted=0",
+            "UPDATE system_menu SET name=$2, permission=$3, type=$4, sort=$5, parent_id=$6, path=$7, icon=$8, component=$9, component_name=$10, active_menu_id=$11, status=$12, visible=$13, keep_alive=$14, always_show=$15, update_time=now() WHERE id=$1 AND deleted=0",
         )
         .bind(id)
         .bind(str_field(&payload, "name"))
@@ -1555,6 +1556,7 @@ async fn core_update(
         .bind(str_field_default(&payload, "icon", "#"))
         .bind(opt_str_field(&payload, "component"))
         .bind(opt_str_field(&payload, "componentName"))
+        .bind(opt_i64_field(&payload, "activeMenuId"))
         .bind(i16_field(&payload, "status", 0))
         .bind(bool_field(&payload, "visible", true))
         .bind(bool_field(&payload, "keepAlive", true))
@@ -1628,7 +1630,7 @@ fn core_select_sql(kind: &str, paged: bool) -> Result<String, AppError> {
     let suffix = if paged { " LIMIT $1 OFFSET $2" } else { "" };
     let sql = match kind {
         "menu" => format!(
-            "SELECT jsonb_build_object('id', id, 'name', name, 'permission', permission, 'type', type, 'sort', sort, 'parentId', parent_id, 'path', path, 'icon', icon, 'component', component, 'componentName', component_name, 'status', status, 'visible', visible, 'keepAlive', keep_alive, 'alwaysShow', always_show, 'createTime', create_time) FROM system_menu WHERE deleted=0 ORDER BY sort, id{suffix}"
+            "SELECT jsonb_build_object('id', menu.id, 'name', menu.name, 'permission', menu.permission, 'type', menu.type, 'sort', menu.sort, 'parentId', menu.parent_id, 'path', menu.path, 'icon', menu.icon, 'component', menu.component, 'componentName', menu.component_name, 'activeMenuId', menu.active_menu_id, 'activeMenuName', active.name, 'status', menu.status, 'visible', menu.visible, 'keepAlive', menu.keep_alive, 'alwaysShow', menu.always_show, 'createTime', menu.create_time) FROM system_menu menu LEFT JOIN system_menu active ON active.id=menu.active_menu_id AND active.deleted=0 WHERE menu.deleted=0 ORDER BY menu.sort, menu.id{suffix}"
         ),
         "dept" => format!(
             "SELECT jsonb_build_object('id', id, 'name', name, 'parentId', parent_id, 'sort', sort, 'leaderUserId', leader_user_id, 'phone', phone, 'email', email, 'status', status, 'createTime', create_time) FROM system_dept WHERE deleted=0 ORDER BY sort, id{suffix}"
@@ -1656,7 +1658,7 @@ fn core_select_sql(kind: &str, paged: bool) -> Result<String, AppError> {
 fn core_get_sql(kind: &str) -> Result<&'static str, AppError> {
     Ok(match kind {
         "menu" => {
-            "SELECT jsonb_build_object('id', id, 'name', name, 'permission', permission, 'type', type, 'sort', sort, 'parentId', parent_id, 'path', path, 'icon', icon, 'component', component, 'componentName', component_name, 'status', status, 'visible', visible, 'keepAlive', keep_alive, 'alwaysShow', always_show, 'createTime', create_time) FROM system_menu WHERE id=$1 AND deleted=0"
+            "SELECT jsonb_build_object('id', menu.id, 'name', menu.name, 'permission', menu.permission, 'type', menu.type, 'sort', menu.sort, 'parentId', menu.parent_id, 'path', menu.path, 'icon', menu.icon, 'component', menu.component, 'componentName', menu.component_name, 'activeMenuId', menu.active_menu_id, 'activeMenuName', active.name, 'status', menu.status, 'visible', menu.visible, 'keepAlive', menu.keep_alive, 'alwaysShow', menu.always_show, 'createTime', menu.create_time) FROM system_menu menu LEFT JOIN system_menu active ON active.id=menu.active_menu_id AND active.deleted=0 WHERE menu.id=$1 AND menu.deleted=0"
         }
         "dept" => {
             "SELECT jsonb_build_object('id', id, 'name', name, 'parentId', parent_id, 'sort', sort, 'leaderUserId', leader_user_id, 'phone', phone, 'email', email, 'status', status, 'createTime', create_time) FROM system_dept WHERE id=$1 AND deleted=0"

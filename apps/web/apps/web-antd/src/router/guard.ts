@@ -58,7 +58,7 @@ function setupAccessGuard(router: Router) {
     // 基本路由，这些路由不需要进入权限拦截
     if (coreRouteNames.includes(to.name as string)) {
       if (to.path === LOGIN_PATH && accessStore.accessToken) {
-        return decodeURIComponent(
+        return decodeRedirectPath(
           (to.query?.redirect as string) ||
             userStore.userInfo?.homePath ||
             preferences.app.defaultHomePath,
@@ -82,7 +82,7 @@ function setupAccessGuard(router: Router) {
           query:
             to.fullPath === preferences.app.defaultHomePath
               ? {}
-              : { redirect: encodeURIComponent(to.fullPath) },
+              : { redirect: to.fullPath },
           // 携带当前跳转的页面，登录后重新跳转该页面
           replace: true,
         };
@@ -136,10 +136,28 @@ function setupAccessGuard(router: Router) {
         : to.fullPath)) as string;
 
     return {
-      ...router.resolve(decodeURIComponent(redirectPath)),
+      ...router.resolve(decodeRedirectPath(redirectPath)),
       replace: true,
     };
   });
+}
+
+/**
+ * Vue Router already encodes query values. Decode legacy redirects at most
+ * twice so URLs stored by the previous double-encoding behavior still work.
+ */
+function decodeRedirectPath(path: string): string {
+  let decoded = path;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded;
 }
 
 /**

@@ -12,6 +12,7 @@ interface AppRouteRecordRaw extends Omit<RouteRecordRaw, 'meta'> {
   fullPath?: string;
   icon?: string;
   id?: any;
+  activeMenuId?: number;
   keepAlive?: boolean;
   meta: RouteMeta;
   name: string;

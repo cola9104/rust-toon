@@ -1,4 +1,4 @@
-use std::{collections::HashMap, env, io::Write};
+use std::{collections::HashMap, env, io::Write, time::Instant};
 
 use axum::{
     Json, Router,
@@ -18,15 +18,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 mod excel;
+mod monitor;
 
 #[derive(Clone)]
 pub struct InfraState {
     pool: PgPool,
+    started_at: Instant,
 }
 
 impl InfraState {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            started_at: Instant::now(),
+        }
     }
 }
 
@@ -113,6 +118,9 @@ pub fn routes(state: InfraState) -> Router {
             get(excel::api_error_log_export),
         )
         .route("/infra/redis/get-monitor-info", get(redis_monitor_info))
+        .route("/infra/monitor/postgresql", get(monitor::postgresql))
+        .route("/infra/monitor/rust", get(monitor::rust_service))
+        .route("/infra/monitor/traces", get(monitor::traces))
         .route("/infra/codegen/table/list", get(codegen_table_list))
         .route("/infra/codegen/table/page", get(codegen_table_page))
         .route("/infra/codegen/detail", get(codegen_detail))

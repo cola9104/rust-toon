@@ -17,6 +17,8 @@ import {
 import { getKnowledge } from '#/api/ai/knowledge/knowledge';
 import { searchKnowledgeSegment } from '#/api/ai/knowledge/segment';
 
+import { ensureKnowledgeRouteContext } from '../../route-context';
+
 /** 知识库文档召回测试 */
 defineOptions({ name: 'KnowledgeDocumentRetrieval' });
 
@@ -73,13 +75,14 @@ async function getKnowledgeInfo(id: number) {
 }
 
 /** 初始化 */
-onMounted(() => {
-  // 如果知识库 ID 不存在，显示错误提示并关闭页面
-  if (!route.query.id) {
-    message.error('知识库 ID 不存在，无法进行召回测试');
-    router.back();
-    return;
-  }
+onMounted(async () => {
+  const valid = await ensureKnowledgeRouteContext({
+    errorMessage: '请先选择知识库，再进行召回测试',
+    query: route.query,
+    required: ['id'],
+    router,
+  });
+  if (!valid) return;
   queryParams.id = route.query.id as any;
 
   // 获取知识库信息并设置默认值

@@ -2066,6 +2066,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "rust-toon-ai-server",
  "rust-toon-framework-common",
  "rust-toon-framework-database",
@@ -2078,6 +2079,7 @@ dependencies = [
  "rust-toon-toon-server",
  "serde",
  "serde_json",
+ "sqlx",
  "tokio",
  "tracing",
 ]

@@ -16,6 +16,8 @@ import { Card } from 'ant-design-vue';
 
 import { getKnowledgeDocument } from '#/api/ai/knowledge/document';
 
+import { ensureKnowledgeRouteContext } from '../../route-context';
+
 import ProcessStep from './modules/process-step.vue';
 import SplitStep from './modules/split-step.vue';
 import UploadStep from './modules/upload-step.vue';
@@ -123,6 +125,20 @@ defineExpose({
 
 /** 初始化 */
 onMounted(async () => {
+  const required =
+    route.name === 'AiKnowledgeDocumentUpdate'
+      ? ['knowledgeId', 'id']
+      : ['knowledgeId'];
+  const valid = await ensureKnowledgeRouteContext({
+    errorMessage:
+      route.name === 'AiKnowledgeDocumentUpdate'
+        ? '缺少知识库或文档参数，无法修改文档'
+        : '请先选择知识库，再创建文档',
+    query: route.query,
+    required,
+    router,
+  });
+  if (!valid) return;
   await initData();
 });
 </script>

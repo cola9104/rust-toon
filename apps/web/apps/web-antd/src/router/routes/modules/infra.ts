@@ -130,29 +130,29 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
-        path: '/infra/server',
+        path: '/infra/rust',
         component: () => import('#/views/infra/server/index.vue'),
-        name: 'InfraServer',
+        name: 'InfraRustServer',
         meta: {
-          title: '服务监控',
+          title: 'Rust 监控',
           icon: 'lucide:server',
         },
       },
       {
-        path: '/infra/druid',
+        path: '/infra/postgresql',
         component: () => import('#/views/infra/druid/index.vue'),
-        name: 'InfraDruid',
+        name: 'InfraPostgreSql',
         meta: {
-          title: '数据监控',
+          title: 'PostgreSQL 监控',
           icon: 'lucide:database-backup',
         },
       },
       {
-        path: '/infra/skywalking',
+        path: '/infra/traces',
         component: () => import('#/views/infra/skywalking/index.vue'),
-        name: 'InfraSkywalking',
+        name: 'InfraRequestTraces',
         meta: {
-          title: '链路追踪',
+          title: '请求链路',
           icon: 'lucide:route',
         },
       },
