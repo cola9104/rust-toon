@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 55);
+    assert_eq!(applied, 58);
 
     for table in [
         "ai.model_configs",

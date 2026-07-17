@@ -4,6 +4,7 @@ mod projects;
 mod scenes;
 mod shared;
 mod toonflow;
+mod toonflow_agent_runtime;
 mod toonflow_agent_tools;
 mod toonflow_agents;
 mod toonflow_asset_ai;
@@ -17,6 +18,7 @@ mod toonflow_resources;
 mod toonflow_script_ai;
 mod toonflow_video;
 mod toonflow_video_export;
+mod toonflow_ws;
 
 use axum::{
     Json, Router,
@@ -564,10 +566,195 @@ pub fn routes(state: ToonState) -> Router {
             "/api/production/storyboard/removeFrame",
             post(toonflow::remove_storyboard),
         )
+        .route("/assets/getImage", post(toonflow_asset_ai::get_images))
+        .route("/cornerScape/pollingAudio", post(toonflow_audio::poll))
+        .route("/agents/chat", post(toonflow_agents::chat))
+        .route("/agents/start", post(toonflow_agents::start))
+        .route("/agents/runState", post(toonflow_agents::run_state))
+        .route("/agents/stop", post(toonflow_agents::stop))
+        .route("/agents/events", post(toonflow_agents::events))
+        .route("/agents/retry", post(toonflow_agents::retry))
+        .route("/agents/memories", post(toonflow_agents::memories))
+        .route("/agents/runs", post(toonflow_agents::runs))
+        .route("/agents/clearMemory", post(toonflow_agents::clear))
+        .route("/project/getProject", post(toonflow::list_projects))
+        .route("/project/addProject", post(toonflow::create_project))
+        .route("/project/editProject", post(toonflow::update_project))
+        .route("/project/delProject", post(toonflow::delete_project))
+        .route("/novel/addNovel", post(toonflow::add_novel))
+        .route("/novel/getNovel", post(toonflow::list_novel))
+        .route("/novel/getNovelData", post(toonflow::all_novel))
+        .route("/novel/updateNovel", post(toonflow::update_novel))
+        .route("/novel/delNovel", post(toonflow::delete_novel))
+        .route("/script/addScript", post(toonflow::add_script))
+        .route("/script/getScrptApi", post(toonflow::list_scripts))
+        .route("/script/updateScript", post(toonflow::update_script))
+        .route("/script/delScript", post(toonflow::delete_scripts))
+        .route("/assets/getAssetsApi", post(toonflow::list_assets))
+        .route("/assets/saveAssets", post(toonflow::save_asset))
+        .route("/assets/addAssets", post(toonflow::save_asset))
+        .route("/assets/updateAssets", post(toonflow::save_asset))
+        .route("/assets/batchDelete", post(toonflow::delete_assets))
+        .route("/production/getFlowData", post(toonflow::get_flow_data))
+        .route("/agents/tools/execute", post(toonflow_agent_tools::execute))
+        .route(
+            "/assets/getMaterialData",
+            post(toonflow_materials::list_materials),
+        )
+        .route(
+            "/assetsGenerate/generateAssets",
+            post(toonflow_asset_ai::generate_image),
+        )
+        .route(
+            "/assetsGenerate/cancelGenerate",
+            post(toonflow_asset_ai::cancel_image),
+        )
+        .route(
+            "/assetsGenerate/polishAssetsPrompt",
+            post(toonflow_asset_ai::polish),
+        )
+        .route(
+            "/cornerScape/getAllAssets",
+            post(toonflow_audio::all_assets),
+        )
+        .route(
+            "/cornerScape/updateAssetsAudio",
+            post(toonflow_audio::update_binding),
+        )
+        .route(
+            "/cornerScape/batchBindAudio",
+            post(toonflow_audio::batch_bind),
+        )
+        .route(
+            "/cornerScape/generateDubbing",
+            post(toonflow_audio::generate_dubbing),
+        )
+        .route(
+            "/production/editImage/generateFlowImage",
+            post(toonflow_image_workflow::generate_flow_image),
+        )
+        .route(
+            "/production/editImage/getImageFlow",
+            post(toonflow_image_workflow::get_flow),
+        )
+        .route(
+            "/production/editImage/saveImageFlow",
+            post(toonflow_image_workflow::save_flow),
+        )
+        .route(
+            "/production/editImage/updateImageFlow",
+            post(toonflow_image_workflow::update_flow),
+        )
+        .route(
+            "/production/editImage/uploadImage",
+            post(toonflow_materials::upload_flow_image),
+        )
+        .route(
+            "/production/storyboard/batchGenerateImage",
+            post(toonflow_image_workflow::generate_storyboards),
+        )
+        .route(
+            "/production/storyboard/previewImage",
+            post(toonflow_image_workflow::preview_storyboards),
+        )
+        .route(
+            "/production/workbench/addTrack",
+            post(toonflow_video::add_track),
+        )
+        .route(
+            "/production/workbench/deleteTrack",
+            post(toonflow_video::delete_track),
+        )
+        .route(
+            "/production/workbench/getVideoList",
+            post(toonflow_video::video_list),
+        )
+        .route(
+            "/production/workbench/updateVideoPrompt",
+            post(toonflow_video::update_prompt),
+        )
+        .route(
+            "/production/workbench/updateVideoDuration",
+            post(toonflow_video::update_duration),
+        )
+        .route(
+            "/production/workbench/selectVideo",
+            post(toonflow_video::select_video),
+        )
+        .route(
+            "/production/workbench/delVideo",
+            post(toonflow_video::delete_video),
+        )
+        .route(
+            "/production/workbench/getGenerateData",
+            post(toonflow_video::generate_data),
+        )
+        .route(
+            "/production/workbench/getFileUrl",
+            post(toonflow_video::file_urls),
+        )
+        .route(
+            "/production/workbench/exportVideo",
+            post(toonflow_video_export::export),
+        )
+        .route(
+            "/production/workbench/generateVideo",
+            post(toonflow_video::generate_video),
+        )
+        .route(
+            "/production/workbench/generateVideoPrompt",
+            post(toonflow_video::generate_prompt),
+        )
+        .route(
+            "/production/workbench/checkVideoPrompt",
+            post(toonflow_video::check_prompts),
+        )
+        .route(
+            "/production/workbench/batchGeneratePrompt",
+            post(toonflow_video::batch_prompts),
+        )
+        .route(
+            "/production/workbench/batchGenerateVideo",
+            post(toonflow_video::batch_videos),
+        )
+        .route(
+            "/production/workbench/reorderTracks",
+            post(toonflow_video::reorder_tracks),
+        )
+        .route(
+            "/production/workbench/bindStoryboards",
+            post(toonflow_video::bind_storyboards),
+        )
+        .route(
+            "/production/workbench/cancelVideo",
+            post(toonflow_video::cancel_video),
+        )
+        .route(
+            "/production/workbench/getAudioBindAssetsList",
+            post(toonflow_video::audio_bind_assets),
+        )
+        .route(
+            "/production/workbench/retryVideo",
+            post(toonflow_video::retry_video),
+        )
+        .route(
+            "/scriptAgent/getPlanData",
+            post(toonflow_agent_tools::get_plan),
+        )
+        .route(
+            "/scriptAgent/setPlanData",
+            post(toonflow_agent_tools::set_plan),
+        )
+        .route(
+            "/setting/skillManagement/getSkillContent",
+            post(toonflow_resources::skill_content),
+        )
         .route_layer(from_fn_with_state(state.tokens.clone(), authenticate));
 
     Router::new()
         .route("/toon/capabilities", get(capabilities))
+        .route("/api/socket/{agent}", get(toonflow_ws::ws_handler))
+        .route("/socket/{agent}", get(toonflow_ws::ws_handler))
         .merge(protected)
         .with_state(state)
 }

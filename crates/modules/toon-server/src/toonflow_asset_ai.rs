@@ -204,11 +204,28 @@ pub struct ImageItem {
     pub(crate) prompt: String,
     pub(crate) base64: Option<String>,
 }
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum ModelId {
+    Number(i64),
+    Text(String),
+}
+
+impl ModelId {
+    fn as_configured(&self) -> String {
+        match self {
+            Self::Number(id) => id.to_string(),
+            Self::Text(id) => id.clone(),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GenerateImageRequest {
     project_id: i64,
-    model: String,
+    model: ModelId,
     resolution: String,
     id: i64,
     #[serde(rename = "type")]
@@ -221,7 +238,7 @@ pub struct GenerateImageRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BatchImageRequest {
     project_id: i64,
-    model: String,
+    model: ModelId,
     resolution: String,
     concurrent_count: Option<usize>,
     items: Vec<ImageItem>,
@@ -362,6 +379,7 @@ pub async fn generate_image(
     Json(req): Json<GenerateImageRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
+    let model = req.model.as_configured();
     let item = ImageItem {
         id: req.id,
         type_: req.type_,
@@ -369,11 +387,11 @@ pub async fn generate_image(
         prompt: req.prompt,
         base64: req.base64,
     };
-    let image_id = new_image(&state.pool, &item, &req.model, &req.resolution, 0).await?;
+    let image_id = new_image(&state.pool, &item, &model, &req.resolution, 0).await?;
     match make_image(
         &state.pool,
         req.project_id,
-        &req.model,
+        &model,
         &req.resolution,
         item.clone(),
         image_id,
@@ -393,17 +411,11 @@ pub async fn batch_generate_images(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     let total = req.items.len();
+    let model = req.model.as_configured();
     let mut queue = Vec::new();
     for (index, item) in req.items.into_iter().enumerate() {
         queue.push((
-            new_image(
-                &state.pool,
-                &item,
-                &req.model,
-                &req.resolution,
-                index as i64,
-            )
-            .await?,
+            new_image(&state.pool, &item, &model, &req.resolution, index as i64).await?,
             item,
         ));
     }
@@ -415,7 +427,7 @@ pub async fn batch_generate_images(
         for (image_id, item) in queue {
             let permit = sem.clone().acquire_owned().await;
             let pool = pool.clone();
-            let model = req.model.clone();
+            let model = model.clone();
             let resolution = req.resolution.clone();
             tokio::spawn(async move {
                 if permit.is_ok() {

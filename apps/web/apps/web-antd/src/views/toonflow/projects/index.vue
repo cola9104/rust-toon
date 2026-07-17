@@ -38,31 +38,43 @@ const projects = ref<ToonflowApi.Project[]>([]);
 const manuals = ref<ToonflowApi.CreativeManual[]>([]);
 const imageModels = ref<{ label: string; value: number }[]>([]);
 const videoModels = ref<{ label: string; value: number }[]>([]);
+const imageQualityOptions = [
+  { label: '1K（快速）', value: '1K' },
+  { label: '2K（推荐）', value: '2K' },
+  { label: '4K（高质量）', value: '4K' },
+];
+const videoModeOptions = [
+  { label: '文生视频', value: 'text' },
+  { label: '单图参考', value: 'singleImage' },
+  { label: '首尾帧（必须）', value: 'startEndRequired' },
+  { label: '首帧必填、尾帧可选', value: 'endFrameOptional' },
+  { label: '尾帧必填、首帧可选', value: 'startFrameOptional' },
+];
 const visualManualOptions = computed(() => manuals.value.filter((item) => item.kind === 'visual').map((item) => ({ label: item.name, value: item.path })));
 const directorManualOptions = computed(() => manuals.value.filter((item) => item.kind === 'director').map((item) => ({ label: item.name, value: item.path })));
 
 const form = reactive<ToonflowApi.SaveProject>({
   projectType: 'short_drama',
   imageModel: undefined,
-  imageQuality: 'standard',
+  imageQuality: '2K',
   videoModel: undefined,
   name: '',
   intro: '',
   type: '短剧',
   artStyle: '',
   directorManual: '',
-  mode: 'standard',
+  mode: 'text',
   videoRatio: '9:16',
 });
 
 const columns = [
   { title: '项目名称', dataIndex: 'name', key: 'name', width: 220 },
   { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
-  { title: '画风', dataIndex: 'artStyle', key: 'artStyle', width: 140 },
+  { title: '视觉手册', dataIndex: 'artStyle', key: 'artStyle', width: 140 },
   { title: '比例', dataIndex: 'videoRatio', key: 'videoRatio', width: 90 },
   { title: '图片模型', dataIndex: 'imageModel', key: 'imageModel', width: 160 },
   { title: '视频模型', dataIndex: 'videoModel', key: 'videoModel', width: 160 },
-  { title: '模式', dataIndex: 'mode', key: 'mode', width: 120 },
+  { title: '视频生成模式', dataIndex: 'mode', key: 'mode', width: 160 },
   { title: '操作', key: 'action', width: 220, fixed: 'right' as const },
 ];
 
@@ -71,14 +83,14 @@ function resetForm() {
     id: undefined,
     projectType: 'short_drama',
     imageModel: undefined,
-    imageQuality: 'standard',
+    imageQuality: '2K',
     videoModel: undefined,
     name: '',
     intro: '',
     type: '短剧',
     artStyle: '',
     directorManual: '',
-    mode: 'standard',
+    mode: 'text',
     videoRatio: '9:16',
   });
 }
@@ -100,8 +112,12 @@ async function loadModels() {
     getModelSimpleList(AiModelTypeEnum.IMAGE),
     getModelSimpleList(AiModelTypeEnum.VIDEO),
   ]);
-  imageModels.value = images.map((item) => ({ label: item.name, value: item.id }));
-  videoModels.value = videos.map((item) => ({ label: item.name, value: item.id }));
+  imageModels.value = images.map((item) => ({ label: item.model, value: item.id }));
+  videoModels.value = videos.map((item) => ({ label: item.model, value: item.id }));
+}
+
+function modelLabel(options: Array<{ label: string; value: number }>, id?: number) {
+  return options.find((option) => option.value === id)?.label || '未配置';
 }
 
 function openCreate() {
@@ -111,6 +127,12 @@ function openCreate() {
 
 function openEdit(project: any) {
   Object.assign(form, project);
+  if (!imageQualityOptions.some((option) => option.value === form.imageQuality)) {
+    form.imageQuality = '2K';
+  }
+  if (!videoModeOptions.some((option) => option.value === form.mode)) {
+    form.mode = 'text';
+  }
   modalOpen.value = true;
 }
 
@@ -141,8 +163,16 @@ async function handleDelete(project: any) {
   await loadProjects();
 }
 
-function openProject(project: any) {
-  router.push({ name: 'ToonflowProjectDetail', params: { id: project.id } });
+async function openProject(project: { id?: number }) {
+  if (!project.id) {
+    message.error('项目 ID 无效，无法进入');
+    return;
+  }
+  try {
+    await router.push(`/toonflow/projects/${project.id}`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '项目详情页打开失败');
+  }
 }
 
 onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
@@ -163,17 +193,23 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
         :columns="columns"
         :data-source="projects"
         :loading="loading"
-        :pagination="{ pageSize: 10 }"
+        :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 个项目` }"
         row-key="id"
         size="middle"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'name'">
-            <div class="project-name">{{ record.name }}</div>
+            <Button class="project-name p-0" type="link" @click="openProject(record)">{{ record.name }}</Button>
             <div class="project-intro">{{ record.intro || '未填写简介' }}</div>
           </template>
           <template v-if="column.key === 'mode'">
-            <Tag>{{ record.mode || 'standard' }}</Tag>
+            <Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag>
+          </template>
+          <template v-if="column.key === 'imageModel'">
+            {{ modelLabel(imageModels, record.imageModel) }}
+          </template>
+          <template v-if="column.key === 'videoModel'">
+            {{ modelLabel(videoModels, record.videoModel) }}
           </template>
           <template v-if="column.key === 'action'">
             <Space>
@@ -199,6 +235,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
       :confirm-loading="saving"
       :title="form.id ? '编辑项目' : '新建项目'"
       width="760px"
+      :body-style="{ maxHeight: '60vh', overflowY: 'auto' }"
       @ok="handleSave"
     >
       <Form :label-col="{ span: 5 }" :model="form" class="mt-4">
@@ -208,18 +245,14 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
         <Form.Item label="简介">
           <Input.TextArea v-model:value="form.intro" :rows="3" />
         </Form.Item>
-        <Form.Item label="类型">
-          <Select
-            v-model:value="form.type"
-            :options="[
-              { label: '短剧', value: '短剧' },
-              { label: '漫剧', value: '漫剧' },
-              { label: '动画', value: '动画' },
-            ]"
-          />
+        <Form.Item label="小说类型">
+          <Input v-model:value="form.type" placeholder="如：热血逆袭、甜宠、重生复仇、悬疑探案..." />
         </Form.Item>
-        <Form.Item label="画风">
+        <Form.Item label="视觉手册">
           <Select v-model:value="form.artStyle" allow-clear :options="visualManualOptions" placeholder="选择视觉手册" />
+        </Form.Item>
+        <Form.Item label="导演手册">
+          <Select v-model:value="form.directorManual" allow-clear :options="directorManualOptions" placeholder="选择导演手册" />
         </Form.Item>
         <Form.Item label="视频比例">
           <Select
@@ -237,11 +270,19 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
         <Form.Item label="视频模型">
           <Select v-model:value="form.videoModel" allow-clear :options="videoModels" placeholder="选择统一视频模型" />
         </Form.Item>
-        <Form.Item label="图片质量">
-          <Input v-model:value="form.imageQuality" />
+        <Form.Item label="视频生成模式">
+          <Select
+            v-model:value="form.mode"
+            :options="videoModeOptions"
+            placeholder="选择视频生成方式"
+          />
         </Form.Item>
-        <Form.Item label="导演手册">
-          <Select v-model:value="form.directorManual" allow-clear :options="directorManualOptions" placeholder="选择导演手册" />
+        <Form.Item label="图片质量">
+          <Select
+            v-model:value="form.imageQuality"
+            :options="imageQualityOptions"
+            placeholder="选择图片分辨率"
+          />
         </Form.Item>
       </Form>
     </Modal>

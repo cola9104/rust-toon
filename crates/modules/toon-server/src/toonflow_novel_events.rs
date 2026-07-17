@@ -20,7 +20,7 @@ pub async fn generate(
     State(state): State<ToonState>,
     Json(req): Json<GenerateRequest>,
 ) -> Result<Json<ApiResponse<&'static str>>, AppError> {
-    require(&user, "toon:episode:update")?;
+    require(&user, "toon:project:update")?;
     if req.novel_ids.is_empty() {
         return Err(AppError::bad_request("没有对应章节"));
     }
@@ -61,13 +61,46 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     let Some((title, content)) = chapter else {
         return;
     };
-    let task_id = chrono::Utc::now().timestamp_millis() + id % 1000;
+    let task_id = chrono::Utc::now().timestamp_millis() * 1_000_000 + id % 1_000_000;
     let _=sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5) ON CONFLICT(id) DO NOTHING").bind(task_id).bind(project_id).bind(id.to_string()).bind(format!("提取事件：{title}")).bind(chrono::Utc::now().timestamp_millis()).execute(pool).await;
-    let system = "你是小说事件分析器。将章节拆成关键事件，只输出 JSON 数组，每项格式为 {\"name\":\"事件名称\",\"detail\":\"事件详情\"}，禁止输出 Markdown。";
+    // Try loading custom prompt from prompts table, fall back to built-in
+    let system = sqlx::query_scalar::<_,String>(
+        "SELECT data FROM toonflow.prompts WHERE type='eventExtraction' AND use_data=true ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or_else(|| r#"你是小说文本分析助手。用户每次提供一个章节的原文，你提取该章的结构化事件信息。
+
+## ⚠️ 输出约束（最高优先级，违反任何一条即为失败）
+1. 只输出纯 JSON 数组，第一个字符必须是 `[`
+2. 不输出任何引导语、解释、总结、Markdown、代码块标记
+3. 不输出表头行、分隔线、emoji
+
+## 输出格式
+[
+  {"name":"15字以内事件名","detail":"核心事件描述","characters":"涉及角色","mainline":"强/中/弱（理由）","density":"高/中/低","duration":"X秒","mood":"情绪标签"}
+]
+
+## 字段规范
+- name：动作+结果，15字以内，禁止笼统（如"主角经历了一些事"）
+- detail：30-60字，必须含：谁做了什么→什么结果→对主线的影响
+- characters：有实际戏份的角色名，顿号分隔
+- mainline：强/中/弱 + （3-8字理由）。强=直接推动主角弧线；中=补充世界观/人物关系/伏笔；弱=过渡/气氛
+- density：高/中/低。高密度+高情绪→45-60秒；中→35-45秒；低→25-35秒
+- duration：预估集长，格式为"X秒"，禁止用分钟
+- mood：从[冲突/情感/转折/高潮/悬疑/平铺/喜剧/爽感/压抑/期待/震撼/温馨]中选
+
+## 提取规则
+- 忠于原文，不推测不脑补，不加入原文未出现的情节
+- 多条平行事件线时，选对主角影响最大的，其余简要带过
+- 对话密集章节，关注对话推动了什么结果，而非复述对话内容
+- 每3000字提取3-5个事件，短章节至少2个"#.to_string());
     match ai_client::text(
         pool,
         "universalAi",
-        system,
+        &system,
         &format!("章节：{title}\n\n{content}"),
     )
     .await
@@ -95,8 +128,17 @@ async fn save_events(pool: &PgPool, novel_id: i64, raw: &str) -> Result<(), Stri
     let events: Vec<Value> =
         serde_json::from_str(cleaned).map_err(|e| format!("事件 JSON 解析失败: {e}"))?;
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // Delete old events for this novel (IDs are novel_id * 1000 + 0..999)
+    let id_start = novel_id * 1000;
+    let id_end = novel_id * 1000 + 999;
     sqlx::query("DELETE FROM toonflow.event_chapters WHERE novel_id=$1")
         .bind(novel_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM toonflow.events WHERE id BETWEEN $1 AND $2")
+        .bind(id_start)
+        .bind(id_end)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -106,7 +148,7 @@ async fn save_events(pool: &PgPool, novel_id: i64, raw: &str) -> Result<(), Stri
             .and_then(Value::as_str)
             .unwrap_or("未命名事件");
         let detail = event.get("detail").and_then(Value::as_str).unwrap_or("");
-        let event_id = chrono::Utc::now().timestamp_millis() + index as i64;
+        let event_id = novel_id * 1000 + index as i64;
         sqlx::query("INSERT INTO toonflow.events(id,name,detail,create_time) VALUES($1,$2,$3,$4)")
             .bind(event_id)
             .bind(name)
@@ -153,7 +195,7 @@ pub async fn states(
     State(state): State<ToonState>,
     Json(req): Json<StatesRequest>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
-    require(&user, "toon:episode:read")?;
+    require(&user, "toon:project:read")?;
     let rows=sqlx::query_as::<_,(i64,Option<String>,i32,Option<String>)>("SELECT id,event,event_state,error_reason FROM toonflow.novels WHERE id=ANY($1) AND event_state<>0").bind(req.ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list event states"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()

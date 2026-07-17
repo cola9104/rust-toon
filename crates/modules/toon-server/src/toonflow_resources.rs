@@ -98,7 +98,7 @@ pub async fn list_tasks(
     State(state): State<ToonState>,
 ) -> Result<Json<ApiResponse<Vec<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,t.related_objects,t.model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
+    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
         .fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to list tasks"))?;
     Ok(Json(ApiResponse::new(rows)))
 }
@@ -139,9 +139,14 @@ pub async fn query_tasks(
     let task_class = request.task_class.filter(|value| !value.is_empty());
     let task_state = request.state.filter(|value| !value.is_empty());
     let rows = sqlx::query_as::<_, Task>(
-        r#"SELECT t.id,t.project_id,p.name project_name,t.task_class,t.related_objects,
-                  t.model,t.description,t.state,t.start_time,t.reason
-           FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id
+        r#"SELECT t.id,t.project_id,p.name project_name,t.task_class,
+                  coalesce(n.chapter,t.related_objects) related_objects,
+                  coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason
+           FROM toonflow.tasks t
+           LEFT JOIN toonflow.projects p ON p.id=t.project_id
+           LEFT JOIN toonflow.agent_deployments d ON d.key=t.model
+           LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END)
+           LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects
            WHERE ($1::text IS NULL OR t.task_class=$1)
              AND ($2::text IS NULL OR t.state=$2)
              AND ($3::bigint IS NULL OR t.project_id=$3)
@@ -177,7 +182,7 @@ pub async fn task_details(
     Json(request): Json<TaskId>,
 ) -> Result<Json<ApiResponse<Option<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,t.related_objects,t.model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id WHERE t.id=$1")
+    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.id=$1")
         .bind(request.task_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to get task"))?;
     Ok(Json(ApiResponse::new(row)))
 }

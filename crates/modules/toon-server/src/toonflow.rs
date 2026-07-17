@@ -697,6 +697,7 @@ pub struct AssetRow {
     pub description: String,
     pub script_id: Option<i64>,
     pub image_id: Option<i64>,
+    pub image_file_path: Option<String>,
     pub parent_asset_id: Option<i64>,
     pub project_id: i64,
     pub flow_id: Option<i64>,
@@ -729,9 +730,14 @@ pub async fn list_assets(
 ) -> Result<Json<ApiResponse<Vec<AssetRow>>>, AppError> {
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, AssetRow>(
-        r#"SELECT id, name, prompt, remark, type as type_, description, script_id, image_id,
-                  parent_asset_id, project_id, flow_id, prompt_state, audio_bind_state, prompt_error_reason
-           FROM toonflow.assets WHERE project_id=$1 ORDER BY id DESC"#,
+        r#"SELECT a.id, a.name, a.prompt, a.remark, a.type as type_, a.description,
+                  a.script_id, a.image_id, i.file_path as image_file_path,
+                  a.parent_asset_id, a.project_id, a.flow_id, a.prompt_state,
+                  a.audio_bind_state, a.prompt_error_reason
+           FROM toonflow.assets a
+           LEFT JOIN toonflow.images i ON i.id = a.image_id
+           WHERE a.project_id=$1
+           ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)
     .fetch_all(&state.pool)
@@ -1175,6 +1181,7 @@ pub struct AgentDeployment {
     pub max_output_tokens: i32,
     pub disabled: bool,
     pub model_config_id: Option<i64>,
+    pub model_type: String,
 }
 
 pub async fn list_agent_deployments(
@@ -1184,8 +1191,8 @@ pub async fn list_agent_deployments(
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, AgentDeployment>(
         r#"SELECT d.id,d.key,d.description,d.name,
-                  d.temperature,d.max_output_tokens,d.disabled,d.model_config_id
-           FROM toonflow.agent_deployments d LEFT JOIN ai.model_configs m ON m.id=d.model_config_id ORDER BY d.id"#,
+                  d.temperature,d.max_output_tokens,d.disabled,d.model_config_id,d.model_type
+           FROM toonflow.agent_deployments d ORDER BY d.id"#,
     )
     .fetch_all(&state.pool)
     .await
@@ -1212,6 +1219,22 @@ pub async fn update_agent_deployment(
     let model_id = request
         .model_config_id
         .ok_or_else(|| AppError::bad_request("必须绑定统一 AI 模型"))?;
+    let valid_model: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+               SELECT 1
+               FROM toonflow.agent_deployments d
+               JOIN ai.model_configs m ON m.id=$2
+               WHERE d.id=$1 AND m.status=0 AND m.type=d.model_type
+           )"#,
+    )
+    .bind(request.id)
+    .bind(model_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate agent model"))?;
+    if !valid_model {
+        return Err(AppError::bad_request("模型未启用或类型与当前用途不匹配"));
+    }
     let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5 WHERE id=$1"#)
     .bind(request.id)
     .bind(request.temperature)

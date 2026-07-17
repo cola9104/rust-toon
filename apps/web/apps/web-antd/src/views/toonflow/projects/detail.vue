@@ -11,6 +11,7 @@ import {
   Card,
   Col,
   Form,
+  Image,
   Input,
   InputNumber,
   List,
@@ -24,6 +25,7 @@ import {
   Tabs,
   Tag,
   Typography,
+  Upload,
   message,
 } from 'ant-design-vue';
 
@@ -43,8 +45,6 @@ import {
   extractScriptAssets,
   getAssets,
   getAgentMemories,
-  getAgentRunState,
-  getAgentRunEvents,
   getScriptAgentPlan,
   getFlowData,
   getImageFlow,
@@ -68,9 +68,6 @@ import {
   retryTrackVideo,
   bindTrackStoryboards,
   cancelTrackVideo,
-  startAgent,
-  stopAgent,
-  retryAgent,
   saveAsset,
   saveFlowData,
   saveImageFlow,
@@ -84,6 +81,8 @@ import {
   uploadMaterial,
 } from '#/api/toonflow';
 import { router } from '#/router';
+import { parseNovelText } from './novel-import';
+import AgentChat from './AgentChat.vue';
 
 const route = useRoute();
 const projectId = computed(() => Number(route.params.id));
@@ -91,6 +90,18 @@ const projectId = computed(() => Number(route.params.id));
 const activeTab = ref('novel');
 const loading = ref(false);
 const project = ref<ToonflowApi.Project>();
+const imageQuality = computed(() =>
+  ['1K', '2K', '4K'].includes(project.value?.imageQuality ?? '')
+    ? project.value!.imageQuality
+    : '2K',
+);
+const videoMode = computed(() =>
+  ['text', 'singleImage', 'startEndRequired', 'endFrameOptional', 'startFrameOptional'].includes(
+    project.value?.mode ?? '',
+  )
+    ? project.value!.mode
+    : 'text',
+);
 const statistics = reactive<ToonflowApi.ProjectStatistics>({ roleCount: 0, scriptCount: 0, videoCount: 0, storyboardCount: 0 });
 const novels = ref<ToonflowApi.NovelChapter[]>([]);
 const scripts = ref<ToonflowApi.Script[]>([]);
@@ -118,16 +129,129 @@ const dubbingForm = reactive({ assetsId: 0, assetName: '', text: '', voice: 'all
 const videoTracks = ref<any[]>([]);
 const flowImageForm = reactive({ prompt: '', references: '' });
 const agentType = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
-const agentInput = ref('');
-const agentSending = ref(false);
-const activeAgentRunId = ref<number>();
-const agentRunState = ref('idle');
-const lastAgentRunId = ref<number>();
-const agentStreamText = ref('');
-const agentEventCursor = ref(0);
-const agentMemories = ref<ToonflowApi.AgentMemory[]>([]);
-const agentIsolationKey = computed(() => `${agentType.value}:${projectId.value}:${agentType.value === 'productionAgent' ? (selectedScriptId.value ?? 'none') : 'project'}`);
 const scriptPlan = reactive({ storySkeleton: '', adaptationStrategy: '' });
+
+// Agent workspace tabs - populated in real-time from sub-agent outputs
+const workspaceTabs = reactive<{ key: string; label: string; content: string }[]>([
+  { key: 'storySkeleton', label: '故事骨架', content: '' },
+  { key: 'adaptationStrategy', label: '改编策略', content: '' },
+  { key: 'script', label: '剧本', content: '' },
+]);
+const workspaceActiveTab = ref('storySkeleton');
+
+// Pipeline stages for process visualization
+type StageStatus = 'pending' | 'active' | 'completed' | 'review';
+const pipelineStages = reactive<{ key: string; label: string; status: StageStatus }[]>([
+  { key: 'init', label: '项目初始化', status: 'completed' },
+  { key: 'skeleton', label: '故事骨架', status: 'pending' },
+  { key: 'adaptation', label: '改编策略', status: 'pending' },
+  { key: 'script', label: '剧本编写', status: 'pending' },
+]);
+
+function updatePipelineStage(toolName: string, status: StageStatus) {
+  const stageMap: Record<string, string> = {
+    storySkeleton: 'skeleton',
+    run_sub_agent_storySkeleton: 'skeleton',
+    adaptationStrategy: 'adaptation',
+    run_sub_agent_adaptationStrategy: 'adaptation',
+    script: 'script',
+    run_sub_agent_script: 'script',
+    save_scripts: 'script',
+  };
+  const stageKey = stageMap[toolName];
+  if (!stageKey) return;
+  const idx = pipelineStages.findIndex((s) => s.key === stageKey);
+  if (idx >= 0) {
+    pipelineStages[idx].status = status;
+    // Mark previous stages as completed
+    for (let i = 0; i < idx; i++) {
+      if (pipelineStages[i].status === 'active') pipelineStages[i].status = 'completed';
+    }
+  }
+}
+
+function onAgentToolResult(payload: { toolName: string; result: any }) {
+  const { toolName, result } = payload;
+  // Extract workspace content from sub-agent results
+  let raw = typeof result === 'string' ? result : JSON.stringify(result);
+  // If result is a JSON wrapper like {"agent":"...","content":"..."}, extract content
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && parsed.content && typeof parsed.content === 'string') {
+      raw = parsed.content;
+    }
+  } catch { /* not JSON, use raw string */ }
+  let content = raw;
+
+  // Match tool name to workspace tab and pipeline stage
+  if (toolName.includes('storySkeleton') || toolName.includes('skeleton')) {
+    workspaceTabs[0].content = extractXmlContent(content, 'storySkeleton') || content;
+    workspaceActiveTab.value = 'adaptationStrategy';
+    updatePipelineStage(toolName, 'completed');
+  } else if (toolName.includes('adaptationStrategy') || toolName.includes('adaptation')) {
+    workspaceTabs[1].content = extractXmlContent(content, 'adaptationStrategy') || content;
+    workspaceActiveTab.value = 'script';
+    updatePipelineStage(toolName, 'completed');
+  } else if (toolName.includes('script') && !toolName.includes('get_script')) {
+    workspaceTabs[2].content = extractScriptItems(content);
+    workspaceActiveTab.value = 'script';
+    updatePipelineStage(toolName, 'completed');
+  } else if (toolName === 'save_scripts') {
+    workspaceActiveTab.value = 'script';
+    updatePipelineStage(toolName, 'completed');
+  } else if (toolName.includes('supervision') || toolName.includes('review')) {
+    // Supervision agent reviewing - mark current stage as review
+    const currentStage = pipelineStages.find((s) => s.status === 'completed');
+    if (currentStage) currentStage.status = 'review';
+  }
+}
+
+function extractXmlContent(text: string, tag: string): string | null {
+  const regex = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i');
+  const match = text.match(regex);
+  return match ? match[1].trim() : null;
+}
+
+function extractScriptItems(text: string): string {
+  const matches = text.matchAll(/<scriptItem\s+name="([^"]*)">([\s\S]*?)<\/scriptItem>/gi);
+  const items: string[] = [];
+  for (const m of matches) {
+    items.push(`### ${m[1]}\n\n${m[2].trim()}`);
+  }
+  return items.length > 0 ? items.join('\n\n---\n\n') : text;
+}
+
+function formatEventDisplay(eventJson: string): string {
+  if (!eventJson) return '';
+  try {
+    const arr = JSON.parse(eventJson);
+    if (!Array.isArray(arr)) return eventJson;
+    return arr.map((e: any, i: number) => `${i + 1}.${e.name}：${e.detail}`).join('；');
+  } catch {
+    return eventJson;
+  }
+}
+
+function renderMarkdown(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+}
+
+// Agent chat messages (WebSocket-driven)
+interface ChatContentBlock { type: string; id: string; data: any; status: string }
+interface ChatMessage { id: string; role: string; name?: string; status: string; datetime: string; content: ChatContentBlock[] }
+const chatMessages = ref<ChatMessage[]>([]);
+const agentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
 
 const novelForm = reactive({
   id: undefined as number | undefined,
@@ -175,21 +299,21 @@ const assetOptions = computed(() =>
 );
 
 const novelColumns = [
-  { title: '序号', dataIndex: 'index', width: 80 },
-  { title: '分卷', dataIndex: 'reel', width: 140 },
-  { title: '章节', dataIndex: 'chapter', width: 180 },
-  { title: '事件状态', dataIndex: 'eventState', width: 100 },
-  { title: '事件', dataIndex: 'event' },
-  { title: '操作', key: 'action', width: 150 },
+  { title: '序号', dataIndex: 'index', width: 60 },
+  { title: '分卷', dataIndex: 'reel', width: 100 },
+  { title: '章节', dataIndex: 'chapter', width: 140, ellipsis: true },
+  { title: '状态', dataIndex: 'eventState', width: 70 },
+  { title: '事件', dataIndex: 'event', width: 300, ellipsis: true },
+  { title: '操作', key: 'action', width: 140, fixed: 'right' as const },
 ];
 
 const storyboardColumns = [
-  { title: '顺序', dataIndex: 'index', width: 80 },
-  { title: '轨道', dataIndex: 'track', width: 100 },
-  { title: '时长', dataIndex: 'duration', width: 80 },
-  { title: '状态', dataIndex: 'state', width: 100 },
-  { title: '提示词', dataIndex: 'prompt' },
-  { title: '操作', key: 'action', width: 100 },
+  { title: '顺序', dataIndex: 'index', width: 60 },
+  { title: '轨道', dataIndex: 'track', width: 80 },
+  { title: '时长', dataIndex: 'duration', width: 70 },
+  { title: '状态', dataIndex: 'state', width: 90 },
+  { title: '提示词', dataIndex: 'prompt', ellipsis: true },
+  { title: '操作', key: 'action', width: 90 },
 ];
 
 async function loadProject() {
@@ -228,6 +352,7 @@ async function loadFlow() {
 }
 
 async function loadAll() {
+  if (!projectId.value || isNaN(projectId.value)) return;
   loading.value = true;
   try {
     await Promise.all([loadProject(), loadNovels(), loadScripts(), loadAssets()]);
@@ -252,23 +377,12 @@ function openNovel(chapter?: any) {
 
 async function saveNovel() {
   if (batchNovelText.value.trim()) {
-    const chapters = batchNovelText.value
-      .split(/\n(?=第.+章|Chapter\s+\d+)/i)
-      .map((text, index) => {
-        const lines = text.trim().split('\n');
-        return {
-          index: index + 1,
-          reel: '',
-          chapter: lines[0] || `第${index + 1}章`,
-          chapterData: lines.slice(1).join('\n') || text.trim(),
-        };
-      })
-      .filter((item) => item.chapterData.trim());
+    const chapters = parseNovelText(batchNovelText.value);
     if (chapters.length === 0) {
       message.warning('没有可导入的章节内容');
       return;
     }
-    await addNovel(projectId.value, chapters);
+    await importNovelChapters(chapters);
   } else if (novelForm.id) {
     await updateNovel({ ...novelForm, id: novelForm.id });
   } else {
@@ -276,6 +390,33 @@ async function saveNovel() {
   }
   novelModalOpen.value = false;
   await loadNovels();
+}
+
+async function importNovelChapters(chapters: ReturnType<typeof parseNovelText>) {
+  const batchSize = 20;
+  for (let start = 0; start < chapters.length; start += batchSize) {
+    await addNovel(projectId.value, chapters.slice(start, start + batchSize));
+  }
+}
+
+async function importNovelFile(file: File) {
+  try {
+    const buffer = await file.arrayBuffer();
+    let content = new TextDecoder('utf-8').decode(buffer);
+    if (content.includes('\uFFFD')) content = new TextDecoder('gb18030').decode(buffer);
+    const title = file.name.replace(/\.(?:md|txt)$/i, '');
+    const chapters = parseNovelText(content, title);
+    if (!chapters.length) {
+      message.warning('文件中没有可导入的正文');
+      return false;
+    }
+    await importNovelChapters(chapters);
+    message.success(`已从文件导入 ${chapters.length} 个章节`);
+    await loadNovels();
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '文件导入失败');
+  }
+  return false;
 }
 
 async function removeNovel(row: any) {
@@ -286,6 +427,17 @@ async function removeNovel(row: any) {
 async function extractNovelEvents(row: any) {
   await generateNovelEvents(projectId.value, [row.id]);
   message.success('事件提取任务已提交，可在任务中心查看进度');
+  window.setTimeout(loadNovels, 2000);
+}
+
+async function extractAllNovelEvents() {
+  const ids = novels.value.filter((chapter) => chapter.eventState !== 1).map((chapter) => chapter.id);
+  if (!ids.length) {
+    message.info('没有待提取事件的章节');
+    return;
+  }
+  await generateNovelEvents(projectId.value, ids);
+  message.success(`已提交 ${ids.length} 个章节的事件提取任务`);
   window.setTimeout(loadNovels, 2000);
 }
 
@@ -395,7 +547,7 @@ async function polishAsset(asset: any) {
 
 async function generateAssetPicture(asset: any) {
   if (!project.value?.imageModel) return message.warning('请先在项目配置中选择图片模型');
-  await generateAssetImage({ projectId: projectId.value, model: project.value.imageModel, resolution: project.value.imageQuality || '1024x1024', id: asset.id, type: asset.type, name: asset.name, prompt: asset.prompt || asset.description || '' });
+  await generateAssetImage({ projectId: projectId.value, model: String(project.value.imageModel), resolution: imageQuality.value, id: asset.id, type: asset.type, name: asset.name, prompt: asset.prompt || asset.description || '' });
   message.success('资产图片已生成');
   await loadAssets();
 }
@@ -431,87 +583,26 @@ async function createDubbing() {
 }
 
 async function loadAgentMemory() {
-  agentMemories.value = await getAgentMemories(agentType.value, agentIsolationKey.value);
-  if (agentType.value === 'scriptAgent') {
-    const plan = await getScriptAgentPlan(projectId.value);
-    Object.assign(scriptPlan, plan.data);
-  }
+  // No-op: backend sends history via WebSocket on connect
 }
 
-async function sendAgentMessage() {
-  const content = agentInput.value.trim();
-  if (!content) return;
-  agentSending.value = true;
+async function resetAgentWorkspace() {
+  // Clear chat messages
+  chatMessages.value = [];
+  // Reset workspace tabs
+  workspaceTabs.forEach((t) => (t.content = ''));
+  workspaceActiveTab.value = 'storySkeleton';
+  // Reset pipeline stages
+  pipelineStages.forEach((s) => (s.status = s.key === 'init' ? 'completed' : 'pending'));
+  // Clear server-side memory
   try {
-    agentInput.value = '';
-    const run = await startAgent({
-      agentType: agentType.value,
-      isolationKey: agentIsolationKey.value,
-      projectId: projectId.value,
-      scriptId: agentType.value === 'productionAgent' ? selectedScriptId.value : undefined,
-      content,
-    });
-    activeAgentRunId.value = run.id;
-    lastAgentRunId.value = run.id;
-    agentRunState.value = run.state;
-    agentStreamText.value = '';
-    agentEventCursor.value = 0;
-    while (activeAgentRunId.value === run.id) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const events = await getAgentRunEvents(run.id, agentEventCursor.value);
-      for (const event of events) {
-        agentEventCursor.value = event.id;
-        if (event.eventType === 'delta') agentStreamText.value += event.data.text || '';
-      }
-      const state = await getAgentRunState(run.id);
-      agentRunState.value = state.state;
-      if (state.state !== 'running') {
-        activeAgentRunId.value = undefined;
-        if (state.state === 'failed') message.error(state.errorReason || 'Agent 执行失败');
-        if (state.state === 'canceled') message.info('Agent 执行已中止');
-        await loadAgentMemory();
-        agentStreamText.value = '';
-        break;
-      }
-    }
-  } finally {
-    agentSending.value = false;
-  }
-}
-
-async function retryAgentRun() {
-  if (!lastAgentRunId.value) return;
-  const run = await retryAgent(lastAgentRunId.value);
-  lastAgentRunId.value = run.id;
-  activeAgentRunId.value = run.id;
-  agentRunState.value = run.state;
-  agentStreamText.value = '';
-  agentEventCursor.value = 0;
-  agentSending.value = true;
-  try {
-    while (activeAgentRunId.value === run.id) {
-      await new Promise((resolve) => setTimeout(resolve, 800));
-      const events = await getAgentRunEvents(run.id, agentEventCursor.value);
-      for (const event of events) { agentEventCursor.value = event.id; agentStreamText.value += event.data.text || ''; }
-      const state = await getAgentRunState(run.id);
-      agentRunState.value = state.state;
-      if (state.state !== 'running') { activeAgentRunId.value = undefined; await loadAgentMemory(); agentStreamText.value = ''; break; }
-    }
-  } finally { agentSending.value = false; }
-}
-
-async function stopAgentRun() {
-  if (!activeAgentRunId.value) return;
-  const id = activeAgentRunId.value;
-  await stopAgent(id);
-  activeAgentRunId.value = undefined;
-  agentRunState.value = 'canceled';
-}
-
-async function resetAgentMemory() {
-  await clearAgentMemory(agentType.value, agentIsolationKey.value);
-  agentMemories.value = [];
-  message.success('当前 Agent 会话记忆已清空');
+    const agentIsolationKey = `${agentType.value}:${projectId.value}:${agentType.value === 'productionAgent' ? (selectedScriptId.value ?? 'none') : 'project'}`;
+    await clearAgentMemory(agentType.value, agentIsolationKey);
+  } catch { /* ignore */ }
+  // Reconnect WebSocket
+  agentChatRef.value?.disconnect();
+  setTimeout(() => agentChatRef.value?.connect(), 200);
+  message.success('已重新开始');
 }
 
 async function saveAgentWorkspace() {
@@ -520,6 +611,17 @@ async function saveAgentWorkspace() {
     script: scripts.value.map(({ id, name, content }) => ({ id, name, content })),
   });
   message.success('剧本 Agent 工作区已保存');
+}
+
+function openScriptGeneration() {
+  agentType.value = 'scriptAgent';
+  chatMessages.value = [];
+  agentChatRef.value?.connect();
+  setTimeout(() => {
+    agentChatRef.value?.send(
+      '你好，请先读取当前项目的章节事件和已有剧本，分析项目的整体状态，然后告诉我你的分析和建议，并询问我是否需要开始生成下一集剧本。',
+    );
+  }, 300);
 }
 
 async function saveFlowText() {
@@ -540,7 +642,7 @@ async function saveFlowText() {
 
 async function createFlowImage() {
   if (!project.value?.imageModel) return message.warning('请先配置项目图片模型');
-  const result = await generateFlowImage({ projectId: projectId.value, model: project.value.imageModel, quality: project.value.imageQuality || '1024x1024', ratio: project.value.videoRatio || '16:9', prompt: flowImageForm.prompt, references: flowImageForm.references.split('\n').map((value) => value.trim()).filter(Boolean) });
+  const result = await generateFlowImage({ projectId: projectId.value, model: String(project.value.imageModel), quality: imageQuality.value, ratio: project.value.videoRatio || '16:9', prompt: flowImageForm.prompt, references: flowImageForm.references.split('\n').map((value) => value.trim()).filter(Boolean) });
   flowImageResult.value = result.url;
   const generatedNode = imageFlowNodes.value.find((node) => node.type === 'generated');
   if (generatedNode) generatedNode.data.generatedImage = result.url;
@@ -669,14 +771,14 @@ async function createVideoTrack() { if (!selectedScriptId.value) return message.
 async function moveVideoTrack(index:number,direction:-1|1){if(!selectedScriptId.value)return;const target=index+direction;if(target<0||target>=videoTracks.value.length)return;const list=[...videoTracks.value];[list[index],list[target]]=[list[target],list[index]];videoTracks.value=list;await reorderVideoTracks(projectId.value,selectedScriptId.value,list.map(track=>track.id))}
 async function bindUnassignedStoryboards(track:any){const ids=storyboards.value.filter(item=>!videoTracks.value.some(other=>other.medias?.some((media:any)=>media.id===item.id))).map(item=>item.id);if(!ids.length)return message.info('没有未绑定的分镜');await bindTrackStoryboards(track.id,ids);await loadFlow();message.success('分镜已绑定到轨道')}
 async function saveTrackPrompt(track:any) { await updateVideoTrackPrompt(track.id, track.prompt || ''); message.success('视频提示词已保存'); }
-async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:project.value.mode||'text'}); message.success('视频提示词已生成'); }
-async function generateVideo(track:any) { if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型'); const id=await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:project.value.videoModel,mode:project.value.mode||'text',resolution:project.value.imageQuality||'1080p',duration:track.duration||5,audio:false,uploadData:track.medias??[] }); message.success(`视频任务 ${id} 已提交`); window.setTimeout(loadFlow,3000); }
-async function generateAllVideoPrompts(){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await batchGenerateVideoPrompts({projectId:projectId.value,model:project.value.videoModel,mode:project.value.mode||'text',concurrentCount:5,trackData:videoTracks.value.map(track=>({trackId:track.id,info:track.medias??[]}))});message.success('批量提示词任务已提交');window.setTimeout(loadFlow,3000)}
-async function generateAllVideos(){if(!selectedScriptId.value||!project.value?.videoModel)return message.warning('请先选择剧本并配置视频模型');await batchGenerateVideos({projectId:projectId.value,scriptId:selectedScriptId.value,model:project.value.videoModel,mode:project.value.mode||'text',resolution:project.value.imageQuality||'1080p',audio:false,trackData:videoTracks.value.map(track=>({trackId:track.id,prompt:track.prompt||'',duration:track.duration||5,uploadData:track.medias??[]}))});message.success('批量视频任务已提交');window.setTimeout(loadFlow,3000)}
+async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoMode.value}); message.success('视频提示词已生成'); }
+async function generateVideo(track:any) { if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型'); const id=await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',duration:track.duration||5,audio:false,uploadData:track.medias??[] }); message.success(`视频任务 ${id} 已提交`); window.setTimeout(loadFlow,3000); }
+async function generateAllVideoPrompts(){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await batchGenerateVideoPrompts({projectId:projectId.value,model:project.value.videoModel,mode:videoMode.value,concurrentCount:5,trackData:videoTracks.value.map(track=>({trackId:track.id,info:track.medias??[]}))});message.success('批量提示词任务已提交');window.setTimeout(loadFlow,3000)}
+async function generateAllVideos(){if(!selectedScriptId.value||!project.value?.videoModel)return message.warning('请先选择剧本并配置视频模型');await batchGenerateVideos({projectId:projectId.value,scriptId:selectedScriptId.value,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,trackData:videoTracks.value.map(track=>({trackId:track.id,prompt:track.prompt||'',duration:track.duration||5,uploadData:track.medias??[]}))});message.success('批量视频任务已提交');window.setTimeout(loadFlow,3000)}
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
-async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:project.value.mode||'text',resolution:project.value.imageQuality||'1080p',audio:false,uploadData:track.medias??[]});message.success('视频重试任务已提交');window.setTimeout(loadFlow,3000)}
+async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,uploadData:track.medias??[]});message.success('视频重试任务已提交');window.setTimeout(loadFlow,3000)}
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
 watch(selectedScriptId, () => {
@@ -684,6 +786,7 @@ watch(selectedScriptId, () => {
 });
 
 onMounted(loadAll);
+watch(projectId, () => loadAll());
 </script>
 
 <template>
@@ -710,20 +813,30 @@ onMounted(loadAll);
       <Tabs v-model:active-key="activeTab">
         <Tabs.TabPane key="novel" tab="原文">
           <div class="tab-tools">
-            <Button type="primary" @click="openNovel()">导入章节</Button>
+            <Space>
+              <Upload accept=".txt,.md,text/plain,text/markdown" :before-upload="importNovelFile" :show-upload-list="false">
+                <Button type="primary">导入文件</Button>
+              </Upload>
+              <Button @click="openNovel()">手动导入</Button>
+              <Button @click="extractAllNovelEvents">提取全部待处理事件</Button>
+            </Space>
           </div>
           <Table
             :columns="novelColumns"
             :data-source="novels"
-            :pagination="{ pageSize: 8 }"
+            :scroll="{ x: 840 }"
+            :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 章` }"
             row-key="id"
             size="small"
           >
             <template #bodyCell="{ column, record }">
               <template v-if="column.dataIndex === 'eventState'">
-                <Tag :color="record.eventState === 1 ? 'green' : record.eventState === -1 ? 'red' : 'processing'">
-                  {{ record.eventState === 1 ? '已提取' : record.eventState === -1 ? '失败' : '处理中' }}
+                <Tag :color="record.eventState === 1 ? 'green' : record.eventState === -1 ? 'red' : 'default'">
+                  {{ record.eventState === 1 ? '已提取' : record.eventState === -1 ? '失败' : '待提取' }}
                 </Tag>
+              </template>
+              <template v-if="column.dataIndex === 'event'">
+                <span class="event-text">{{ formatEventDisplay(record.event) }}</span>
               </template>
               <template v-if="column.key === 'action'">
                 <Space>
@@ -743,7 +856,9 @@ onMounted(loadAll);
             <Col :span="14">
               <Card size="small" title="剧本">
                 <template #extra>
-                  <Button size="small" type="primary" @click="openScript()">新增剧本</Button>
+                  <Space>
+                    <Button size="small" @click="openScript()">手动新增</Button>
+                  </Space>
                 </template>
                 <List :data-source="scripts" item-layout="vertical">
                   <template #renderItem="{ item }">
@@ -789,7 +904,14 @@ onMounted(loadAll);
                       </template>
                       <List.Item.Meta :description="item.description" :title="item.name">
                         <template #avatar>
-                          <Tag>{{ item.type }}</Tag>
+                          <Image
+                            v-if="item.imageFilePath"
+                            :height="56"
+                            :src="item.imageFilePath"
+                            :width="56"
+                            class="asset-thumb"
+                          />
+                          <Tag v-else>{{ item.type }}</Tag>
                         </template>
                       </List.Item.Meta>
                     </List.Item>
@@ -825,8 +947,9 @@ onMounted(loadAll);
               <Card size="small" title="分镜">
                 <Table
                   :columns="storyboardColumns"
+                  :scroll="{ x: 500 }"
                   :data-source="storyboards"
-                  :pagination="{ pageSize: 8 }"
+                  :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 个` }"
                   row-key="id"
                   size="small"
                 >
@@ -854,7 +977,7 @@ onMounted(loadAll);
         </Tabs.TabPane>
 
         <Tabs.TabPane key="agent" tab="Agent 工作台">
-          <Card size="small">
+          <Card size="small" title="Agent 工作台">
             <template #title>
               <Space>
                 <Select
@@ -877,34 +1000,56 @@ onMounted(loadAll);
               </Space>
             </template>
             <template #extra>
-              <Space><Button @click="loadAgentMemory">刷新记忆</Button><Popconfirm title="确认清空当前会话记忆？" @confirm="resetAgentMemory"><Button danger>清空记忆</Button></Popconfirm></Space>
+              <Space>
+                <Popconfirm title="确认清除所有对话和工作区内容？" @confirm="resetAgentWorkspace">
+                  <Button>重新开始</Button>
+                </Popconfirm>
+                <Button type="primary" @click="openScriptGeneration">AI 生成剧本</Button>
+              </Space>
             </template>
-            <List :data-source="agentMemories.filter((item) => item.memoryType === 'message')" class="agent-chat" size="small">
-              <template #renderItem="{ item }">
-                <List.Item :class="`agent-message agent-message-${item.role.split(':')[0]}`">
-                  <List.Item.Meta :title="item.role.startsWith('user') ? '你' : 'Agent'">
-                    <template #description><Typography.Paragraph class="whitespace-pre-wrap">{{ item.content }}</Typography.Paragraph></template>
-                  </List.Item.Meta>
-                </List.Item>
-              </template>
-            </List>
-            <Card v-if="agentStreamText" class="mb-3" size="small" title="Agent 正在输出">
-              <Typography.Paragraph class="whitespace-pre-wrap">{{ agentStreamText }}</Typography.Paragraph>
-            </Card>
-            <Card v-if="agentType === 'scriptAgent'" class="mb-3" size="small" title="剧本 Agent 工作区">
-              <template #extra><Button type="primary" @click="saveAgentWorkspace">保存工作区</Button></template>
-              <Row :gutter="16">
-                <Col :span="12"><Form.Item label="故事骨架"><Input.TextArea v-model:value="scriptPlan.storySkeleton" :rows="8" /></Form.Item></Col>
-                <Col :span="12"><Form.Item label="改编策略"><Input.TextArea v-model:value="scriptPlan.adaptationStrategy" :rows="8" /></Form.Item></Col>
-              </Row>
-            </Card>
-            <Space.Compact class="mt-3 w-full">
-              <Input.TextArea v-model:value="agentInput" :auto-size="{ minRows: 3, maxRows: 8 }" placeholder="输入任务或修改要求" @keydown.ctrl.enter.prevent="sendAgentMessage" />
-              <Button :loading="agentSending" type="primary" @click="sendAgentMessage">发送</Button>
-              <Button v-if="activeAgentRunId" danger @click="stopAgentRun">停止</Button>
-              <Button v-if="!activeAgentRunId && ['failed', 'canceled', 'interrupted'].includes(agentRunState)" @click="retryAgentRun">重试</Button>
-            </Space.Compact>
-            <div class="mt-2 text-xs text-gray-500">运行状态：{{ agentRunState }}</div>
+
+            <Row :gutter="16">
+              <Col :span="agentType === 'scriptAgent' ? 8 : 24">
+                <AgentChat
+                  ref="agentChatRef"
+                  :agent-type="agentType"
+                  :project-id="projectId"
+                  :script-id="agentType === 'productionAgent' ? selectedScriptId : undefined"
+                  :messages="chatMessages"
+                  @tool-result="onAgentToolResult"
+                />
+              </Col>
+              <Col v-if="agentType === 'scriptAgent'" :span="16">
+                <Card size="small" class="workspace-card">
+                  <template #extra>
+                    <Button type="primary" size="small" @click="saveAgentWorkspace">保存工作区</Button>
+                  </template>
+                  <!-- Pipeline progress -->
+                  <div class="pipeline-bar">
+                    <div
+                      v-for="(stage, i) in pipelineStages"
+                      :key="stage.key"
+                      class="pipeline-step"
+                      :class="[stage.status, { last: i === pipelineStages.length - 1 }]"
+                    >
+                      <span class="pipeline-dot">{{ stage.status === 'completed' ? '✓' : stage.status === 'active' ? '●' : stage.status === 'review' ? '🔍' : '○' }}</span>
+                      <span class="pipeline-label">{{ stage.label }}</span>
+                      <span v-if="i < pipelineStages.length - 1" class="pipeline-line" />
+                    </div>
+                  </div>
+                  <Tabs v-model:activeKey="workspaceActiveTab" size="small">
+                    <Tabs.TabPane v-for="tab in workspaceTabs" :key="tab.key" :tab="tab.label">
+                      <div class="workspace-pane">
+                        <div v-if="!tab.content" class="workspace-placeholder">
+                          Agent 将在此展示{{ tab.label }}...
+                        </div>
+                        <div v-else class="workspace-output" v-html="renderMarkdown(tab.content)" />
+                      </div>
+                    </Tabs.TabPane>
+                  </Tabs>
+                </Card>
+              </Col>
+            </Row>
           </Card>
         </Tabs.TabPane>
       </Tabs>
@@ -1139,4 +1284,97 @@ onMounted(loadAll);
   justify-content: center;
   color: var(--ant-color-text-tertiary);
 }
+.event-text {
+  font-size: 12px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.asset-thumb {
+  object-fit: cover;
+  border-radius: 6px;
+}
+.workspace-card {
+  height: 680px;
+  display: flex;
+  flex-direction: column;
+}
+/* Pipeline progress bar */
+.pipeline-bar {
+  display: flex;
+  align-items: center;
+  padding: 8px 4px 12px;
+  gap: 0;
+  border-bottom: 1px solid #f0f0f0;
+  margin-bottom: 4px;
+}
+.pipeline-step {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.pipeline-step.pending { color: #bfbfbf; }
+.pipeline-step.active { color: #1677ff; font-weight: 600; }
+.pipeline-step.completed { color: #52c41a; }
+.pipeline-step.review { color: #faad14; }
+.pipeline-dot { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
+.pipeline-label { flex-shrink: 0; }
+.pipeline-line {
+  flex: 1;
+  height: 2px;
+  min-width: 12px;
+  background: #e8e8e8;
+  margin: 0 4px;
+}
+.pipeline-step.completed .pipeline-line { background: #52c41a; }
+.pipeline-step.active .pipeline-line { background: #1677ff; }
+.workspace-card :deep(.ant-card-body) {
+  padding: 8px 12px;
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.workspace-card :deep(.ant-tabs) {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.workspace-card :deep(.ant-tabs-content-holder) {
+  flex: 1;
+  overflow: hidden;
+}
+.workspace-card :deep(.ant-tabs-content) {
+  height: 100%;
+  overflow-y: auto;
+}
+.workspace-pane {
+  height: 100%;
+  min-height: 0;
+}
+.workspace-placeholder {
+  color: #bfbfbf;
+  font-size: 13px;
+  padding: 16px 0;
+  text-align: center;
+}
+.workspace-output {
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.workspace-output :deep(h2) { font-size: 16px; margin: 10px 0 6px; border-bottom: 1px solid #f0f0f0; padding-bottom: 4px; }
+.workspace-output :deep(h3) { font-size: 15px; margin: 8px 0 4px; }
+.workspace-output :deep(h4) { font-size: 14px; margin: 6px 0 3px; color: #1677ff; }
+.workspace-output :deep(strong) { font-weight: 600; }
+.workspace-output :deep(li) { margin-left: 16px; }
+.workspace-output :deep(p) { margin: 4px 0; }
+.workspace-output :deep(hr) { border: none; border-top: 1px dashed #e8e8e8; margin: 12px 0; }
+
 </style>

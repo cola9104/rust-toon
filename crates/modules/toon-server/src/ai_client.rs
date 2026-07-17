@@ -14,6 +14,24 @@ async fn agent_model(pool: &PgPool, key: &str) -> Result<(i64, i32, i32), String
         tokens,
     ))
 }
+pub async fn text_tools(
+    pool: &PgPool,
+    key: &str,
+    messages: Vec<Value>,
+    tools: Vec<Value>,
+) -> Result<Value, String> {
+    let (model, temperature, tokens) = agent_model(pool, key).await?;
+    rust_toon_ai_server::AiModelFactory::new(pool.clone())
+        .chat_tools(
+            model,
+            messages,
+            tools,
+            Some(temperature as f64),
+            (tokens > 0).then_some(tokens as u32),
+        )
+        .await
+        .map_err(|error| format!("{error:?}"))
+}
 fn chat_request(
     system: &str,
     user: &str,

@@ -66,6 +66,7 @@ export namespace ToonflowApi {
     description: string;
     scriptId?: number;
     imageId?: number;
+    imageFilePath?: string;
     parentAssetId?: number;
     projectId: number;
     flowId?: number;
@@ -94,6 +95,7 @@ export namespace ToonflowApi {
     maxOutputTokens: number;
     disabled: boolean;
     modelConfigId?: number;
+    modelType: 'chat' | 'image' | 'speech' | 'video';
   }
 
   export interface ArtStyle { id: number; name: string; fileUrl: string; label: string; prompt: string; createTime: number }
@@ -124,11 +126,11 @@ export const generateNovelEvents = (projectId: number, novelIds: number[]) => re
 export const extractScriptAssets = (projectId: number, scriptIds: number[]) => requestClient.post('/script/extractAssets', { projectId, scriptIds, groupSize: 5 });
 export const pollScriptAssets = (ids: number[]) => requestClient.post<Array<{ id: number; extractState: number; errorReason?: string }>>('/script/pollScriptAssets', { ids });
 export const polishAssetPrompt = (data: { assetsId: number; projectId: number; type: string; name: string; describe: string }) => requestClient.post<{ prompt: string; assetsId: number }>('/assetsGenerate/polishAssetsPrompt', data);
-export const generateAssetImage = (data: { projectId: number; model: number; resolution: string; id: number; type: string; name: string; prompt: string; base64?: string }) => requestClient.post<{ path: string; assetsId: number }>('/assetsGenerate/generateAssets', data);
+export const generateAssetImage = (data: { projectId: number; model: number | string; resolution: string; id: number; type: string; name: string; prompt: string; base64?: string }) => requestClient.post<{ path: string; assetsId: number }>('/assetsGenerate/generateAssets', data);
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
 export const getMaterialData = (projectId: number, scriptId?: number) => requestClient.post<{ data: any[]; video: any[] }>('/assets/getMaterialData', { projectId, scriptId });
-export const generateFlowImage = (data: { projectId: number; model: number; quality: string; ratio: string; prompt: string; references?: string[] }) => requestClient.post<{ url: string }>('/production/editImage/generateFlowImage', data);
+export const generateFlowImage = (data: { projectId: number; model: number | string; quality: string; ratio: string; prompt: string; references?: string[] }) => requestClient.post<{ url: string }>('/production/editImage/generateFlowImage', data);
 export const getImageFlow = (id: number) => requestClient.post<{ id: number; nodes: any[]; edges: any[] } | null>('/production/editImage/getImageFlow', { id });
 export const saveImageFlow = (nodes: any[], edges: any[]) => requestClient.post<{ id: number }>('/production/editImage/saveImageFlow', { nodes, edges });
 export const updateImageFlow = (flowId: number, nodes: any[], edges: any[]) => requestClient.post('/production/editImage/updateImageFlow', { flowId, nodes, edges });

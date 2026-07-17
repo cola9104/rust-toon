@@ -1,4 +1,7 @@
-use crate::{ToonState, ai_client, shared::require, toonflow_asset_ai, toonflow_image_workflow};
+use crate::{
+    ToonState, ai_client, shared::require, toonflow_agent_runtime, toonflow_asset_ai,
+    toonflow_image_workflow, toonflow_ws::WsEmitter,
+};
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
@@ -6,6 +9,23 @@ use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Parse event JSON array into readable text
+fn format_events(events_json: &str) -> String {
+    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(events_json) {
+        arr.iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let name = v.get("name").and_then(Value::as_str).unwrap_or("");
+                let detail = v.get("detail").and_then(Value::as_str).unwrap_or("");
+                format!("  {}. {}：{}", i + 1, name, detail)
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        events_json.to_string()
+    }
+}
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -168,6 +188,8 @@ pub(crate) struct ToolRequest {
     pub(crate) tool_name: String,
     #[serde(default)]
     pub(crate) arguments: Value,
+    #[serde(skip, default)]
+    pub(crate) emitter: Option<WsEmitter>,
 }
 
 pub async fn execute(
@@ -200,11 +222,175 @@ pub(crate) async fn execute_recorded(
     }
 }
 
+/// Execute a tool with WebSocket emitter for real-time visualization.
+/// Falls back to regular execute_recorded when emitter is not available.
+pub(crate) async fn execute_with_emitter(
+    state: &ToonState,
+    request: &ToolRequest,
+    _emitter: &WsEmitter,
+    _msg_id: &str,
+) -> Result<(i64, Value), AppError> {
+    execute_recorded(state, request).await
+}
+
+/// Execute a read-only tool for sub-agents
+async fn execute_sub_tool(state: &ToonState, project_id: i64, name: &str, args: &Value) -> String {
+    match name {
+        "get_novel_events" => {
+            let indexes: Vec<i32> = args
+                .get("chapterIndexs")
+                .and_then(Value::as_array)
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_i64().map(|x| x as i32))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let rows: Vec<(i32, String, Option<String>)> = sqlx::query_as(
+                "SELECT chapter_index,chapter,event FROM toonflow.novels WHERE project_id=$1 AND chapter_index=ANY($2) ORDER BY chapter_index",
+            )
+            .bind(project_id).bind(&indexes)
+            .fetch_all(&state.pool).await.unwrap_or_default();
+            rows.into_iter()
+                .map(|(i, c, e)| {
+                    format!("第{i}章「{c}」\n{}", format_events(&e.unwrap_or_default()))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        }
+        "get_novel_text" => {
+            let index: i32 = args
+                .get("chapterIndex")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
+            sqlx::query_scalar(
+                "SELECT chapter_data FROM toonflow.novels WHERE project_id=$1 AND chapter_index=$2",
+            )
+            .bind(project_id)
+            .bind(index)
+            .fetch_optional(&state.pool)
+            .await
+            .unwrap_or_default()
+            .unwrap_or_default()
+        }
+        "get_planData" => {
+            let data: Option<Value> = sqlx::query_scalar(
+                "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
+            )
+            .bind(project_id).fetch_optional(&state.pool).await.unwrap_or_default();
+            let key = args.get("key").and_then(Value::as_str).unwrap_or("");
+            if key.is_empty() {
+                // Return all data with clear labels
+                let d = data.as_ref();
+                let skeleton = d
+                    .and_then(|v| v.get("storySkeleton"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("（空）");
+                let adaptation = d
+                    .and_then(|v| v.get("adaptationStrategy"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("（空）");
+                format!(
+                    "可用 key: storySkeleton, adaptationStrategy\n\n=== storySkeleton ===\n{skeleton}\n\n=== adaptationStrategy ===\n{adaptation}"
+                )
+            } else {
+                // Try exact match first, then case-insensitive
+                let result = data
+                    .as_ref()
+                    .and_then(|d| d.get(key))
+                    .and_then(|v| v.as_str().map(|s| s.to_string()));
+                if result.is_some() {
+                    return result.unwrap();
+                }
+                // Try known key mappings
+                let mapped = match key.to_lowercase().as_str() {
+                    "story_skeleton" | "skeleton" => data
+                        .as_ref()
+                        .and_then(|d| d.get("storySkeleton"))
+                        .and_then(|v| v.as_str()),
+                    "adaptation_strategy" | "adaptation" => data
+                        .as_ref()
+                        .and_then(|d| d.get("adaptationStrategy"))
+                        .and_then(|v| v.as_str()),
+                    "script" => data
+                        .as_ref()
+                        .and_then(|d| d.get("script"))
+                        .and_then(|v| v.as_str()),
+                    _ => None,
+                };
+                mapped.map(|s| s.to_string()).unwrap_or_else(|| {
+                    format!("key '{key}' 不存在。可用 key: storySkeleton, adaptationStrategy")
+                })
+            }
+        }
+        "get_script_content" => {
+            let ids: Vec<i64> = args
+                .get("ids")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
+                .unwrap_or_default();
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT name,content FROM toonflow.scripts WHERE project_id=$1 AND id=ANY($2)",
+            )
+            .bind(project_id)
+            .bind(&ids)
+            .fetch_all(&state.pool)
+            .await
+            .unwrap_or_default();
+            rows.into_iter()
+                .map(|(n, c)| format!("<scriptItem name=\"{n}\">{c}</scriptItem>"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        _ => format!("未知工具: {name}"),
+    }
+}
+
 pub(crate) async fn execute_inner(
     state: &ToonState,
     request: &ToolRequest,
 ) -> Result<Value, AppError> {
+    if request.tool_name == "use_skill" {
+        let path = request
+            .arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::bad_request("缺少 Skill path"))?;
+        // Support any dynamic skill: production_skills/, art_skills/, story_skills/
+        if !path.contains('/')
+            || path.starts_with("script_")
+            || path.starts_with("production_agent")
+        {
+            return Err(AppError::bad_request(
+                "只能加载动态 Skill（production_skills/、art_skills/ 等路径）",
+            ));
+        }
+        let content = toonflow_agent_runtime::load_skill(&state.pool, path)
+            .await
+            .map_err(AppError::bad_request)?;
+        return Ok(json!({"path":path,"content":content}));
+    }
     match (request.agent_type.as_str(), request.tool_name.as_str()) {
+        ("scriptAgent", "deepRetrieve") => {
+            let keyword = request
+                .arguments
+                .get("keyword")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let agent_type = &request.agent_type;
+            // Build isolation key from project ID (matches WebSocket isolation pattern)
+            let isolation_key = format!("{agent_type}:{}:project", request.project_id);
+            let mems = toonflow_agent_runtime::relevant_memories(
+                &state.pool,
+                agent_type,
+                &isolation_key,
+                keyword,
+                5,
+            )
+            .await
+            .map_err(|_| AppError::internal("deepRetrieve 失败"))?;
+            Ok(json!(mems.join("\n\n")))
+        }
         ("scriptAgent", "get_novel_events") => {
             let indexes = request
                 .arguments
@@ -218,9 +404,12 @@ pub(crate) async fn execute_inner(
             let rows:Vec<(i32,String,Option<String>)>=sqlx::query_as("SELECT chapter_index,chapter,event FROM toonflow.novels WHERE project_id=$1 AND chapter_index=ANY($2) ORDER BY chapter_index").bind(request.project_id).bind(indexes.iter().map(|v|*v as i32).collect::<Vec<_>>()).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to get novel events"))?;
             Ok(json!(
                 rows.into_iter()
-                    .map(|(i, c, e)| format!("第{i}章，标题:{c}，事件:{}", e.unwrap_or_default()))
+                    .map(|(i, c, e)| format!(
+                        "第{i}章「{c}」\n{}",
+                        format_events(&e.unwrap_or_default())
+                    ))
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n\n")
             ))
         }
         ("scriptAgent", "get_novel_text") => {
@@ -264,6 +453,53 @@ pub(crate) async fn execute_inner(
                     .join("\n")
             ))
         }
+        ("scriptAgent", "save_scripts") => {
+            let scripts = request
+                .arguments
+                .get("scripts")
+                .and_then(Value::as_array)
+                .ok_or_else(|| AppError::bad_request("缺少 scripts"))?;
+            if scripts.is_empty() {
+                return Err(AppError::bad_request("剧本列表不能为空"));
+            }
+            let mut tx = state
+                .pool
+                .begin()
+                .await
+                .map_err(|_| AppError::internal("failed to begin script save"))?;
+            let timestamp = now_ms();
+            let mut saved = Vec::with_capacity(scripts.len());
+            for (index, script) in scripts.iter().enumerate() {
+                let name = script
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                let content = script
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .trim();
+                if name.is_empty() || content.is_empty() {
+                    return Err(AppError::bad_request("剧本名称和内容不能为空"));
+                }
+                let id = timestamp * 1000 + index as i64;
+                sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time) VALUES($1,$2,$3,$4,$5)")
+                    .bind(id)
+                    .bind(name)
+                    .bind(content)
+                    .bind(request.project_id)
+                    .bind(timestamp)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to save generated script"))?;
+                saved.push(json!({"id":id,"name":name}));
+            }
+            tx.commit()
+                .await
+                .map_err(|_| AppError::internal("failed to commit generated scripts"))?;
+            Ok(json!({"saved":saved}))
+        }
         ("scriptAgent", name)
             if name.starts_with("run_sub_agent_") || name == "run_supervision_agent" =>
         {
@@ -287,16 +523,109 @@ pub(crate) async fn execute_inner(
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
-            let output = ai_client::text(
-                &state.pool,
-                agent_key,
-                &format!(
-                    "你是 Toonflow 的{label}子 Agent。严格完成委派任务并返回可写入工作区的内容。"
-                ),
-                prompt,
+            let system = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key)
+                .await
+                .map_err(AppError::bad_request)?;
+
+            // Create sub-agent message bubble if emitter is available
+            let sub_msg = if let Some(ref emitter) = request.emitter {
+                let sub_label = match label {
+                    "监督" => "编辑",
+                    _ => "编剧",
+                };
+                let (mid, _) = emitter.new_message(sub_label, "assistant");
+                let cid = emitter.add_content(&mid, "text", &json!(""));
+                Some((mid, cid, emitter.clone()))
+            } else {
+                None
+            };
+
+            // Build project context
+            let project_hint: String = sqlx::query_scalar(
+                "SELECT '作品名：'||name||'\n小说类型：'||type||'\n小说简介：'||COALESCE(intro,'无')||'\n视觉风格：'||COALESCE(art_style,'未设置')||'\n视频画幅：'||COALESCE(video_ratio,'16:9') FROM toonflow.projects WHERE id=$1",
             )
+            .bind(request.project_id)
+            .fetch_optional(&state.pool)
             .await
-            .map_err(AppError::bad_request)?;
+            .map_err(|_| AppError::bad_request("无法加载项目信息"))?
+            .unwrap_or_default();
+            let full_system = format!(
+                "{system}\n\n## 当前项目\n{project_hint}\n\n你是 Toonflow 的{label}子 Agent。请使用工具读取所需数据，然后完成任务并输出要求的 XML 格式内容。"
+            );
+
+            // Sub-agent read-only tool definitions
+            let sub_tools: Vec<Value> = vec![
+                json!({"type":"function","function":{"name":"get_novel_events","description":"获取项目章节事件列表","parameters":{"type":"object","properties":{"chapterIndexs":{"type":"array","items":{"type":"number"},"description":"章节编号列表"}},"required":["chapterIndexs"]}}}),
+                json!({"type":"function","function":{"name":"get_novel_text","description":"获取指定章节的原始文本","parameters":{"type":"object","properties":{"chapterIndex":{"type":"number","description":"章节编号"}},"required":["chapterIndex"]}}}),
+                json!({"type":"function","function":{"name":"get_planData","description":"读取工作区已有数据（故事骨架、改编策略等）","parameters":{"type":"object","properties":{"key":{"type":"string","description":"数据key"}},"required":["key"]}}}),
+                json!({"type":"function","function":{"name":"get_script_content","description":"读取已有剧本内容","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"number"},"description":"剧本ID列表"}},"required":["ids"]}}}),
+            ];
+
+            // Run sub-agent with native function calling
+            let mut messages = vec![
+                json!({"role":"system","content":full_system}),
+                json!({"role":"user","content":prompt}),
+            ];
+            let mut output = String::new();
+            for _round in 0..8 {
+                let raw = ai_client::text_tools(
+                    &state.pool,
+                    agent_key,
+                    messages.clone(),
+                    sub_tools.clone(),
+                )
+                .await
+                .map_err(AppError::bad_request)?;
+                let message = raw
+                    .pointer("/choices/0/message")
+                    .cloned()
+                    .ok_or_else(|| AppError::bad_request("模型响应缺少 message"))?;
+                let calls = message
+                    .get("tool_calls")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                if calls.is_empty() {
+                    output = message
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if output.is_empty() {
+                        return Err(AppError::bad_request("子 Agent 未返回有效内容"));
+                    }
+                    break;
+                }
+                messages.push(message);
+                for call in &calls {
+                    let call_id = call.get("id").and_then(Value::as_str).unwrap_or("");
+                    let tool_name = call
+                        .pointer("/function/name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("");
+                    let args = call
+                        .pointer("/function/arguments")
+                        .and_then(Value::as_str)
+                        .unwrap_or("{}");
+                    let args: Value = serde_json::from_str(args).unwrap_or(json!({}));
+                    let result =
+                        execute_sub_tool(state, request.project_id, tool_name, &args).await;
+                    messages.push(json!({"role":"tool","tool_call_id":call_id,"content":result}));
+                }
+            }
+            if output.is_empty() {
+                if let Some((mid, _, emitter)) = &sub_msg {
+                    emitter.update_message(mid, "error", Some("子 Agent 工具调用超过最大轮数"));
+                }
+                return Err(AppError::bad_request("子 Agent 工具调用超过最大轮数"));
+            }
+
+            // Complete sub-agent message bubble
+            if let Some((mid, cid, emitter)) = &sub_msg {
+                emitter.text_delta(mid, cid, &output);
+                emitter.text_complete(mid, cid);
+                emitter.update_message(mid, "complete", None);
+            }
             if let Some(tag) = tag {
                 if let Some(content) = tagged(&output, tag) {
                     let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'").bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load script workspace"))?.unwrap_or_else(||json!({"storySkeleton":"","adaptationStrategy":""}));
@@ -412,7 +741,24 @@ pub(crate) async fn execute_inner(
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
-            let output=ai_client::text(&state.pool,agent_key,&format!("你是 Toonflow 的{label}子 Agent。严格完成委派任务，使用要求的工作区 XML 格式输出。"),prompt).await.map_err(AppError::bad_request)?;
+            let system = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key)
+                .await
+                .map_err(AppError::bad_request)?;
+            let project_info: Option<(String, String, String, String, String)> = sqlx::query_as(
+                "SELECT name,type,intro,art_style,video_ratio FROM toonflow.projects WHERE id=$1",
+            )
+            .bind(request.project_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::bad_request("无法加载项目信息"))?;
+            let project_hint = if let Some((name, kind, intro, style, ratio)) = project_info {
+                format!(
+                    "\n\n## 当前项目\n- 作品名：{name}\n- 小说类型：{kind}\n- 小说简介：{intro}\n- 视觉风格：{style}\n- 视频画幅：{ratio}\n\n**你的所有输出必须与以上项目完全匹配。**"
+                )
+            } else {
+                String::new()
+            };
+            let output=ai_client::text(&state.pool,agent_key,&format!("{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务，使用要求的工作区 XML 格式输出。{project_hint}"),prompt).await.map_err(AppError::bad_request)?;
             if let (Some((tag, key)), Some(script_id)) = (flow_tag, request.script_id) {
                 if let Some(content) = tagged(&output, tag) {
                     let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load production workspace"))?.unwrap_or_else(||json!({}));

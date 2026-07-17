@@ -199,6 +199,65 @@ struct AuthorizedMenuRow {
     always_show: bool,
 }
 
+async fn authorized_menus(
+    pool: &sqlx::PgPool,
+    user_id: &str,
+) -> Result<Vec<AuthorizedMenuRow>, AppError> {
+    sqlx::query_as::<_, AuthorizedMenuRow>(
+        "SELECT DISTINCT m.id, m.parent_id, m.sort, m.name, m.path, m.component,
+                m.component_name, m.active_menu_id, m.icon, m.visible,
+                m.keep_alive, m.always_show
+         FROM system_users u
+         JOIN system_tenant tenant
+           ON tenant.id = u.tenant_id AND tenant.deleted = 0 AND tenant.status = 0
+         LEFT JOIN system_tenant_package package
+           ON package.id = tenant.package_id AND package.deleted = 0 AND package.status = 0
+         JOIN system_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
+         JOIN system_role r ON r.id = ur.role_id AND r.deleted = 0 AND r.status = 0
+         LEFT JOIN system_role_menu rm ON rm.role_id = r.id AND rm.deleted = 0
+         JOIN system_menu m ON m.deleted = 0 AND m.status = 0 AND m.type <> 3
+             AND (
+                 r.code = 'super_admin'
+                 OR m.id = rm.menu_id
+                 OR (
+                     m.visible = false
+                     AND m.active_menu_id IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1
+                         FROM system_role_menu owner_rm
+                         WHERE owner_rm.role_id = r.id
+                           AND owner_rm.menu_id = m.active_menu_id
+                           AND owner_rm.deleted = 0
+                     )
+                 )
+             )
+             AND (
+                 tenant.package_id = 0
+                 OR EXISTS (
+                     SELECT 1
+                     FROM jsonb_array_elements_text(package.menu_ids::jsonb) allowed(menu_id)
+                     WHERE allowed.menu_id::bigint = m.id
+                 )
+                 OR (
+                     m.visible = false
+                     AND m.active_menu_id IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1
+                         FROM jsonb_array_elements_text(package.menu_ids::jsonb) allowed(menu_id)
+                         WHERE allowed.menu_id::bigint = m.active_menu_id
+                     )
+                 )
+             )
+         WHERE md5('yudao-user:' || u.id::text)::uuid = $1::uuid
+           AND u.deleted = 0 AND u.status = 0
+         ORDER BY m.id",
+    )
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load authorized menus"))
+}
+
 async fn permission_info(
     user: CurrentUser,
     State(state): State<SystemState>,
@@ -227,36 +286,7 @@ async fn permission_info(
         })
     });
 
-    let menus = sqlx::query_as::<_, AuthorizedMenuRow>(
-        "SELECT DISTINCT m.id, m.parent_id, m.sort, m.name, m.path, m.component,
-                m.component_name, m.active_menu_id, m.icon, m.visible,
-                m.keep_alive, m.always_show
-         FROM system_users u
-         JOIN system_tenant tenant
-           ON tenant.id = u.tenant_id AND tenant.deleted = 0 AND tenant.status = 0
-         LEFT JOIN system_tenant_package package
-           ON package.id = tenant.package_id AND package.deleted = 0 AND package.status = 0
-         JOIN system_user_role ur ON ur.user_id = u.id AND ur.deleted = 0
-         JOIN system_role r ON r.id = ur.role_id AND r.deleted = 0 AND r.status = 0
-         LEFT JOIN system_role_menu rm ON rm.role_id = r.id AND rm.deleted = 0
-         JOIN system_menu m ON m.deleted = 0 AND m.status = 0 AND m.type <> 3
-             AND (r.code = 'super_admin' OR m.id = rm.menu_id)
-             AND (
-                 tenant.package_id = 0
-                 OR EXISTS (
-                     SELECT 1
-                     FROM jsonb_array_elements_text(package.menu_ids::jsonb) allowed(menu_id)
-                     WHERE allowed.menu_id::bigint = m.id
-                 )
-             )
-         WHERE md5('yudao-user:' || u.id::text)::uuid = $1::uuid
-           AND u.deleted = 0 AND u.status = 0
-         ORDER BY m.id",
-    )
-    .bind(&user.user_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load authorized menus"))?;
+    let menus = authorized_menus(&state.pool, &user.user_id).await?;
 
     let menu_tree = build_menu_tree(&menus, 0);
     let permissions = user

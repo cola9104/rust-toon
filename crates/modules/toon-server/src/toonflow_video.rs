@@ -438,9 +438,10 @@ async fn create_prompt(
             .fetch_optional(pool)
             .await
             .map_err(|e| e.to_string())?;
-    let base:Option<(String,Option<String>)>=sqlx::query_as("SELECT data,use_data FROM toonflow.prompts WHERE type='videoPromptGeneration' ORDER BY id LIMIT 1").fetch_optional(pool).await.map_err(|e|e.to_string())?;
+    let prompt_name = video_prompt_name(model, mode);
+    let base:Option<(String,Option<String>)>=sqlx::query_as("SELECT data,use_data FROM toonflow.prompts WHERE source_key IS NOT NULL OR type='videoPromptGeneration' ORDER BY CASE WHEN source_key=$1 THEN 0 WHEN source_key='universal_multi_parameter' THEN 1 ELSE 2 END,id LIMIT 1").bind(prompt_name).fetch_optional(pool).await.map_err(|e|e.to_string())?;
     let system = base
-        .map(|r| r.1.filter(|v| !v.is_empty()).unwrap_or(r.0))
+        .map(|r| r.0)
         .unwrap_or_else(|| "根据分镜生成专业视频提示词，只输出提示词正文。".into());
     let manual: Option<(Value,)> = sqlx::query_as(
         "SELECT data FROM toonflow.creative_manuals WHERE kind='visual' AND path=$1",
@@ -498,6 +499,49 @@ async fn create_prompt(
             .await;
             Err(reason)
         }
+    }
+}
+
+fn video_prompt_name(model: &str, mode: &str) -> &'static str {
+    let model = model.to_ascii_lowercase();
+    if model.contains("wan") && model.contains("2.6") {
+        "wan_2_6_single_image_first_frame"
+    } else if model.contains("seedance")
+        && (model.contains("2.0") || model.contains("2-0") || model.contains("2_0"))
+    {
+        "seedance_2_multi_parameter"
+    } else if matches!(
+        mode,
+        "startEndRequired" | "endFrameOptional" | "startFrameOptional"
+    ) {
+        "universal_first_last_frame"
+    } else {
+        "universal_multi_parameter"
+    }
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::video_prompt_name;
+
+    #[test]
+    fn selects_the_original_toonflow_video_prompt_variants() {
+        assert_eq!(
+            video_prompt_name("doubao-seedance-2-0-260128", "text"),
+            "seedance_2_multi_parameter"
+        );
+        assert_eq!(
+            video_prompt_name("wan2.6", "text"),
+            "wan_2_6_single_image_first_frame"
+        );
+        assert_eq!(
+            video_prompt_name("doubao-seedance-1-5-pro", "startEndRequired"),
+            "universal_first_last_frame"
+        );
+        assert_eq!(
+            video_prompt_name("doubao-seedance-1-5-pro", "text"),
+            "universal_multi_parameter"
+        );
     }
 }
 #[derive(Deserialize)]

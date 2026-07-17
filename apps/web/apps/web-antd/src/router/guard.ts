@@ -1,4 +1,4 @@
-import type { Router } from 'vue-router';
+import type { RouteRecordRaw, Router } from 'vue-router';
 
 import { LOGIN_PATH } from '@vben/constants';
 import { $t } from '@vben/locales';
@@ -92,7 +92,10 @@ function setupAccessGuard(router: Router) {
 
     // 是否已经生成过动态路由
     if (accessStore.isAccessChecked) {
-      return true;
+      if (areAccessRoutesRegistered(accessStore.accessRoutes, router)) {
+        return true;
+      }
+      accessStore.setIsAccessChecked(false);
     }
 
     // 加载字典数据（不阻塞加载）
@@ -101,7 +104,7 @@ function setupAccessGuard(router: Router) {
     // 生成路由表
     // 当前登录用户拥有的角色标识列表
     let userInfo = userStore.userInfo;
-    if (!userInfo) {
+    if (!userInfo || accessStore.backendAccessMenus.length === 0) {
       // add by 芋艿：由于 yudao 是 fetchUserInfo 统一加载用户 + 权限信息，所以将 fetchMenuListAsync
       const loading = message.loading({
         content: `${$t('common.loadingMenu')}...`,
@@ -139,6 +142,19 @@ function setupAccessGuard(router: Router) {
       ...router.resolve(decodeRedirectPath(redirectPath)),
       replace: true,
     };
+  });
+}
+
+function areAccessRoutesRegistered(
+  routes: RouteRecordRaw[],
+  router: Router,
+): boolean {
+  return routes.every((route) => {
+    const currentRegistered = !route.name || router.hasRoute(route.name);
+    return (
+      currentRegistered &&
+      areAccessRoutesRegistered(route.children ?? [], router)
+    );
   });
 }
 

@@ -1,6 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router';
 
-import type { MenuRecordRaw } from '@vben-core/typings';
+import type { AppRouteRecordRaw, MenuRecordRaw } from '@vben-core/typings';
 
 import { acceptHMRUpdate, defineStore } from 'pinia';
 
@@ -15,6 +15,11 @@ interface AccessState {
    * 可访问的菜单列表
    */
   accessMenus: MenuRecordRaw[];
+  /**
+   * 后端返回的原始菜单树，仅用于生成权限路由。
+   * 不能被过滤后的左侧导航菜单覆盖。
+   */
+  backendAccessMenus: AppRouteRecordRaw[];
   /**
    * 可访问的路由列表
    */
@@ -87,6 +92,9 @@ export const useAccessStore = defineStore('core-access', {
     setAccessMenus(menus: MenuRecordRaw[]) {
       this.accessMenus = menus;
     },
+    setBackendAccessMenus(menus: AppRouteRecordRaw[]) {
+      this.backendAccessMenus = menus;
+    },
     setAccessRoutes(routes: RouteRecordRaw[]) {
       this.accessRoutes = routes;
     },
@@ -128,6 +136,7 @@ export const useAccessStore = defineStore('core-access', {
   state: (): AccessState => ({
     accessCodes: [],
     accessMenus: [],
+    backendAccessMenus: [],
     accessRoutes: [],
     accessToken: null,
     isAccessChecked: false,
