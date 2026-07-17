@@ -62,6 +62,7 @@ pnpm --dir apps/web --filter @vben/web-antd run build
 
 ## 文档
 
+- [AI 启动交接指南](AGENTS.md)
 - [技术架构](docs/technical-solution.md)
 - [配置与模型接入](docs/configuration.md)
 - [启动、部署与运维](docs/deployment.md)

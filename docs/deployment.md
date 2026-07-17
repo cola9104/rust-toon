@@ -1,5 +1,7 @@
 # 启动、部署与运维
 
+AI 编码助手接手项目时应先阅读仓库根目录的 [AI 启动交接指南](../AGENTS.md)。该文件包含本地启动、新服务器启动、systemd、Nginx 和常见故障的可执行命令。
+
 ## 本地开发方案
 
 1. 执行 `docker compose -f script/docker/docker-compose.yml up -d`。
@@ -24,6 +26,46 @@ cargo build --release -p rust-toon-gateway
 - 可选 `REDIS_URL`
 
 推荐由 systemd、Docker、Kubernetes 或其他进程管理器注入环境变量并负责重启。多个网关实例可以共享 PostgreSQL 和 Redis；异步任务轮询使用持久化状态，重复轮询应由供应商任务查询接口保持幂等。
+
+新服务器首次部署建议流程：
+
+1. 安装 Rust stable、Docker Compose、Node.js `22.18+` 或 `24.x`，并通过 Corepack 使用 pnpm `11+`。
+2. 克隆代码到固定目录，例如 `/opt/rust-toon`。
+3. 启动基础设施：`docker compose -f script/docker/docker-compose.yml up -d`。使用托管 PostgreSQL/Redis 时，改为在环境变量中指向托管地址。
+4. 创建 `/etc/rust-toon/gateway.env`，写入 `DATABASE_URL`、`REDIS_URL`、强随机 `JWT_SECRET`、`GATEWAY_HOST`、`GATEWAY_PORT`、`RUST_LOG` 和首次管理员变量。
+5. 执行 `cargo build --release -p rust-toon-gateway`。
+6. 手动加载环境变量运行一次 `target/release/rust-toon-gateway`，确认迁移成功和管理员可登录。
+7. 管理员创建后，从环境文件移除 `BOOTSTRAP_ADMIN_PASSWORD`。
+8. 使用 systemd、Docker 或 Kubernetes 托管网关进程。
+
+systemd 示例：
+
+```ini
+[Unit]
+Description=Rust Toon Gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/rust-toon
+EnvironmentFile=/etc/rust-toon/gateway.env
+ExecStart=/opt/rust-toon/target/release/rust-toon-gateway
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+启用服务：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-toon-gateway
+sudo systemctl status rust-toon-gateway
+curl -fsS http://127.0.0.1:8080/health
+```
 
 ## 前端生产构建
 
