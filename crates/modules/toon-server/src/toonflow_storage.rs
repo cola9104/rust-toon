@@ -1,3 +1,4 @@
+use base64::Engine;
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::{Method, Url, header};
@@ -165,6 +166,36 @@ async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
     Ok((content_type, bytes.to_vec()))
 }
 
+pub async fn image_data_url(file_path: &str) -> Result<String, String> {
+    let key = file_path
+        .strip_prefix("/toonflow/assets/files/")
+        .ok_or_else(|| "不支持的资产图片路径".to_string())?;
+    let (stored_content_type, bytes) = read_image(key).await?;
+    let content_type = image_content_type(&bytes).ok_or_else(|| {
+        format!(
+            "资产参考图不是有效的 PNG、JPEG、GIF 或 WebP 图片（存储类型：{stored_content_type}）"
+        )
+    })?;
+    Ok(format!(
+        "data:{content_type};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if bytes.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
+        Some("image/webp")
+    } else {
+        None
+    }
+}
+
 pub async fn serve_image(Path(key): Path<String>) -> Result<Response<Body>, AppError> {
     let (content_type, bytes) = read_image(&key)
         .await
@@ -181,6 +212,18 @@ pub async fn serve_image(Path(key): Path<String>) -> Result<Response<Body>, AppE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_reference_image_content_type_from_file_signature() {
+        assert_eq!(
+            image_content_type(b"\x89PNG\r\n\x1a\nrest"),
+            Some("image/png")
+        );
+        assert_eq!(image_content_type(b"\xff\xd8\xffrest"), Some("image/jpeg"));
+        assert_eq!(image_content_type(b"GIF89arest"), Some("image/gif"));
+        assert_eq!(image_content_type(b"RIFF1234WEBPrest"), Some("image/webp"));
+        assert_eq!(image_content_type(b"not-an-image"), None);
+    }
 
     #[tokio::test]
     #[ignore = "requires the local MinIO service"]

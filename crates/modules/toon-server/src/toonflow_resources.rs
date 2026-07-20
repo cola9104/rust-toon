@@ -236,6 +236,7 @@ pub struct Prompt {
     type_: String,
     data: String,
     use_data: Option<String>,
+    source_key: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -248,6 +249,8 @@ pub struct SavePrompt {
     data: String,
     #[serde(rename = "useData")]
     use_data: Option<String>,
+    #[serde(rename = "sourceKey")]
+    source_key: Option<String>,
 }
 
 pub async fn list_prompts(
@@ -256,7 +259,7 @@ pub async fn list_prompts(
 ) -> Result<Json<ApiResponse<Vec<Prompt>>>, AppError> {
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, Prompt>(
-        "SELECT id,name,type as type_,data,use_data FROM toonflow.prompts ORDER BY id DESC",
+        "SELECT id,name,type as type_,data,use_data,source_key FROM toonflow.prompts ORDER BY id DESC",
     )
     .fetch_all(&state.pool)
     .await
@@ -270,8 +273,9 @@ pub async fn save_prompt(
     Json(request): Json<SavePrompt>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:update")?;
-    sqlx::query("INSERT INTO toonflow.prompts (id,name,type,data,use_data) VALUES (coalesce($1,nextval('toonflow.prompts_id_seq')),$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET name=excluded.name,type=excluded.type,data=excluded.data,use_data=excluded.use_data")
-        .bind(request.id).bind(request.name).bind(request.type_).bind(request.data).bind(request.use_data).execute(&state.pool).await.map_err(|_| AppError::internal("failed to save prompt"))?;
+    let source_key = request.source_key.filter(|value| !value.trim().is_empty());
+    sqlx::query("INSERT INTO toonflow.prompts (id,name,type,data,use_data,source_key) VALUES (coalesce($1,nextval('toonflow.prompts_id_seq')),$2,$3,$4,$5,$6) ON CONFLICT (id) DO UPDATE SET name=excluded.name,type=excluded.type,data=excluded.data,use_data=excluded.use_data,source_key=excluded.source_key")
+        .bind(request.id).bind(request.name).bind(request.type_).bind(request.data).bind(request.use_data).bind(source_key).execute(&state.pool).await.map_err(|_| AppError::internal("failed to save prompt"))?;
     Ok(Json(ApiResponse::new(())))
 }
 

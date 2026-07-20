@@ -4,7 +4,7 @@ use rust_toon_framework_database::PgPool;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-const REFRESH_TOKEN_TTL_DAYS: i64 = 30;
+const REFRESH_TOKEN_TTL_DAYS: i64 = 1;
 const CLIENT_ID: &str = "default";
 const ADMIN_USER_TYPE: i16 = 2;
 

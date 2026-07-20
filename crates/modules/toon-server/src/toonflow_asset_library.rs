@@ -55,6 +55,7 @@ pub async fn list(
            FROM toonflow.assets a
            JOIN toonflow.projects p ON p.id = a.project_id
            LEFT JOIN toonflow.images i ON i.id = a.image_id
+           WHERE a.parent_asset_id IS NULL
            ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)
@@ -70,12 +71,13 @@ pub async fn link(
     Json(request): Json<ProjectAssetRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:update")?;
-    let asset_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1)")
-            .bind(request.asset_id)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to validate asset"))?;
+    let asset_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1 AND parent_asset_id IS NULL)",
+    )
+    .bind(request.asset_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate asset"))?;
     if !asset_exists {
         return Err(AppError::not_found("asset not found"));
     }

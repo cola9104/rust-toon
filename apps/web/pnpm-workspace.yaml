@@ -254,3 +254,6 @@ allowBuilds:
   esbuild: true
   lefthook: true
   vue-demi: true
+
+patchedDependencies:
+  ant-design-vue@4.2.6: patches/ant-design-vue@4.2.6.patch

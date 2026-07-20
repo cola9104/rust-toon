@@ -9,14 +9,17 @@ mod toonflow_agent_tools;
 mod toonflow_agents;
 mod toonflow_asset_ai;
 mod toonflow_asset_context;
+mod toonflow_asset_description;
 mod toonflow_asset_library;
 mod toonflow_asset_prompt;
 mod toonflow_audio;
+mod toonflow_image_edit_prompt;
 mod toonflow_image_workflow;
 mod toonflow_manuals;
 mod toonflow_materials;
 mod toonflow_novel_events;
 mod toonflow_project;
+mod toonflow_prompt_store;
 mod toonflow_resources;
 mod toonflow_script_ai;
 mod toonflow_storage;
@@ -300,13 +303,10 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_agent_tools::update_plan),
         )
         .route(
-            "/api/script/extractAssets",
+            "/script/extractAssets",
             post(toonflow_script_ai::extract_assets),
         )
-        .route(
-            "/api/script/pollScriptAssets",
-            post(toonflow_script_ai::poll),
-        )
+        .route("/script/pollScriptAssets", post(toonflow_script_ai::poll))
         .route(
             "/api/production/editImage/getImageFlow",
             post(toonflow_image_workflow::get_flow),

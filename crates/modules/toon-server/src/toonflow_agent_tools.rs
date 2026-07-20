@@ -1,6 +1,6 @@
 use crate::{
-    ToonState, ai_client, shared::require, toonflow_agent_runtime, toonflow_asset_ai,
-    toonflow_image_workflow, toonflow_ws::WsEmitter,
+    ToonState, ai_client, shared::require, toonflow_agent_runtime, toonflow_agents,
+    toonflow_asset_ai, toonflow_image_workflow, toonflow_ws::WsEmitter,
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -40,6 +40,50 @@ fn tagged(text: &str, tag: &str) -> Option<String> {
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
     Some(text[start..end].trim().to_string())
+}
+
+async fn role_names_without_appearances(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar(
+        r#"SELECT a.name
+           FROM toonflow.script_assets sa
+           JOIN toonflow.assets a ON a.id=sa.asset_id
+           WHERE sa.script_id=$1 AND a.project_id=$2 AND a.type='role'
+             AND a.parent_asset_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM toonflow.character_appearances ca WHERE ca.script_id=$1 AND ca.role_asset_id=a.id)
+           ORDER BY a.id"#,
+    )
+    .bind(script_id)
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate extracted character appearances"))
+}
+
+async fn missing_appearance_derivatives(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+) -> Result<Vec<String>, AppError> {
+    sqlx::query_scalar(
+        r#"SELECT a.name || ' / ' || ca.name
+           FROM toonflow.character_appearances ca
+           JOIN toonflow.assets a ON a.id=ca.role_asset_id
+           WHERE ca.script_id=$1 AND ca.project_id=$2
+             AND NOT EXISTS (
+               SELECT 1 FROM toonflow.assets d
+               WHERE d.appearance_id=ca.id AND d.parent_asset_id=ca.role_asset_id
+             )
+           ORDER BY a.id,ca.id"#,
+    )
+    .bind(script_id)
+    .bind(project_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate appearance derivatives"))
 }
 
 #[derive(Deserialize)]
@@ -213,6 +257,24 @@ pub(crate) async fn execute_recorded(
     match execute_inner(state, request).await {
         Ok(value) => {
             sqlx::query("UPDATE toonflow.agent_tool_calls SET result=$2,state='success',finish_time=$3 WHERE id=$1").bind(call_id).bind(&value).bind(now_ms()).execute(&state.pool).await.ok();
+            // UI-triggered production tools (for example an image-edit node) must join the
+            // same per-script memory as the persistent Production Agent conversation.
+            if request.emitter.is_none() && request.agent_type == "productionAgent" {
+                if let Some(script_id) = request.script_id {
+                    let memory_id = call_id + 1;
+                    let isolation_key =
+                        format!("productionAgent:{}:{}", request.project_id, script_id);
+                    let content = format!(
+                        "工具 {} 已执行。参数：{}。结果：{}",
+                        request.tool_name, request.arguments, value
+                    );
+                    if sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,create_time)VALUES($1,'productionAgent',$2,'assistant:execution',$3,$4)")
+                        .bind(memory_id).bind(isolation_key).bind(&content).bind(now_ms()).execute(&state.pool).await.is_ok()
+                    {
+                        toonflow_agent_runtime::store_memory_embedding(&state.pool, memory_id, &content).await;
+                    }
+                }
+            }
             Ok((call_id, value))
         }
         Err(error) => {
@@ -666,12 +728,107 @@ pub(crate) async fn execute_inner(
                 data.get(key).cloned().unwrap_or(Value::Null)
             })
         }
+        ("productionAgent", "get_video_workbench") => {
+            let script_id = request
+                .script_id
+                .ok_or_else(|| AppError::bad_request("视频工具缺少 scriptId"))?;
+            crate::toonflow_video::load_generate_data(&state.pool, request.project_id, script_id)
+                .await
+        }
+        ("productionAgent", "generate_video_prompt") => {
+            let track_id = request
+                .arguments
+                .get("trackId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::bad_request("缺少 trackId"))?;
+            let setting: Option<(Option<i64>, String)> =
+                sqlx::query_as("SELECT video_model,mode FROM toonflow.projects WHERE id=$1")
+                    .bind(request.project_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(|_| AppError::internal("failed to load video settings"))?;
+            let (model, mode) = setting.ok_or_else(|| AppError::not_found("project not found"))?;
+            let model = model.ok_or_else(|| AppError::bad_request("项目未配置视频模型"))?;
+            let prompt = crate::toonflow_video::create_prompt(
+                &state.pool,
+                track_id,
+                request.project_id,
+                &model.to_string(),
+                &mode,
+            )
+            .await
+            .map_err(AppError::bad_request)?;
+            Ok(json!({"trackId":track_id,"prompt":prompt}))
+        }
+        ("productionAgent", "update_video_prompt") => {
+            let track_id = request
+                .arguments
+                .get("trackId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::bad_request("缺少 trackId"))?;
+            let prompt = request
+                .arguments
+                .get("prompt")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
+            let result = sqlx::query(
+                "UPDATE toonflow.video_tracks SET prompt=$3 WHERE id=$1 AND project_id=$2",
+            )
+            .bind(track_id)
+            .bind(request.project_id)
+            .bind(prompt)
+            .execute(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to update video prompt"))?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::not_found("video track not found"));
+            }
+            Ok(json!({"trackId":track_id,"prompt":prompt}))
+        }
+        ("productionAgent", "select_video") => {
+            let track_id = request
+                .arguments
+                .get("trackId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::bad_request("缺少 trackId"))?;
+            let video_id = request
+                .arguments
+                .get("videoId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::bad_request("缺少 videoId"))?;
+            let result=sqlx::query("UPDATE toonflow.video_tracks t SET video_id=$3 WHERE t.id=$1 AND t.project_id=$2 AND EXISTS(SELECT 1 FROM toonflow.videos v WHERE v.id=$3 AND v.video_track_id=t.id AND v.state='生成成功')").bind(track_id).bind(request.project_id).bind(video_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to select video"))?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::bad_request("轨道或成功视频不存在"));
+            }
+            Ok(json!({"trackId":track_id,"videoId":video_id}))
+        }
         ("productionAgent", "add_deriveAsset") => {
             let parent = request
                 .arguments
                 .get("assetsId")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AppError::bad_request("缺少 assetsId"))?;
+            let appearance_id = request
+                .arguments
+                .get("appearanceId")
+                .and_then(Value::as_i64)
+                .ok_or_else(|| AppError::bad_request("缺少 appearanceId，禁止临时编写服装"))?;
+            let script_id = request
+                .script_id
+                .ok_or_else(|| AppError::bad_request("人物造型写入缺少 scriptId"))?;
+            let appearance: Option<(String, String)> = sqlx::query_as(
+                "SELECT name,costume_prompt FROM toonflow.character_appearances WHERE id=$1 AND project_id=$2 AND script_id=$3 AND role_asset_id=$4",
+            )
+            .bind(appearance_id)
+            .bind(request.project_id)
+            .bind(script_id)
+            .bind(parent)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to get character appearance"))?;
+            let (appearance_name, costume_prompt) = appearance.ok_or_else(|| {
+                AppError::bad_request("appearanceId 与当前剧本人物不匹配，请重新读取 assets")
+            })?;
             let parent_type: Option<String> = sqlx::query_scalar(
                 "SELECT type FROM toonflow.assets WHERE id=$1 AND project_id=$2",
             )
@@ -680,19 +837,40 @@ pub(crate) async fn execute_inner(
             .fetch_optional(&state.pool)
             .await
             .map_err(|_| AppError::internal("failed to get parent asset"))?;
-            let id = request
-                .arguments
-                .get("id")
-                .and_then(Value::as_i64)
-                .unwrap_or(now_ms() * 1000);
-            sqlx::query("INSERT INTO toonflow.assets(id,name,prompt,type,description,parent_asset_id,project_id,start_time)VALUES($1,$2,'',$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description").bind(id).bind(request.arguments.get("name").and_then(Value::as_str).unwrap_or("衍生资产")).bind(parent_type.ok_or_else(||AppError::not_found("parent asset not found"))?).bind(request.arguments.get("desc").and_then(Value::as_str).unwrap_or_default()).bind(parent).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save derived asset"))?;
-            sqlx::query("INSERT INTO toonflow.project_assets(project_id,asset_id,linked_at)VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
-                .bind(request.project_id).bind(id).bind(now_ms()).execute(&state.pool).await
-                .map_err(|_|AppError::internal("failed to link derived asset to project"))?;
-            if let Some(script_id) = request.script_id {
-                sqlx::query("INSERT INTO toonflow.script_assets(script_id,asset_id)VALUES($1,$2) ON CONFLICT DO NOTHING").bind(script_id).bind(id).execute(&state.pool).await.ok();
+            let existing_id: Option<i64> = sqlx::query_scalar(
+                r#"SELECT id FROM toonflow.assets
+                   WHERE project_id=$1 AND parent_asset_id=$3
+                     AND (appearance_id=$2 OR (
+                       appearance_id IS NULL AND name=$4 AND description=$5
+                     ))
+                   ORDER BY appearance_id NULLS LAST LIMIT 1"#,
+            )
+            .bind(request.project_id)
+            .bind(appearance_id)
+            .bind(parent)
+            .bind(&appearance_name)
+            .bind(&costume_prompt)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to find appearance derivative"))?;
+            let id = existing_id.unwrap_or_else(|| {
+                request
+                    .arguments
+                    .get("id")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(now_ms() * 1000)
+            });
+            let parent_type =
+                parent_type.ok_or_else(|| AppError::not_found("parent asset not found"))?;
+            if parent_type != "role" {
+                return Err(AppError::bad_request(
+                    "只有人物资产需要创建衍生图；场景变化请在分镜阶段生成",
+                ));
             }
-            Ok(json!({"id":id}))
+            sqlx::query("INSERT INTO toonflow.assets(id,name,prompt,prompt_state,type,description,parent_asset_id,appearance_id,project_id,start_time)VALUES($1,$2,$3,'已完成',$4,$3,$5,$6,$7,$8) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description,prompt=excluded.prompt,prompt_state='已完成',prompt_error_reason=NULL,appearance_id=excluded.appearance_id,image_id=CASE WHEN toonflow.assets.description IS DISTINCT FROM excluded.description THEN NULL ELSE toonflow.assets.image_id END")
+                .bind(id).bind(&appearance_name).bind(&costume_prompt).bind(parent_type).bind(parent).bind(appearance_id).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save derived asset"))?;
+            sqlx::query("INSERT INTO toonflow.script_assets(script_id,asset_id)VALUES($1,$2) ON CONFLICT DO NOTHING").bind(script_id).bind(id).execute(&state.pool).await.ok();
+            Ok(json!({"id":id,"appearanceId":appearance_id,"name":appearance_name}))
         }
         ("productionAgent", "del_deriveAsset") => {
             let id = request
@@ -713,10 +891,26 @@ pub(crate) async fn execute_inner(
                 .into_iter()
                 .filter_map(|value| value.as_i64())
                 .collect::<Vec<_>>();
-            let rows = toonflow_asset_ai::schedule_asset_generation(
+            if ids.is_empty() {
+                return Err(AppError::bad_request("ids不能为空"));
+            }
+            let valid_ids: Vec<i64> = sqlx::query_scalar(
+                "SELECT id FROM toonflow.assets WHERE project_id=$1 AND id=ANY($2) AND type='role' AND parent_asset_id IS NOT NULL",
+            )
+            .bind(request.project_id)
+            .bind(&ids)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to validate derived assets"))?;
+            if valid_ids.len() != ids.len() {
+                return Err(AppError::bad_request(
+                    "generate_deriveAsset 只能生成有父资产的人物衍生图，禁止传入人物/场景/道具基础资产",
+                ));
+            }
+            let rows = toonflow_asset_ai::schedule_and_wait_asset_generation(
                 &state.pool,
                 request.project_id,
-                &ids,
+                &valid_ids,
                 request
                     .arguments
                     .get("concurrentCount")
@@ -727,30 +921,55 @@ pub(crate) async fn execute_inner(
             Ok(json!(rows))
         }
         ("productionAgent", name) if name.starts_with("run_sub_agent_") => {
-            let (agent_key, label, flow_tag) = match name {
-                "run_sub_agent_derive_assets" => {
-                    ("productionAgent:deriveAssetsAgent", "衍生资产", None)
-                }
-                "run_sub_agent_generate_assets" => {
-                    ("productionAgent:generateAssetsAgent", "资产生成", None)
-                }
+            let (agent_key, label, flow_tag, allowed_tools): (_, _, _, &[&str]) = match name {
+                "run_sub_agent_derive_assets" => (
+                    "productionAgent:deriveAssetsAgent",
+                    "衍生资产",
+                    None,
+                    &["get_flowData", "add_deriveAsset", "del_deriveAsset"],
+                ),
+                "run_sub_agent_generate_assets" => (
+                    "productionAgent:generateAssetsAgent",
+                    "资产生成",
+                    None,
+                    &["get_flowData", "generate_deriveAsset"],
+                ),
                 "run_sub_agent_director_plan" => (
                     "productionAgent:directorPlanAgent",
                     "导演规划",
                     Some(("scriptPlan", "scriptPlan")),
+                    &["get_flowData", "set_flowData", "use_skill"],
                 ),
-                "run_sub_agent_storyboard_gen" => {
-                    ("productionAgent:storyboardGenAgent", "分镜图生成", None)
-                }
-                "run_sub_agent_storyboard_panel" => {
-                    ("productionAgent:storyboardPanelAgent", "分镜面板", None)
-                }
+                "run_sub_agent_storyboard_gen" => (
+                    "productionAgent:storyboardGenAgent",
+                    "分镜图生成",
+                    None,
+                    &["get_flowData", "generate_storyboard"],
+                ),
+                "run_sub_agent_image_edit" => (
+                    "productionAgent:storyboardGenAgent",
+                    "图片编辑规划",
+                    None,
+                    &["get_flowData"],
+                ),
+                "run_sub_agent_storyboard_panel" => (
+                    "productionAgent:storyboardPanelAgent",
+                    "分镜面板",
+                    None,
+                    &["get_flowData", "add_flowData_storyboard", "use_skill"],
+                ),
                 "run_sub_agent_storyboard_table" => (
                     "productionAgent:storyboardTableAgent",
                     "分镜表",
                     Some(("storyboardTable", "storyboardTable")),
+                    &["get_flowData", "set_flowData"],
                 ),
-                "run_sub_agent_supervision" => ("productionAgent:supervisionAgent", "监制", None),
+                "run_sub_agent_supervision" => (
+                    "productionAgent:supervisionAgent",
+                    "监制",
+                    None,
+                    &["get_flowData"],
+                ),
                 _ => return Err(AppError::bad_request("不支持的生产子 Agent")),
             };
             let prompt = request
@@ -758,6 +977,34 @@ pub(crate) async fn execute_inner(
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
+            if matches!(
+                name,
+                "run_sub_agent_derive_assets" | "run_sub_agent_generate_assets"
+            ) {
+                let script_id = request
+                    .script_id
+                    .ok_or_else(|| AppError::bad_request("人物造型流程缺少 scriptId"))?;
+                let missing_extraction =
+                    role_names_without_appearances(&state.pool, request.project_id, script_id)
+                        .await?;
+                if !missing_extraction.is_empty() {
+                    return Err(AppError::bad_request(format!(
+                        "AI 资产提取尚未保存以下人物的场景服装提示词：{}。请先回到剧本资产阶段重新执行 AI 资产提取。",
+                        missing_extraction.join("、")
+                    )));
+                }
+                if name == "run_sub_agent_generate_assets" {
+                    let missing =
+                        missing_appearance_derivatives(&state.pool, request.project_id, script_id)
+                            .await?;
+                    if !missing.is_empty() {
+                        return Err(AppError::bad_request(format!(
+                            "不能生成衍生图片：以下已提取造型尚未创建衍生人物：{}。请先执行人物衍生资产分析。",
+                            missing.join("、")
+                        )));
+                    }
+                }
+            }
             let system = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key)
                 .await
                 .map_err(AppError::bad_request)?;
@@ -775,7 +1022,52 @@ pub(crate) async fn execute_inner(
             } else {
                 String::new()
             };
-            let output=ai_client::text(&state.pool,agent_key,&format!("{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务，使用要求的工作区 XML 格式输出。{project_hint}"),prompt).await.map_err(AppError::bad_request)?;
+            let sub_system = format!(
+                "{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务并实际调用要求的工具，不得只用文字声称完成。{project_hint}"
+            );
+            let mut output = Box::pin(toonflow_agents::run_scoped_production_agent(
+                state,
+                agent_key,
+                &sub_system,
+                prompt,
+                request.project_id,
+                request.script_id,
+                allowed_tools,
+            ))
+            .await?;
+            if agent_key == "productionAgent:deriveAssetsAgent" {
+                let script_id = request
+                    .script_id
+                    .ok_or_else(|| AppError::bad_request("衍生资产分析缺少 scriptId"))?;
+                let missing =
+                    missing_appearance_derivatives(&state.pool, request.project_id, script_id)
+                        .await?;
+                if !missing.is_empty() {
+                    let repair_prompt = format!(
+                        "上轮未完整引用资产提取阶段的造型。以下 appearance 尚无衍生人物：{}。立即重新读取 assets，逐项原样复制 appearance.costumePrompt，并携带对应 appearanceId 调用 add_deriveAsset；禁止临时改写服装。",
+                        missing.join("、")
+                    );
+                    output = Box::pin(toonflow_agents::run_scoped_production_agent(
+                        state,
+                        agent_key,
+                        &sub_system,
+                        &repair_prompt,
+                        request.project_id,
+                        request.script_id,
+                        allowed_tools,
+                    ))
+                    .await?;
+                    let still_missing =
+                        missing_appearance_derivatives(&state.pool, request.project_id, script_id)
+                            .await?;
+                    if !still_missing.is_empty() {
+                        return Err(AppError::bad_request(format!(
+                            "衍生资产分析未覆盖全部出场人物，仍缺少：{}",
+                            still_missing.join("、")
+                        )));
+                    }
+                }
+            }
             if let (Some((tag, key)), Some(script_id)) = (flow_tag, request.script_id) {
                 if let Some(content) = tagged(&output, tag) {
                     let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load production workspace"))?.unwrap_or_else(||json!({}));

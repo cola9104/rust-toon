@@ -740,6 +740,7 @@ pub async fn list_assets(
              SELECT 1 FROM toonflow.project_assets pa
              WHERE pa.asset_id = a.id AND pa.project_id = $1
            )
+             AND a.parent_asset_id IS NULL
            ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)

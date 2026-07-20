@@ -237,7 +237,7 @@ deepRetrieve 用于搜索历史对话中的关键信息，仅在用户要求回�
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     } else {
-        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
+        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     }
@@ -353,7 +353,7 @@ fn tool_def(name: &str) -> Value {
             json!({"type":"function","function":{"name":"set_flowData","description":"写入生产工作区数据。保存导演规划、分镜表等产出物。","parameters":{"type":"object","properties":{"key":{"type":"string","description":"数据key"},"value":{"type":"object","description":"要写入的数据"}},"required":["key","value"]}}})
         }
         "add_deriveAsset" => {
-            json!({"type":"function","function":{"name":"add_deriveAsset","description":"新增或更新衍生资产。从基础资产派生出变体（如角色换装、场景时间变体）。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"id":{"type":"integer"},"name":{"type":"string"},"desc":{"type":"string"}},"required":["assetsId","name","desc"]}}})
+            json!({"type":"function","function":{"name":"add_deriveAsset","description":"根据资产提取阶段保存的人物造型新增或更新衍生人物资产。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"appearanceId":{"type":"integer","description":"get_flowData 返回的 appearance.id"},"id":{"type":"integer"},"name":{"type":"string"},"desc":{"type":"string"}},"required":["assetsId","appearanceId","name","desc"]}}})
         }
         "del_deriveAsset" => {
             json!({"type":"function","function":{"name":"del_deriveAsset","description":"删除衍生资产。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"id":{"type":"integer"}},"required":["assetsId","id"]}}})
@@ -405,6 +405,88 @@ fn native_tool_definitions(agent_type: &str) -> Vec<Value> {
         .iter()
         .map(|name| tool_def(name))
         .collect()
+}
+
+pub(crate) async fn run_scoped_production_agent(
+    state: &ToonState,
+    agent_key: &str,
+    system: &str,
+    prompt: &str,
+    project_id: i64,
+    script_id: Option<i64>,
+    allowed_tools: &[&str],
+) -> Result<String, AppError> {
+    let definitions = allowed_tools
+        .iter()
+        .map(|name| tool_def(name))
+        .collect::<Vec<_>>();
+    let mut messages = vec![
+        json!({"role":"system","content":format!("{system}\n\n{}", tool_guide("productionAgent"))}),
+        json!({"role":"user","content":prompt}),
+    ];
+    for _ in 0..24 {
+        let raw = ai_client::text_tools(
+            &state.pool,
+            agent_key,
+            messages.clone(),
+            definitions.clone(),
+        )
+        .await
+        .map_err(AppError::bad_request)?;
+        let message = raw
+            .pointer("/choices/0/message")
+            .cloned()
+            .ok_or_else(|| AppError::bad_request("执行层 Agent 响应缺少 message"))?;
+        let calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if calls.is_empty() {
+            return Ok(message
+                .get("content")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string());
+        }
+        messages.push(message);
+        for call in calls {
+            let call_id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::bad_request("执行层工具调用缺少 id"))?;
+            let name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| AppError::bad_request("执行层工具调用缺少名称"))?;
+            if !allowed_tools.contains(&name) {
+                return Err(AppError::bad_request(format!(
+                    "执行层 Agent 请求了未授权工具 {name}"
+                )));
+            }
+            let arguments = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .unwrap_or("{}");
+            let arguments = serde_json::from_str(arguments)
+                .map_err(|_| AppError::bad_request("执行层工具参数不是合法 JSON"))?;
+            let request = toonflow_agent_tools::ToolRequest {
+                emitter: None,
+                agent_type: "productionAgent".to_string(),
+                project_id,
+                script_id,
+                tool_name: name.to_string(),
+                arguments,
+            };
+            let result = Box::pin(toonflow_agent_tools::execute_recorded(state, &request)).await;
+            let content = match result {
+                Ok((_, value)) => value.to_string(),
+                Err(error) => json!({"error":format!("{error:?}")}).to_string(),
+            };
+            messages.push(json!({"role":"tool","tool_call_id":call_id,"content":content}));
+        }
+    }
+    Err(AppError::bad_request("执行层 Agent 工具调用超过最大轮数"))
 }
 
 async fn run_native_tools(

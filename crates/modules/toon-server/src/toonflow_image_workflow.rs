@@ -1,4 +1,7 @@
-use crate::{ToonState, ai_client, shared::require};
+use crate::{
+    ToonState, ai_client, shared::require, toonflow_asset_prompt, toonflow_image_edit_prompt,
+    toonflow_prompt_store,
+};
 use axum::{Json, extract::State};
 use base64::Engine;
 use image::{DynamicImage, ImageFormat, RgbaImage, imageops};
@@ -31,7 +34,9 @@ pub async fn get_flow(
     }))))
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveFlow {
+    asset_id: Option<i64>,
     edges: Value,
     nodes: Value,
 }
@@ -42,12 +47,28 @@ pub async fn save_flow(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     let id = chrono::Utc::now().timestamp_millis();
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin image flow transaction"))?;
     sqlx::query("INSERT INTO toonflow.image_flows(id,flow_data)VALUES($1,$2)")
         .bind(id)
         .bind(json!({"edges":req.edges,"nodes":req.nodes}))
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to save image flow"))?;
+    if let Some(asset_id) = req.asset_id {
+        sqlx::query("UPDATE toonflow.assets SET flow_id=$2 WHERE id=$1")
+            .bind(asset_id)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to bind image flow to asset"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit image flow"))?;
     Ok(Json(ApiResponse::new(json!({"id":id}))))
 }
 #[derive(Deserialize)]
@@ -80,6 +101,8 @@ pub struct FlowImage {
     ratio: String,
     prompt: String,
     project_id: i64,
+    #[serde(default)]
+    target_type: String,
 }
 pub async fn generate_flow_image(
     user: CurrentUser,
@@ -87,15 +110,19 @@ pub async fn generate_flow_image(
     Json(req): Json<FlowImage>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
-    let references = req.references.as_ref().map_or(0, Vec::len);
-    let url = ai_client::image(
+    let references = req.references.unwrap_or_default();
+    let prompt = toonflow_image_edit_prompt::build(
+        toonflow_image_edit_prompt::ImageEditTarget::parse(&req.target_type),
+        &req.prompt,
+        &req.ratio,
+        references.len(),
+    );
+    let url = ai_client::image_with_references(
         &state.pool,
         &req.model,
-        &format!(
-            "{}\n画面比例：{}\n参考图数量：{references}",
-            req.prompt, req.ratio
-        ),
+        &prompt,
         &req.quality,
+        references,
     )
     .await
     .map_err(AppError::bad_request)?;
@@ -193,10 +220,17 @@ pub async fn schedule_storyboard_generation(
                         )
                         .await
                         .unwrap_or_default();
+                    let storyboard_instruction =
+                        toonflow_prompt_store::load(&pool, "storyboard_image", "").await;
                     match ai_client::image_with_references(
                         &pool,
                         &model,
-                        &format!("{prompt}\n画面比例：{ratio}"),
+                        &toonflow_asset_prompt::storyboard_prompt_with_instruction(
+                            &prompt,
+                            &ratio,
+                            references.len(),
+                            Some(&storyboard_instruction),
+                        ),
                         &quality,
                         references,
                     )

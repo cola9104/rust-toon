@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -40,6 +40,7 @@ import {
   deleteScripts,
   deleteTrackVideo,
   exportFinalVideo,
+  executeAgentTool,
   extractScriptAssets,
   getAssets,
   getFlowData,
@@ -49,6 +50,7 @@ import {
   generateTrackVideo,
   generateVideoPrompt,
   previewStoryboardImages,
+  pollScriptAssets,
   generateNovelEvents,
   getNovelData,
   getProject,
@@ -73,6 +75,10 @@ import {
 } from '#/api/toonflow';
 import { parseNovelText } from './novel-import';
 import AgentChat from './AgentChat.vue';
+import ImageFlowEditor from './ImageFlowEditor.vue';
+import ProductionFlowCanvas from './ProductionFlowCanvas.vue';
+import { assetFileUrl } from '../assets/asset-types';
+import '../shared/page-card.css';
 
 defineOptions({ name: 'ToonflowProjectDetail' });
 
@@ -99,23 +105,27 @@ const statistics = reactive<ToonflowApi.ProjectStatistics>({ roleCount: 0, scrip
 const novels = ref<ToonflowApi.NovelChapter[]>([]);
 const scripts = ref<ToonflowApi.Script[]>([]);
 const assets = ref<ToonflowApi.Asset[]>([]);
+const productionAssets = ref<ToonflowApi.Asset[]>([]);
 const storyboards = ref<ToonflowApi.Storyboard[]>([]);
 const selectedScriptId = ref<number>();
+const selectedScript = computed(() =>
+  scripts.value.find((item) => item.id === selectedScriptId.value),
+);
 const flowText = ref('{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}');
 
 const novelModalOpen = ref(false);
 const scriptModalOpen = ref(false);
 const storyboardModalOpen = ref(false);
 const flowImageModalOpen = ref(false);
-const flowImageResult = ref('');
 const imageFlowId = ref<number>();
+const editingAssetId = ref<number>();
+const editingAssetName = ref('');
 const imageFlowNodes = ref<any[]>([]);
 const imageFlowEdges = ref<any[]>([]);
-const flowUploadInput = ref<HTMLInputElement>();
+const generatingImageNodeId = ref('');
 const storyboardPreviewOpen = ref(false);
 const storyboardPreview = ref('');
 const videoTracks = ref<any[]>([]);
-const flowImageForm = reactive({ prompt: '', references: '' });
 const agentType = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
 const scriptPlan = reactive({ storySkeleton: '', adaptationStrategy: '' });
 
@@ -160,6 +170,39 @@ function updatePipelineStage(toolName: string, status: StageStatus) {
 
 function onAgentToolResult(payload: { toolName: string; result: any }) {
   const { toolName, result } = payload;
+  if (
+    [
+      'add_deriveAsset',
+      'del_deriveAsset',
+      'generate_deriveAsset',
+      'run_sub_agent_derive_assets',
+      'run_sub_agent_generate_assets',
+    ].includes(toolName)
+  ) {
+    void loadFlow().then(() => {
+      if (toolName === 'generate_deriveAsset' || toolName === 'run_sub_agent_generate_assets') {
+        scheduleProductionAssetRefresh();
+      }
+    });
+    return;
+  }
+  if (['generate_video_prompt', 'select_video', 'update_video_prompt'].includes(toolName)) {
+    loadFlow();
+    return;
+  }
+  if (
+    [
+      'run_sub_agent_director_plan',
+      'run_sub_agent_storyboard_table',
+      'run_sub_agent_storyboard_panel',
+      'run_sub_agent_storyboard_gen',
+      'add_flowData_storyboard',
+      'update_storyboard',
+      'generate_storyboard',
+    ].includes(toolName)
+  ) {
+    void loadFlow();
+  }
   // Extract workspace content from sub-agent results
   let raw = typeof result === 'string' ? result : JSON.stringify(result);
   // If result is a JSON wrapper like {"agent":"...","content":"..."}, extract content
@@ -238,8 +281,15 @@ function renderMarkdown(text: string): string {
 // Agent chat messages (WebSocket-driven)
 interface ChatContentBlock { type: string; id: string; data: any; status: string }
 interface ChatMessage { id: string; role: string; name?: string; status: string; datetime: string; content: ChatContentBlock[] }
-const chatMessages = ref<ChatMessage[]>([]);
+const scriptChatMessages = ref<ChatMessage[]>([]);
+const productionChatMessages = ref<ChatMessage[]>([]);
+const activeAgentMessages = computed(() =>
+  agentType.value === 'productionAgent'
+    ? productionChatMessages.value
+    : scriptChatMessages.value,
+);
 const agentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
+const productionAgentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
 
 const novelForm = reactive({
   id: undefined as number | undefined,
@@ -269,8 +319,21 @@ const storyboardForm = reactive({
   associateAssetsIds: [] as number[],
 });
 
+function scriptEpisodeNumber(script: ToonflowApi.Script) {
+  const match = script.name.match(/(?:EP|第)\s*0*(\d+)/i);
+  return match?.[1] ? Number(match[1]) : Number.POSITIVE_INFINITY;
+}
+
+const orderedScripts = computed(() =>
+  [...scripts.value].sort(
+    (left, right) =>
+      scriptEpisodeNumber(left) - scriptEpisodeNumber(right) ||
+      left.createTime - right.createTime,
+  ),
+);
+
 const scriptOptions = computed(() =>
-  scripts.value.map((item) => ({ label: item.name, value: item.id })),
+  orderedScripts.value.map((item) => ({ label: item.name, value: item.id })),
 );
 
 const assetOptions = computed(() =>
@@ -278,12 +341,13 @@ const assetOptions = computed(() =>
 );
 
 const novelColumns = [
-  { title: '序号', dataIndex: 'index', width: 60 },
-  { title: '分卷', dataIndex: 'reel', width: 100 },
-  { title: '章节', dataIndex: 'chapter', width: 140, ellipsis: true },
-  { title: '状态', dataIndex: 'eventState', width: 70 },
-  { title: '事件', dataIndex: 'event', width: 300, ellipsis: true },
-  { title: '操作', key: 'action', width: 140, fixed: 'right' as const },
+  { title: '序号', dataIndex: 'index', width: 72, align: 'center' as const },
+  { title: '分卷', dataIndex: 'reel', width: 120, ellipsis: true },
+  { title: '章节', dataIndex: 'chapter', width: 180, ellipsis: true },
+  { title: '正文摘要', dataIndex: 'chapterData', width: 360 },
+  { title: '状态', dataIndex: 'eventState', width: 96, align: 'center' as const },
+  { title: '事件', dataIndex: 'event', width: 360 },
+  { title: '操作', key: 'action', width: 220, fixed: 'right' as const },
 ];
 
 const storyboardColumns = [
@@ -307,8 +371,11 @@ async function loadNovels() {
 
 async function loadScripts() {
   scripts.value = await getScripts(projectId.value);
-  if (!selectedScriptId.value && scripts.value.length > 0) {
-    selectedScriptId.value = scripts.value[0]!.id;
+  const selectionStillExists = scripts.value.some(
+    (script) => script.id === selectedScriptId.value,
+  );
+  if (!selectionStillExists && orderedScripts.value.length > 0) {
+    selectedScriptId.value = orderedScripts.value[0]!.id;
   }
 }
 
@@ -321,13 +388,38 @@ async function loadFlow() {
     flowText.value =
       '{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}';
     storyboards.value = [];
+    productionAssets.value = [];
     return;
   }
   const flow = await getFlowData(projectId.value, selectedScriptId.value);
   flowText.value = JSON.stringify(flow, null, 2);
+  productionAssets.value = Array.isArray(flow.assets) ? flow.assets : [];
   storyboards.value = await getStoryboards(projectId.value, selectedScriptId.value);
   const workbench = await getVideoWorkbench(projectId.value, selectedScriptId.value);
   videoTracks.value = workbench.trackList ?? [];
+}
+
+let productionAssetRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let productionAssetRefreshAttempts = 0;
+
+function scheduleProductionAssetRefresh() {
+  if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
+  productionAssetRefreshAttempts = 0;
+  const refresh = async () => {
+    await loadFlow();
+    productionAssetRefreshAttempts += 1;
+    if (
+      productionAssetRefreshAttempts < 40 &&
+      productionAssets.value.some(
+        (asset) =>
+          asset.imageState === '生成中' ||
+          asset.derive?.some((derived) => derived.imageState === '生成中'),
+      )
+    ) {
+      productionAssetRefreshTimer = setTimeout(refresh, 3000);
+    }
+  };
+  productionAssetRefreshTimer = setTimeout(refresh, 1500);
 }
 
 async function loadAll() {
@@ -470,9 +562,21 @@ async function removeScript(script: any) {
 async function extractAssetsFromScript(script: ToonflowApi.Script) {
   await extractScriptAssets(projectId.value, [script.id]);
   message.success('资产提取任务已提交');
-  window.setTimeout(async () => {
-    await Promise.all([loadScripts(), loadAssets()]);
-  }, 3000);
+  for (let attempt = 0; attempt < 90; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2000));
+    const [result] = await pollScriptAssets([script.id]);
+    if (!result || result.extractState === 2 || result.extractState === 0) continue;
+    await Promise.all([loadScripts(), loadAssets(), loadFlow()]);
+    if (result.extractState === 1) {
+      message.success(
+        `资产提取完成，共识别 ${result.appearanceCount ?? 0} 套人物场景服装/形态，请在分镜制作中确认后生成`,
+      );
+    } else {
+      message.error(result.errorReason || '资产提取失败');
+    }
+    return;
+  }
+  message.warning('资产提取仍在处理中，请稍后刷新查看');
 }
 
 async function loadAgentMemory() {
@@ -481,7 +585,11 @@ async function loadAgentMemory() {
 
 async function resetAgentWorkspace() {
   // Clear chat messages
-  chatMessages.value = [];
+  if (agentType.value === 'productionAgent') {
+    productionChatMessages.value = [];
+  } else {
+    scriptChatMessages.value = [];
+  }
   // Reset workspace tabs
   workspaceTabs.forEach((t) => (t.content = ''));
   workspaceActiveTab.value = 'storySkeleton';
@@ -498,6 +606,19 @@ async function resetAgentWorkspace() {
   message.success('已重新开始');
 }
 
+async function resetProductionAgent() {
+  if (!selectedScriptId.value) {
+    message.warning('请先选择剧本');
+    return;
+  }
+  const isolationKey = `productionAgent:${projectId.value}:${selectedScriptId.value}`;
+  await clearAgentMemory('productionAgent', isolationKey);
+  productionChatMessages.value = [];
+  productionAgentChatRef.value?.disconnect();
+  window.setTimeout(() => productionAgentChatRef.value?.connect(), 200);
+  message.success('当前剧本的分镜制作 Agent 已重新开始');
+}
+
 async function saveAgentWorkspace() {
   await saveScriptAgentPlan(projectId.value, {
     ...scriptPlan,
@@ -508,7 +629,7 @@ async function saveAgentWorkspace() {
 
 function openScriptGeneration() {
   agentType.value = 'scriptAgent';
-  chatMessages.value = [];
+  scriptChatMessages.value = [];
   agentChatRef.value?.connect();
   setTimeout(() => {
     agentChatRef.value?.send(
@@ -533,13 +654,39 @@ async function saveFlowText() {
   message.success('生产工作流已保存');
 }
 
-async function createFlowImage() {
+function collectUpstreamNodeIds(nodeId: string) {
+  const visited = new Set<string>();
+  const visit = (id: string) => {
+    for (const edge of imageFlowEdges.value.filter((item) => item.target === id)) {
+      if (!visited.has(edge.source)) {
+        visited.add(edge.source);
+        visit(edge.source);
+      }
+    }
+  };
+  visit(nodeId);
+  return visited;
+}
+
+async function createFlowImage(nodeId: string) {
   if (!project.value?.imageModel) return message.warning('请先配置项目图片模型');
-  const result = await generateFlowImage({ projectId: projectId.value, model: String(project.value.imageModel), quality: imageQuality.value, ratio: project.value.videoRatio || '16:9', prompt: flowImageForm.prompt, references: flowImageForm.references.split('\n').map((value) => value.trim()).filter(Boolean) });
-  flowImageResult.value = result.url;
-  const generatedNode = imageFlowNodes.value.find((node) => node.type === 'generated');
-  if (generatedNode) generatedNode.data.generatedImage = result.url;
-  message.success('工作流图片已生成');
+  const generatedNode = imageFlowNodes.value.find((node) => node.id === nodeId && node.type === 'generated');
+  if (!generatedNode) return;
+  const upstreamIds = collectUpstreamNodeIds(nodeId);
+  const upstream = imageFlowNodes.value.filter((node) => upstreamIds.has(node.id));
+  const references = upstream.flatMap((node) => [node.data.image, node.data.generatedImage]).filter(Boolean);
+  const prompt = [...upstream.filter((node) => node.type === 'prompt').map((node) => node.data.prompt), generatedNode.data.prompt].filter(Boolean).join('\n');
+  if (!references.length) return message.warning('请先连接至少一个图片节点');
+  if (!prompt.trim()) return message.warning('请先连接编辑指令节点或填写节点编辑要求');
+  generatingImageNodeId.value = nodeId;
+  try {
+    const result = await generateFlowImage({ projectId: projectId.value, model: String(project.value.imageModel), quality: imageQuality.value, ratio: project.value.videoRatio || '16:9', prompt, references, targetType: generatedNode.data.targetType || 'storyboard' });
+    generatedNode.data.generatedImage = result.url;
+    generatedNode.data.references = references;
+    message.success('当前节点图片已生成');
+  } finally {
+    generatingImageNodeId.value = '';
+  }
 }
 
 function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
@@ -553,7 +700,7 @@ function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
         ? { image: '' }
         : type === 'prompt'
           ? { prompt: '' }
-          : { generatedImage: '', references: [] },
+          : { generatedImage: '', prompt: '', references: [], targetType: 'storyboard' },
   });
   if (imageFlowNodes.value.length > 1) {
     const source = imageFlowNodes.value.at(-2)?.id;
@@ -561,17 +708,57 @@ function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
   }
 }
 
-async function openImageFlowEditor() {
+async function openAssetImageFlow(asset: ToonflowApi.Asset) {
   if (!selectedScriptId.value) return message.warning('请先选择剧本');
+  editingAssetId.value = asset.id;
+  editingAssetName.value = asset.name;
+  imageFlowId.value = asset.flowId;
+  imageFlowNodes.value = [];
+  imageFlowEdges.value = [];
   if (imageFlowId.value) {
     const flow = await getImageFlow(imageFlowId.value);
     imageFlowNodes.value = flow?.nodes ?? [];
     imageFlowEdges.value = flow?.edges ?? [];
   }
   if (imageFlowNodes.value.length === 0) {
-    addImageFlowNode('upload');
-    addImageFlowNode('prompt');
-    addImageFlowNode('generated');
+    const parentAsset = asset.parentAssetId
+      ? productionAssets.value.find((item) => item.id === asset.parentAssetId)
+      : undefined;
+    const sourceImage = parentAsset?.imageFilePath || asset.imageFilePath;
+    const initialPrompt = asset.prompt || asset.description || asset.remark || '';
+    const suffix = Date.now();
+    const sourceId = `upload-${suffix}`;
+    const promptId = `prompt-${suffix}`;
+    const generatedId = `generated-${suffix}`;
+    imageFlowNodes.value = [
+      {
+        id: sourceId,
+        type: 'upload',
+        position: { x: 0, y: 0 },
+        data: { image: assetFileUrl(sourceImage) },
+      },
+      {
+        id: promptId,
+        type: 'prompt',
+        position: { x: 330, y: 0 },
+        data: { prompt: initialPrompt },
+      },
+      {
+        id: generatedId,
+        type: 'generated',
+        position: { x: 660, y: 0 },
+        data: {
+          generatedImage: '',
+          prompt: initialPrompt,
+          references: [],
+          targetType: asset.type === 'scene' ? 'scene' : 'role',
+        },
+      },
+    ];
+    imageFlowEdges.value = [
+      { id: `edge-${sourceId}-${generatedId}`, source: sourceId, target: generatedId },
+      { id: `edge-${promptId}-${generatedId}`, source: promptId, target: generatedId },
+    ];
   }
   flowImageModalOpen.value = true;
 }
@@ -580,16 +767,18 @@ async function saveVisualImageFlow() {
   if (imageFlowId.value) {
     await updateImageFlow(imageFlowId.value, imageFlowNodes.value, imageFlowEdges.value);
   } else {
-    const result = await saveImageFlow(imageFlowNodes.value, imageFlowEdges.value);
+    const result = await saveImageFlow(
+      imageFlowNodes.value,
+      imageFlowEdges.value,
+      editingAssetId.value,
+    );
     imageFlowId.value = result.id;
+    await loadFlow();
   }
   message.success('图片工作流已保存');
 }
 
-async function uploadImageFlowReference(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
+async function uploadImageFlowReference(nodeId: string, file: File) {
   if (!file || !selectedScriptId.value) return;
   const base64Data = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -598,13 +787,34 @@ async function uploadImageFlowReference(event: Event) {
     reader.readAsDataURL(file);
   });
   const url = await uploadFlowImage(projectId.value, selectedScriptId.value, base64Data);
-  const uploadNode = imageFlowNodes.value.find((node) => node.type === 'upload');
+  const uploadNode = imageFlowNodes.value.find((node) => node.id === nodeId && node.type === 'upload');
   if (uploadNode) uploadNode.data.image = url;
-  flowImageForm.references = [
-    ...flowImageForm.references.split('\n').filter(Boolean),
-    url,
-  ].join('\n');
   message.success('参考图上传成功');
+}
+
+function connectImageFlow(connection: any) {
+  if (!connection.source || !connection.target || connection.source === connection.target) return;
+  const exists = imageFlowEdges.value.some((edge) => edge.source === connection.source && edge.target === connection.target);
+  if (!exists) imageFlowEdges.value.push({ id: `edge-${connection.source}-${connection.target}-${Date.now()}`, source: connection.source, target: connection.target });
+}
+
+async function planImageEditWithAgent(nodeId: string) {
+  const node = imageFlowNodes.value.find((item) => item.id === nodeId);
+  if (!node || !selectedScriptId.value) return message.warning('请先选择剧本');
+  generatingImageNodeId.value = nodeId;
+  try {
+    const result = await executeAgentTool({
+      agentType: 'productionAgent',
+      projectId: projectId.value,
+      scriptId: selectedScriptId.value,
+      toolName: 'run_sub_agent_image_edit',
+      arguments: { prompt: `请读取当前剧本、资产和分镜上下文，为一次${node.data.targetType || 'storyboard'}图片编辑生成可直接执行的中文编辑指令。只输出编辑指令，明确需要改变的内容以及必须保持不变的人物身份、构图和视觉元素，不要执行生图。` },
+    });
+    node.data.prompt = result.result?.content || result.result || '';
+    message.success('生产 Agent 已生成当前节点的编辑指令');
+  } finally {
+    generatingImageNodeId.value = '';
+  }
 }
 
 function removeImageFlowNode(id: string) {
@@ -675,16 +885,30 @@ async function retryVideo(video:any,track:any){if(!project.value?.videoModel)ret
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
 watch(selectedScriptId, () => {
+  productionChatMessages.value = [];
   loadFlow();
 });
 
+watch(activeTab, (tab) => {
+  if (tab === 'script-agent') agentType.value = 'scriptAgent';
+  if (tab === 'video' || tab === 'production') agentType.value = 'productionAgent';
+  loadAgentMemory();
+});
+
 onMounted(loadAll);
+onBeforeUnmount(() => {
+  if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
+});
 watch(projectId, () => loadAll());
 </script>
 
 <template>
   <Page auto-content-height>
-    <Card :bordered="false" :loading="loading" class="h-full">
+    <Card
+      :bordered="false"
+      :loading="loading"
+      class="toonflow-page-card h-full"
+    >
       <template #title>
         <Space>
           <Button @click="router.back()">返回</Button>
@@ -715,9 +939,10 @@ watch(projectId, () => loadAll());
             </Space>
           </div>
           <Table
+            class="novel-table"
             :columns="novelColumns"
             :data-source="novels"
-            :scroll="{ x: 840 }"
+            :scroll="{ x: 1408 }"
             :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 章` }"
             row-key="id"
             size="small"
@@ -728,15 +953,22 @@ watch(projectId, () => loadAll());
                   {{ record.eventState === 1 ? '已提取' : record.eventState === -1 ? '失败' : '待提取' }}
                 </Tag>
               </template>
+              <template v-if="column.dataIndex === 'chapterData'">
+                <span class="novel-cell-text" :title="record.chapterData || ''">
+                  {{ record.chapterData || '暂无正文' }}
+                </span>
+              </template>
               <template v-if="column.dataIndex === 'event'">
-                <span class="event-text">{{ formatEventDisplay(record.event) }}</span>
+                <span class="novel-cell-text" :title="formatEventDisplay(record.event)">
+                  {{ formatEventDisplay(record.event) || '尚未提取事件' }}
+                </span>
               </template>
               <template v-if="column.key === 'action'">
-                <Space>
-                  <Button type="link" @click="openNovel(record)">编辑</Button>
-                  <Button type="link" @click="extractNovelEvents(record)">提取事件</Button>
+                <Space :size="4" class="novel-actions">
+                  <Button size="small" type="link" @click="openNovel(record)">编辑</Button>
+                  <Button size="small" type="link" @click="extractNovelEvents(record)">提取事件</Button>
                   <Popconfirm title="确认删除章节？" @confirm="removeNovel(record)">
-                    <Button danger type="link">删除</Button>
+                    <Button danger size="small" type="link">删除</Button>
                   </Popconfirm>
                 </Space>
               </template>
@@ -744,15 +976,34 @@ watch(projectId, () => loadAll());
           </Table>
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="script" tab="剧本">
-              <Card size="small" title="剧本">
+        <Tabs.TabPane key="script-agent" tab="剧本创作">
+          <Row :gutter="16">
+            <Col :span="8">
+              <AgentChat ref="agentChatRef" agent-type="scriptAgent" :project-id="projectId" :messages="scriptChatMessages" @tool-result="onAgentToolResult" />
+            </Col>
+            <Col :span="16">
+              <Card class="workspace-card" size="small" title="剧本创作工作区">
+                <template #extra><Space><Popconfirm title="确认清除剧本 Agent 的对话和工作区？" @confirm="resetAgentWorkspace"><Button>重新开始</Button></Popconfirm><Button @click="openScriptGeneration">开始创作</Button><Button type="primary" @click="saveAgentWorkspace">保存工作区</Button></Space></template>
+                <Tabs v-model:active-key="workspaceActiveTab" size="small">
+                  <Tabs.TabPane v-for="tab in workspaceTabs" :key="tab.key" :tab="tab.label">
+                    <div v-if="!tab.content" class="workspace-placeholder">剧本 Agent 将在此展示{{ tab.label }}...</div>
+                    <div v-else class="workspace-output" v-html="renderMarkdown(tab.content)"></div>
+                  </Tabs.TabPane>
+                </Tabs>
+              </Card>
+            </Col>
+          </Row>
+        </Tabs.TabPane>
+
+        <Tabs.TabPane key="script" tab="剧本与资产">
+              <Card size="small" title="剧本与基础资产">
                 <template #extra>
                   <Space>
                     <Button
                       size="small"
                       @click="router.push({ path: '/toonflow/assets', query: { projectId } })"
                     >
-                      打开资产库
+                      打开基础资产库（{{ assets.length }}）
                     </Button>
                     <Button size="small" @click="openScript()">手动新增</Button>
                   </Space>
@@ -775,50 +1026,67 @@ watch(projectId, () => loadAll());
               </Card>
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="production" tab="生产">
-          <Space class="mb-3">
-            <Select
-              v-model:value="selectedScriptId"
-              :options="scriptOptions"
-              placeholder="选择剧本"
-              style="width: 240px"
-            />
-            <Button @click="loadFlow">读取 Flow</Button>
-            <Button type="primary" @click="saveFlowText">保存 Flow</Button>
-            <Button @click="openImageFlowEditor">图片编辑工作流</Button>
-            <Button @click="openStoryboard">新增分镜</Button>
-            <Button type="primary" @click="generateAllStoryboardImages">批量生成分镜图</Button>
-            <Button @click="previewAllStoryboardImages">合成预览</Button>
-          </Space>
-          <Row :gutter="16">
-            <Col :span="12">
-              <Card size="small" title="生产 Flow JSON">
-                <Input.TextArea v-model:value="flowText" class="flow-editor" />
-              </Card>
+        <Tabs.TabPane key="production" tab="分镜制作">
+          <Row :gutter="16" class="production-layout">
+            <Col :xs="24" :xl="18">
+              <Space class="production-tools mb-3" wrap>
+                <Select
+                  v-model:value="selectedScriptId"
+                  :options="scriptOptions"
+                  placeholder="选择剧本"
+                  style="width: 240px"
+                />
+                <Button @click="loadFlow">刷新制作数据</Button>
+                <Button type="primary" @click="saveFlowText">保存分镜工作区</Button>
+                <Button @click="openStoryboard">新增分镜</Button>
+                <Button type="primary" @click="generateAllStoryboardImages">批量生成分镜图</Button>
+                <Button @click="previewAllStoryboardImages">合成预览</Button>
+              </Space>
+              <ProductionFlowCanvas
+                :assets="productionAssets"
+                :flow-text="flowText"
+                :script="selectedScript"
+                :storyboards="storyboards"
+                @edit-asset="openAssetImageFlow"
+              />
             </Col>
-            <Col :span="12">
-              <Card size="small" title="分镜">
-                <Table
-                  :columns="storyboardColumns"
-                  :scroll="{ x: 500 }"
-                  :data-source="storyboards"
-                  :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 个` }"
-                  row-key="id"
-                  size="small"
-                >
-                  <template #bodyCell="{ column, record }">
-                    <template v-if="column.key === 'action'">
-                      <Popconfirm title="确认删除分镜？" @confirm="deleteStoryboard(record)">
-                        <Button danger type="link">删除</Button>
-                      </Popconfirm>
-                    </template>
-                  </template>
-                </Table>
+            <Col :xs="24" :xl="6">
+              <Card class="production-agent-card" size="small" title="分镜制作 Agent">
+                <template #extra>
+                  <Space>
+                    <Tag color="blue">连续记忆</Tag>
+                    <Button size="small" @click="resetProductionAgent">重新开始</Button>
+                  </Space>
+                </template>
+                <div class="production-agent-context">
+                  <Tag color="green">读取剧本与基础资产</Tag>
+                </div>
+                <AgentChat
+                  ref="productionAgentChatRef"
+                  agent-type="productionAgent"
+                  :project-id="projectId"
+                  :script-id="selectedScriptId"
+                  :messages="productionChatMessages"
+                  starter-label="开始制作视频"
+                  starter-prompt="立即读取当前已有剧本和人物基础资产，从「人物衍生资产分析」开始制作。人物父资产都是白色基础内衣底模，必须逐一检查当前剧本中的每个角色，并为每个出场角色写入至少一套符合其身份和剧情的正式服装衍生；另行补充剧本明确出现的换装、重伤、变身或稳定形态变化。请直接调用 run_sub_agent_derive_assets 实际写入，不要重新生成剧本，不要只汇报状态，也不要在执行前询问是否开始。完成后展示衍生清单并暂停等待我确认生成。"
+                  @tool-result="onAgentToolResult"
+                />
               </Card>
             </Col>
           </Row>
         </Tabs.TabPane>
-        <Tabs.TabPane key="video" tab="视频轨道">
+        <Tabs.TabPane key="video" tab="视频制作">
+          <Card class="mb-3" size="small" title="视频生产 Agent">
+            <template #extra><Space><Tag color="blue">按当前剧本连续记忆</Tag><Button @click="loadAgentMemory">恢复会话</Button></Space></template>
+            <AgentChat
+              ref="agentChatRef"
+              agent-type="productionAgent"
+              :project-id="projectId"
+              :script-id="selectedScriptId"
+              :messages="productionChatMessages"
+              @tool-result="onAgentToolResult"
+            />
+          </Card>
           <Space class="mb-3"><Select v-model:value="selectedScriptId" :options="scriptOptions" placeholder="选择剧本" style="width:240px"/><Button type="primary" @click="createVideoTrack">新增轨道</Button><Button @click="generateAllVideoPrompts">批量提示词</Button><Button @click="generateAllVideos">批量视频</Button><Button type="primary" @click="exportVideo">导出成片</Button><Button @click="loadFlow">刷新状态</Button></Space>
           <Card v-for="(track,trackIndex) in videoTracks" :key="track.id" class="mb-3" size="small">
             <template #title>轨道 {{ track.id }} · {{ track.duration || 0 }} 秒</template>
@@ -829,7 +1097,7 @@ watch(projectId, () => loadAll());
           </Card>
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="agent" tab="Agent 工作台">
+        <Tabs.TabPane v-if="false" key="agent" tab="Agent 工作台">
           <Card size="small" title="Agent 工作台">
             <template #title>
               <Space>
@@ -868,7 +1136,7 @@ watch(projectId, () => loadAll());
                   :agent-type="agentType"
                   :project-id="projectId"
                   :script-id="agentType === 'productionAgent' ? selectedScriptId : undefined"
-                  :messages="chatMessages"
+                  :messages="activeAgentMessages"
                   @tool-result="onAgentToolResult"
                 />
               </Col>
@@ -977,37 +1245,19 @@ watch(projectId, () => loadAll());
         </Form.Item>
       </Form>
     </Modal>
-    <Modal v-model:open="flowImageModalOpen" title="可视化图片工作流" width="1100px" :footer="null">
-      <Space class="mb-3">
-        <Button @click="addImageFlowNode('upload')">上传节点</Button>
-        <Button @click="addImageFlowNode('prompt')">提示词节点</Button>
-        <Button @click="addImageFlowNode('generated')">生成节点</Button>
-        <input ref="flowUploadInput" accept="image/*" class="hidden" type="file" @change="uploadImageFlowReference" />
-        <Button @click="flowUploadInput?.click()">上传参考图</Button>
-        <Button type="primary" @click="saveVisualImageFlow">保存工作流</Button>
-        <Button type="primary" @click="createFlowImage">执行生成</Button>
-      </Space>
-      <div class="image-flow-canvas">
-        <Card v-for="(node, index) in imageFlowNodes" :key="node.id" class="image-flow-node" size="small">
-          <template #title>{{ index + 1 }}. {{ node.type === 'upload' ? '参考图' : node.type === 'prompt' ? '提示词' : '生成结果' }}</template>
-          <template #extra><Button danger size="small" type="link" @click="removeImageFlowNode(node.id)">删除</Button></template>
-          <template v-if="node.type === 'upload'">
-            <img v-if="node.data.image" :src="node.data.image" class="h-40 w-full rounded object-contain" />
-            <div v-else class="image-flow-empty">尚未上传参考图</div>
-          </template>
-          <template v-else-if="node.type === 'prompt'">
-            <Input.TextArea v-model:value="node.data.prompt" :rows="7" @change="flowImageForm.prompt = node.data.prompt" />
-          </template>
-          <template v-else>
-            <img v-if="node.data.generatedImage || flowImageResult" :src="node.data.generatedImage || flowImageResult" class="h-40 w-full rounded object-contain" />
-            <div v-else class="image-flow-empty">执行后显示生成图片</div>
-          </template>
-          <div v-if="index < imageFlowNodes.length - 1" class="image-flow-arrow">→</div>
-        </Card>
-      </div>
-      <Typography.Paragraph class="mt-3 text-gray-500">
-        节点按从左到右顺序执行，工作流 ID：{{ imageFlowId || '尚未保存' }}
-      </Typography.Paragraph>
+    <Modal v-model:open="flowImageModalOpen" :title="`${editingAssetName} · 图片编辑工作流`" width="94vw" :footer="null">
+      <ImageFlowEditor
+        v-model:edges="imageFlowEdges"
+        v-model:nodes="imageFlowNodes"
+        :loading-node-id="generatingImageNodeId"
+        @add="addImageFlowNode"
+        @agent="planImageEditWithAgent"
+        @connect="connectImageFlow"
+        @generate="createFlowImage"
+        @remove="removeImageFlowNode"
+        @save="saveVisualImageFlow"
+        @upload="uploadImageFlowReference"
+      />
     </Modal>
     <Modal v-model:open="storyboardPreviewOpen" title="分镜合成预览" width="1100px" :footer="null">
       <img v-if="storyboardPreview" :src="storyboardPreview" class="w-full rounded border" />
@@ -1020,6 +1270,29 @@ watch(projectId, () => loadAll());
   display: flex;
   justify-content: flex-end;
   margin-bottom: 12px;
+}
+
+.tab-tools :deep(.ant-space) {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.novel-table :deep(.ant-table-cell) {
+  vertical-align: middle;
+}
+
+.novel-cell-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ant-color-text-secondary);
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.novel-actions {
+  white-space: nowrap;
 }
 
 .script-preview {
@@ -1037,6 +1310,46 @@ watch(projectId, () => loadAll());
     ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
     'Courier New', monospace;
   min-height: 520px;
+}
+
+.production-layout {
+  align-items: flex-start;
+}
+
+.production-tools {
+  display: flex;
+}
+
+.production-flow-editor {
+  min-height: 320px;
+}
+
+.production-agent-card {
+  position: sticky;
+  top: 12px;
+}
+
+.production-agent-card :deep(.ant-card-body) {
+  padding: 10px;
+}
+
+.production-agent-context {
+  margin-bottom: 8px;
+}
+
+.production-agent-card :deep(.agent-chat-wrapper) {
+  height: 600px;
+}
+
+@media (max-width: 1199px) {
+  .production-agent-card {
+    position: static;
+    margin-top: 16px;
+  }
+
+  .production-agent-card :deep(.agent-chat-wrapper) {
+    height: 520px;
+  }
 }
 
 .mb-3 {

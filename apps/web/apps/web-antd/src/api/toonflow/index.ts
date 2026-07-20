@@ -58,6 +58,15 @@ export namespace ToonflowApi {
   }
 
   export interface Asset {
+    derive?: Asset[];
+    appearances?: Array<{
+      id: number;
+      roleAssetId: number;
+      name: string;
+      scenes: string[];
+      costumePrompt: string;
+      description: string;
+    }>;
     id: number;
     name: string;
     prompt: string;
@@ -67,7 +76,10 @@ export namespace ToonflowApi {
     scriptId?: number;
     imageId?: number;
     imageFilePath?: string;
+    imageState?: string;
+    imageErrorReason?: string;
     parentAssetId?: number;
+    appearanceId?: number;
     projectId: number;
     flowId?: number;
     audioBindState?: number;
@@ -89,6 +101,12 @@ export namespace ToonflowApi {
     videoDesc?: string;
     shouldGenerateImage: number;
     associateAssetsIds: number[];
+    filePath?: string;
+    flowId?: number;
+    index?: number;
+    reason?: string;
+    src?: string;
+    trackId?: number;
   }
 
   export interface AgentDeployment {
@@ -105,7 +123,7 @@ export namespace ToonflowApi {
 
   export interface ArtStyle { id: number; name: string; fileUrl: string; label: string; prompt: string; createTime: number }
   export interface Task { id: number; projectId?: number; projectName?: string; taskClass: string; relatedObjects: string; model: string; description: string; state: string; startTime?: number; reason?: string }
-  export interface Prompt { id: number; name: string; type: string; data: string; useData?: string }
+  export interface Prompt { id: number; name: string; type: string; data: string; useData?: string; sourceKey?: string }
   export interface Skill { id: string; name: string; description: string; type: string; path: string; state: number; createTime: number; updateTime: number }
   export interface ProjectStatistics { roleCount: number; scriptCount: number; videoCount: number; storyboardCount: number }
   export interface CreativeManual { id: number; kind: 'director' | 'visual'; name: string; path: string; images: string[]; data: Array<{ label: string; value: string; data: string }>; createTime: number; updateTime: number }
@@ -129,15 +147,15 @@ export const updateProjectProfile = (data: { id: number; intro?: string; type?: 
 export const getAgentModelDetails = (key: 'productionAgent' | 'scriptAgent') => requestClient.post<Record<string, any>>('/project/getModelDetails', { key });
 export const generateNovelEvents = (projectId: number, novelIds: number[]) => requestClient.post('/novel/event/generateEvents', { projectId, novelIds, concurrentCount: 5 });
 export const extractScriptAssets = (projectId: number, scriptIds: number[]) => requestClient.post('/script/extractAssets', { projectId, scriptIds, groupSize: 5 });
-export const pollScriptAssets = (ids: number[]) => requestClient.post<Array<{ id: number; extractState: number; errorReason?: string }>>('/script/pollScriptAssets', { ids });
+export const pollScriptAssets = (ids: number[]) => requestClient.post<Array<{ id: number; extractState: number; errorReason?: string; appearanceCount: number }>>('/script/pollScriptAssets', { ids });
 export const polishAssetPrompt = (data: { assetsId: number; projectId: number; type: string; name: string; describe: string }) => requestClient.post<{ prompt: string; assetsId: number }>('/assetsGenerate/polishAssetsPrompt', data);
 export const generateAssetImage = (data: { projectId: number; model: number | string; resolution: string; id: number; type: string; name: string; prompt: string; base64?: string }) => requestClient.post<{ path: string; assetsId: number }>('/assetsGenerate/generateAssets', data);
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
 export const getMaterialData = (projectId: number, scriptId?: number) => requestClient.post<{ data: any[]; video: any[] }>('/assets/getMaterialData', { projectId, scriptId });
-export const generateFlowImage = (data: { projectId: number; model: number | string; quality: string; ratio: string; prompt: string; references?: string[] }) => requestClient.post<{ url: string }>('/production/editImage/generateFlowImage', data);
+export const generateFlowImage = (data: { projectId: number; model: number | string; quality: string; ratio: string; prompt: string; references?: string[]; targetType?: 'costume' | 'role' | 'scene' | 'storyboard' | 'tool' }) => requestClient.post<{ url: string }>('/production/editImage/generateFlowImage', data);
 export const getImageFlow = (id: number) => requestClient.post<{ id: number; nodes: any[]; edges: any[] } | null>('/production/editImage/getImageFlow', { id });
-export const saveImageFlow = (nodes: any[], edges: any[]) => requestClient.post<{ id: number }>('/production/editImage/saveImageFlow', { nodes, edges });
+export const saveImageFlow = (nodes: any[], edges: any[], assetId?: number) => requestClient.post<{ id: number }>('/production/editImage/saveImageFlow', { nodes, edges, assetId });
 export const updateImageFlow = (flowId: number, nodes: any[], edges: any[]) => requestClient.post('/production/editImage/updateImageFlow', { flowId, nodes, edges });
 export const uploadFlowImage = (projectId: number, scriptId: number, base64Data: string) => requestClient.post<string>('/production/editImage/uploadImage', { projectId, scriptId, base64Data });
 export const generateStoryboardImages = (data: { storyboardIds: number[]; projectId: number; scriptId: number; concurrentCount?: number; compulsory?: boolean }) => requestClient.post('/production/storyboard/batchGenerateImage', data);

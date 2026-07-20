@@ -55,6 +55,10 @@ const showDot = computed(() => unreadCount.value > 0);
 let unreadCountPollingTimer: ReturnType<typeof setInterval> | undefined;
 let unreadCountRequestPending = false;
 
+const hasActiveSession = computed(
+  () => Boolean(accessStore.accessToken && accessStore.refreshToken),
+);
+
 const [HelpModal, helpModalApi] = useVbenModal({
   connectedComponent: Help,
 });
@@ -105,7 +109,7 @@ async function handleLogout() {
 
 /** 获得未读消息数 */
 async function handleNotificationGetUnreadCount() {
-  if (unreadCountRequestPending) {
+  if (!hasActiveSession.value || unreadCountRequestPending) {
     return;
   }
 
@@ -121,6 +125,10 @@ async function handleNotificationGetUnreadCount() {
 
 /** 获得消息列表 */
 async function handleNotificationGetList() {
+  if (!hasActiveSession.value) {
+    notifications.value = [];
+    return;
+  }
   const list = await getUnreadNotifyMessageList();
   notifications.value = list.map((item) => ({
     avatar: preferences.app.defaultAvatar,
@@ -217,12 +225,21 @@ onMounted(() => {
   // 轮询刷新未读数量
   unreadCountPollingTimer = setInterval(
     () => {
-      if (userStore.userInfo) {
+      if (hasActiveSession.value) {
         void handleNotificationGetUnreadCount();
       }
     },
     1000 * 60 * 2,
   );
+});
+
+watch(hasActiveSession, (active) => {
+  if (active) {
+    void handleNotificationGetUnreadCount();
+    return;
+  }
+  unreadCount.value = 0;
+  notifications.value = [];
 });
 
 onBeforeUnmount(() => {

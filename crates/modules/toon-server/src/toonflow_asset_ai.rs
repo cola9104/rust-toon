@@ -1,6 +1,8 @@
 use crate::{
-    ToonState, ai_client, shared::require, toonflow_asset_prompt,
-    toonflow_storage::persist_remote_image,
+    ToonState, ai_client,
+    shared::require,
+    toonflow_asset_prompt, toonflow_prompt_store,
+    toonflow_storage::{image_data_url, persist_remote_image},
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -62,6 +64,14 @@ fn manual_key(kind: &str, derivative: bool) -> Option<(&'static str, &'static st
                 "art_prop"
             },
         )),
+        "costume" => Some((
+            "服装",
+            if derivative {
+                "art_character_derivative"
+            } else {
+                "art_character"
+            },
+        )),
         _ => None,
     }
 }
@@ -106,10 +116,14 @@ async fn run(
     let prompt = ai_client::text(
         pool,
         "universalAi",
-        &toonflow_asset_prompt::polish_system_prompt(&system, extra),
+        &toonflow_asset_prompt::polish_system_prompt(&system, extra, &item.type_, parent.is_some()),
         &toonflow_asset_prompt::polish_user_prompt(label, &item.name, &item.describe),
     )
     .await?;
+    let prompt = prompt.trim().to_string();
+    if prompt.is_empty() {
+        return Err("AI 润色未生成可用的资产提示词".to_string());
+    }
     sqlx::query("UPDATE toonflow.assets SET prompt=$2,prompt_state='已完成',prompt_error_reason=NULL WHERE id=$1").bind(item.assets_id).bind(&prompt).execute(pool).await.map_err(|e|e.to_string())?;
     Ok(prompt)
 }
@@ -122,6 +136,50 @@ async fn mark_failed(pool: &sqlx::PgPool, id: i64, reason: &str) {
     .execute(pool)
     .await;
 }
+
+pub(crate) async fn polish_extracted_assets(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    asset_ids: &[i64],
+    concurrent_count: usize,
+) -> Result<(), String> {
+    if asset_ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+        r#"SELECT id,type,name,coalesce(description,'')
+           FROM toonflow.assets
+           WHERE project_id=$1 AND id=ANY($2) AND type=ANY($3)
+             AND coalesce(prompt,'')=''"#,
+    )
+    .bind(project_id)
+    .bind(asset_ids)
+    .bind(vec!["role", "scene", "tool", "costume"])
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_count.clamp(1, 10)));
+    let mut jobs = tokio::task::JoinSet::new();
+    for (assets_id, type_, name, describe) in rows {
+        let pool = pool.clone();
+        let permit = semaphore.clone().acquire_owned().await;
+        jobs.spawn(async move {
+            let Ok(_permit) = permit else { return };
+            let item = PolishItem {
+                assets_id,
+                type_,
+                name,
+                describe,
+            };
+            if let Err(reason) = run(&pool, project_id, item, "").await {
+                mark_failed(&pool, assets_id, &reason).await;
+            }
+        });
+    }
+    while jobs.join_next().await.is_some() {}
+    Ok(())
+}
+
 pub async fn polish(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -269,13 +327,37 @@ async fn make_image(
             .await
             .map_err(|e| e.to_string())?;
     let style = style.ok_or_else(|| "项目为空".to_string())?.0;
-    let prompt = toonflow_asset_prompt::image_prompt(
+    let derivative: bool =
+        sqlx::query_scalar("SELECT parent_asset_id IS NOT NULL FROM toonflow.assets WHERE id=$1")
+            .bind(item.id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .unwrap_or(false);
+    let visual_description = item.prompt.clone();
+    let prompt_key = match (item.type_.as_str(), derivative) {
+        ("role", false) => "asset_image_role_base",
+        ("role", true) => "asset_image_role_derivative",
+        ("scene", _) => "asset_image_scene",
+        ("tool", _) => "asset_image_tool",
+        ("costume", _) => "asset_image_costume",
+        _ => "",
+    };
+    let managed_instruction = if prompt_key.is_empty() {
+        None
+    } else {
+        Some(toonflow_prompt_store::load(pool, prompt_key, "").await)
+    };
+    let prompt = toonflow_asset_prompt::image_prompt_with_instruction(
         &style,
         &item.type_,
-        &item.prompt,
+        &visual_description,
+        derivative,
         item.base64.is_some(),
+        managed_instruction.as_deref(),
     );
-    match ai_client::image(pool, model, &prompt, resolution).await {
+    let references = item.base64.clone().into_iter().collect();
+    match ai_client::image_with_references(pool, model, &prompt, resolution, references).await {
         Ok(path) => {
             let path = persist_remote_image(&path, item.id).await?;
             let updated = sqlx::query("UPDATE toonflow.images SET file_path=$2,state='已完成' WHERE id=$1 AND state='生成中'")
@@ -317,6 +399,9 @@ pub(crate) async fn schedule_asset_generation(
     if asset_ids.is_empty() {
         return Err(AppError::bad_request("ids不能为空"));
     }
+    polish_extracted_assets(pool, project_id, asset_ids, concurrent_count)
+        .await
+        .map_err(AppError::bad_request)?;
     let setting: Option<(Option<i64>, String)> =
         sqlx::query_as("SELECT image_model,image_quality FROM toonflow.projects WHERE id=$1")
             .bind(project_id)
@@ -327,8 +412,11 @@ pub(crate) async fn schedule_asset_generation(
     let model = model
         .ok_or_else(|| AppError::bad_request("请先配置项目图片模型"))?
         .to_string();
-    let rows: Vec<(i64, String, String, String)> = sqlx::query_as(
-        "SELECT id,type,name,prompt FROM toonflow.assets WHERE project_id=$1 AND id=ANY($2)",
+    let rows: Vec<(i64, String, String, String, Option<String>)> = sqlx::query_as(
+        r#"SELECT a.id,a.type,a.name,a.prompt,
+                  (SELECT i.file_path FROM toonflow.assets p JOIN toonflow.images i ON i.id=p.image_id WHERE p.id=a.parent_asset_id AND i.state='已完成')
+           FROM toonflow.assets a
+           WHERE a.project_id=$1 AND a.id=ANY($2) AND coalesce(a.prompt,'')<>''"#,
     )
     .bind(project_id)
     .bind(asset_ids)
@@ -336,13 +424,17 @@ pub(crate) async fn schedule_asset_generation(
     .await
     .map_err(|_| AppError::internal("failed to load assets"))?;
     let mut queue = Vec::new();
-    for (offset, (id, type_, name, prompt)) in rows.into_iter().enumerate() {
+    for (offset, (id, type_, name, prompt, reference_path)) in rows.into_iter().enumerate() {
+        let base64 = match reference_path {
+            Some(path) => Some(image_data_url(&path).await.map_err(AppError::bad_request)?),
+            None => None,
+        };
         let item = ImageItem {
             id,
             type_,
             name,
             prompt,
-            base64: None,
+            base64,
         };
         let image_id = new_image(pool, &item, &model, &resolution, offset as i64).await?;
         queue.push((image_id, item));
@@ -368,6 +460,64 @@ pub(crate) async fn schedule_asset_generation(
         }
     });
     Ok(response)
+}
+
+pub(crate) async fn schedule_and_wait_asset_generation(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    asset_ids: &[i64],
+    concurrent_count: usize,
+) -> Result<Vec<Value>, AppError> {
+    let scheduled =
+        schedule_asset_generation(pool, project_id, asset_ids, concurrent_count).await?;
+    let image_ids = scheduled
+        .iter()
+        .filter_map(|item| item.get("imageId").and_then(Value::as_i64))
+        .collect::<Vec<_>>();
+    if image_ids.len() != asset_ids.len() {
+        return Err(AppError::bad_request("部分衍生资产未能创建图片任务"));
+    }
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+    loop {
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id,state,file_path,error_reason FROM toonflow.images WHERE id=ANY($1) ORDER BY id",
+        )
+        .bind(&image_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to wait for derived asset images"))?;
+        if rows.len() != image_ids.len() {
+            return Err(AppError::bad_request("衍生图片任务记录不完整"));
+        }
+        let failures = rows
+            .iter()
+            .filter(|(_, state, _, _)| state == "生成失败" || state == "已取消")
+            .map(|(id, _, _, reason)| format!("{id}: {}", reason.as_deref().unwrap_or("生成失败")))
+            .collect::<Vec<_>>();
+        if !failures.is_empty() {
+            return Err(AppError::bad_request(format!(
+                "衍生图片未全部生成成功：{}",
+                failures.join("；")
+            )));
+        }
+        if rows.iter().all(|(_, state, path, _)| {
+            state == "已完成" && path.as_deref().is_some_and(|path| !path.is_empty())
+        }) {
+            return Ok(rows
+                .into_iter()
+                .map(|(image_id, _, file_path, _)| {
+                    json!({"imageId":image_id,"state":"已完成","filePath":file_path})
+                })
+                .collect());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::bad_request(
+                "等待衍生图片生成超时，请检查图片服务",
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
 }
 pub async fn generate_image(
     user: CurrentUser,

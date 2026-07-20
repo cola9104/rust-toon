@@ -1,11 +1,17 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
+
 import { computed, onMounted, ref } from 'vue';
+
 import { Page } from '@vben/common-ui';
-import { Button, Card, InputNumber, Select, Switch, Table, Tag, message } from 'ant-design-vue';
 import { AiModelTypeEnum } from '@vben/constants';
+
+import { Button, Card, InputNumber, message, Select, Switch, Table, Tag } from 'ant-design-vue';
+
 import { getModelSimpleList } from '#/api/ai/model/model';
 import { getAgentDeployments, updateAgentDeployment } from '#/api/toonflow';
+
+import '../shared/page-card.css';
 
 type ModelType=ToonflowApi.AgentDeployment['modelType'];
 type ModelOption={label:string;value:number};
@@ -21,4 +27,4 @@ async function load(){loading.value=true;try{const[a,c,i,v,s]=await Promise.all(
 async function saveAll(){const rows=changedRows.value;if(!rows.length)return;if(rows.some(row=>!row.modelConfigId))return message.warning('变更项必须选择对应类型的模型');saving.value=true;try{await Promise.all(rows.map(row=>updateAgentDeployment({id:row.id,modelConfigId:row.modelConfigId,temperature:row.temperature,maxOutputTokens:row.maxOutputTokens,disabled:row.disabled})));message.success(`已保存 ${rows.length} 项模型配置`);await load()}finally{saving.value=false}}
 onMounted(load);
 </script>
-<template><Page auto-content-height><Card title="Toonflow 模型配置"><template #extra><Button type="primary" :disabled="changedRows.length===0" :loading="saving" @click="saveAll">保存</Button></template><Table :columns="columns" :data-source="agents" :loading="loading" :pagination="false" row-key="id"><template #bodyCell="{column,record}"><Tag v-if="column.key==='type'">{{typeLabels[record.modelType as ModelType]}}</Tag><Select v-else-if="column.key==='model'" v-model:value="record.modelConfigId" class="w-full" :options="options(record)" :placeholder="`选择${typeLabels[record.modelType as ModelType]}模型`"/><InputNumber v-else-if="column.key==='temperature'&&record.modelType==='chat'" v-model:value="record.temperature" :min="0" :max="2"/><InputNumber v-else-if="column.key==='tokens'&&record.modelType==='chat'" v-model:value="record.maxOutputTokens" :min="1"/><span v-else-if="column.key==='temperature'||column.key==='tokens'">—</span><Switch v-else-if="column.key==='enabled'" :checked="!record.disabled" @update:checked="record.disabled=!$event"/></template></Table></Card></Page></template>
+<template><Page auto-content-height><Card :bordered="false" class="toonflow-page-card h-full" title="Toonflow 模型配置"><template #extra><Button type="primary" :disabled="changedRows.length === 0" :loading="saving" @click="saveAll">保存</Button></template><Table :columns="columns" :data-source="agents" :loading="loading" :pagination="false" row-key="id"><template #bodyCell="{column,record}"><Tag v-if="column.key === 'type'">{{ typeLabels[record.modelType as ModelType] }}</Tag><Select v-else-if="column.key === 'model'" v-model:value="record.modelConfigId" class="w-full" :options="options(record)" :placeholder="`选择${typeLabels[record.modelType as ModelType]}模型`" /><InputNumber v-else-if="column.key === 'temperature' && record.modelType === 'chat'" v-model:value="record.temperature" :min="0" :max="2" /><InputNumber v-else-if="column.key === 'tokens' && record.modelType === 'chat'" v-model:value="record.maxOutputTokens" :min="1" /><span v-else-if="column.key === 'temperature' || column.key === 'tokens'">—</span><Switch v-else-if="column.key === 'enabled'" :checked="!record.disabled" @update:checked="record.disabled = !$event" /></template></Table></Card></Page></template>

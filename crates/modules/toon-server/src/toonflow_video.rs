@@ -217,13 +217,23 @@ pub async fn generate_data(
     Json(req): Json<Workbench>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:read")?;
-    let boards=sqlx::query_as::<_,(i64,Option<i64>,Option<String>,String,Option<String>,i32)>("SELECT id,track_id,file_path,prompt,video_desc,coalesce(index,0) FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 ORDER BY index,id").bind(req.project_id).bind(req.script_id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list storyboards"))?;
-    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32)>("SELECT id,prompt,state,duration,video_id,sort_order FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id").bind(req.project_id).bind(req.script_id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
-    let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2").bind(req.project_id).bind(req.script_id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
-    let list=tracks.into_iter().map(|t|json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"medias":boards.iter().filter(|b|b.1==Some(t.0)).map(|b|json!({"id":b.0,"src":b.2,"prompt":b.4,"fileType":"image","sources":"storyboard","index":b.5})).collect::<Vec<_>>(),"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>() })).collect::<Vec<_>>();
     Ok(Json(ApiResponse::new(
-        json!({"storyboardList":boards.into_iter().map(|b|json!({"id":b.0,"trackId":b.1,"src":b.2,"prompt":b.3,"videoDesc":b.4,"index":b.5})).collect::<Vec<_>>(),"trackList":list}),
+        load_generate_data(&state.pool, req.project_id, req.script_id).await?,
     )))
+}
+
+pub(crate) async fn load_generate_data(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+) -> Result<Value, AppError> {
+    let boards=sqlx::query_as::<_,(i64,Option<i64>,Option<String>,String,Option<String>,i32)>("SELECT id,track_id,file_path,prompt,video_desc,coalesce(index,0) FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 ORDER BY index,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboards"))?;
+    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32)>("SELECT id,prompt,state,duration,video_id,sort_order FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
+    let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
+    let list=tracks.into_iter().map(|t|json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"medias":boards.iter().filter(|b|b.1==Some(t.0)).map(|b|json!({"id":b.0,"src":b.2,"prompt":b.4,"fileType":"image","sources":"storyboard","index":b.5})).collect::<Vec<_>>(),"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>() })).collect::<Vec<_>>();
+    Ok(
+        json!({"storyboardList":boards.into_iter().map(|b|json!({"id":b.0,"trackId":b.1,"src":b.2,"prompt":b.3,"videoDesc":b.4,"index":b.5})).collect::<Vec<_>>(),"trackList":list}),
+    )
 }
 
 #[derive(Deserialize)]
@@ -455,7 +465,7 @@ pub async fn check_states(
     )))
 }
 
-async fn create_prompt(
+pub(crate) async fn create_prompt(
     pool: &sqlx::PgPool,
     track_id: i64,
     project_id: i64,

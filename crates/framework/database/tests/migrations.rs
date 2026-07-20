@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 62);
+    assert_eq!(applied, 71);
 
     let storyboard_asset_order_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(

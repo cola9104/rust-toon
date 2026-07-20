@@ -1,4 +1,6 @@
-use crate::{ToonState, ai_client, shared::require};
+use crate::{
+    ToonState, ai_client, shared::require, toonflow_asset_description, toonflow_prompt_store,
+};
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
@@ -29,11 +31,26 @@ struct ExtractedAsset {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ExtractedAppearance {
+    role_name: String,
+    name: String,
+    #[serde(default)]
+    scenes: Vec<String>,
+    costume_prompt: String,
+    #[serde(default)]
+    description: String,
+    script_id: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ExtractedResult {
     #[serde(default)]
     new_assets: Vec<ExtractedAsset>,
     #[serde(default)]
     existing_asset_refs: Vec<ExtractedAsset>,
+    #[serde(default)]
+    appearances: Vec<ExtractedAppearance>,
 }
 
 fn parse_result(output: &str) -> Result<ExtractedResult, String> {
@@ -72,8 +89,8 @@ async fn extract_group(
         .execute(pool)
         .await
         .map_err(|error| error.to_string())?;
-    let existing = sqlx::query_as::<_, (String, String)>(
-        r#"SELECT a.name,a.type FROM toonflow.assets a
+    let existing = sqlx::query_as::<_, (String, String, String)>(
+        r#"SELECT a.name,a.type,a.description FROM toonflow.assets a
            WHERE a.project_id=$1 OR EXISTS(
              SELECT 1 FROM toonflow.project_assets pa
              WHERE pa.project_id=$1 AND pa.asset_id=a.id
@@ -84,7 +101,7 @@ async fn extract_group(
     .await
     .map_err(|error| error.to_string())?
     .into_iter()
-    .map(|row| format!("{}({})", row.0, row.1))
+    .map(|row| format!("{}({})：{}", row.0, row.1, row.2))
     .collect::<Vec<_>>()
     .join("、");
     let content = scripts
@@ -92,14 +109,16 @@ async fn extract_group(
         .map(|row| format!("===== 剧本ID:{} {} =====\n{}", row.0, row.1, row.2))
         .collect::<Vec<_>>()
         .join("\n\n");
+    let system_prompt = toonflow_prompt_store::load(
+        pool,
+        "script_asset_extraction",
+        "提取 role/scene/tool 基础资产，并逐场输出每个有名角色的 appearances；role 不得包含服装，appearance 必须包含 roleName、name、scenes、costumePrompt、description、scriptId。只输出约定 JSON。",
+    )
+    .await;
     let output = ai_client::text(
         pool,
         "universalAi",
-        r#"从剧本中提取后续分镜和视频生成需要保持视觉一致的基础资产。只返回一个 JSON 对象：
-{"newAssets":[{"name":"","desc":"","type":"role","scriptIds":[1]}],"existingAssetRefs":[{"name":"","type":"role","scriptIds":[1]}]}
-分类只能是：role=有名且需保持外观一致的角色；scene=反复出现或叙事关键场所；tool=被角色使用、推动剧情或需特写的关键道具；costume=需跨镜头保持一致的独立服装方案。
-不提取群演、一次性背景物、普通家具、无剧情作用的日常物品；角色当前穿着只写入角色 desc，只有可复用或需单独生成的服装才列 costume。
-同一实体跨多个剧本使用统一名称；已有资产必须放 existingAssetRefs，禁止换名重建；新资产放 newAssets。desc 要写可视化的稳定外观特征，不写动作和剧情。scriptIds 必须来自输入。不要输出 Markdown。"#,
+        &system_prompt,
         &format!("已有资产：{existing}\n\n{content}"),
     )
     .await?;
@@ -115,6 +134,9 @@ async fn extract_group(
         if asset.name.trim().is_empty() || !allowed.contains(&asset.type_.as_str()) {
             continue;
         }
+        if asset.type_ == "role" {
+            toonflow_asset_description::validate_role_description(&asset.desc)?;
+        }
         let existing_id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 AND type=$3 LIMIT 1",
         )
@@ -129,7 +151,7 @@ async fn extract_group(
         } else {
             let id = chrono::Utc::now().timestamp_micros();
             sqlx::query("INSERT INTO toonflow.assets(id,name,type,description,project_id,start_time) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(id).bind(asset.name.trim()).bind(&asset.type_).bind(&asset.desc).bind(project_id).bind(chrono::Utc::now().timestamp_millis())
+                .bind(id).bind(asset.name.trim()).bind(&asset.type_).bind(asset.desc.trim()).bind(project_id).bind(chrono::Utc::now().timestamp_millis())
                 .execute(&mut *tx).await.map_err(|error|error.to_string())?;
             id
         };
@@ -162,6 +184,15 @@ async fn extract_group(
         .await
         .map_err(|error| error.to_string())?;
         if let Some(asset_id) = asset_id {
+            if reference.type_ == "role" && !reference.desc.trim().is_empty() {
+                toonflow_asset_description::validate_role_description(&reference.desc)?;
+                sqlx::query("UPDATE toonflow.assets SET description=$1 WHERE id=$2")
+                    .bind(reference.desc.trim())
+                    .bind(asset_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
             for script_id in reference
                 .script_ids
                 .into_iter()
@@ -172,9 +203,54 @@ async fn extract_group(
             }
         }
     }
+    let mut retained_appearance_ids = Vec::new();
+    for (offset, appearance) in result.appearances.into_iter().enumerate() {
+        if !script_ids.contains(&appearance.script_id)
+            || appearance.role_name.trim().is_empty()
+            || appearance.name.trim().is_empty()
+            || appearance.costume_prompt.trim().is_empty()
+        {
+            continue;
+        }
+        let role_asset_id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM toonflow.assets WHERE project_id=$1 AND type='role' AND name=$2 AND parent_asset_id IS NULL LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(appearance.role_name.trim())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        let Some(role_asset_id) = role_asset_id else {
+            continue;
+        };
+        let id = chrono::Utc::now().timestamp_micros() + offset as i64;
+        let retained_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.character_appearances(id,project_id,script_id,role_asset_id,name,scenes,costume_prompt,description,create_time,update_time) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT(script_id,role_asset_id,name) DO UPDATE SET scenes=excluded.scenes,costume_prompt=excluded.costume_prompt,description=excluded.description,update_time=excluded.update_time RETURNING id")
+            .bind(id)
+            .bind(project_id)
+            .bind(appearance.script_id)
+            .bind(role_asset_id)
+            .bind(appearance.name.trim())
+            .bind(json!(appearance.scenes))
+            .bind(appearance.costume_prompt.trim())
+            .bind(appearance.description.trim())
+            .bind(chrono::Utc::now().timestamp_millis())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| error.to_string())?;
+        retained_appearance_ids.push(retained_id);
+    }
+    sqlx::query(
+        "DELETE FROM toonflow.character_appearances WHERE script_id=ANY($1) AND NOT(id=ANY($2))",
+    )
+    .bind(script_ids)
+    .bind(&retained_appearance_ids)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
     sqlx::query("UPDATE toonflow.scripts SET extract_state=1,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)")
         .bind(project_id).bind(script_ids).execute(&mut *tx).await.map_err(|error|error.to_string())?;
-    tx.commit().await.map_err(|error| error.to_string())
+    tx.commit().await.map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub async fn extract_assets(
@@ -213,8 +289,8 @@ pub async fn poll(
     Json(request): Json<Ids>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, (i64, Option<i32>, Option<String>)>(
-        "SELECT id,extract_state,error_reason FROM toonflow.scripts WHERE id=ANY($1) AND coalesce(extract_state,2)<>0",
+    let rows = sqlx::query_as::<_, (i64, Option<i32>, Option<String>, i64)>(
+        "SELECT s.id,s.extract_state,s.error_reason,(SELECT count(*) FROM toonflow.character_appearances ca WHERE ca.script_id=s.id) FROM toonflow.scripts s WHERE s.id=ANY($1) AND coalesce(s.extract_state,2)<>0",
     )
     .bind(request.ids)
     .fetch_all(&state.pool)
@@ -222,7 +298,7 @@ pub async fn poll(
     .map_err(|_| AppError::internal("failed to poll script assets"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()
-            .map(|row| json!({"id":row.0,"extractState":row.1,"errorReason":row.2}))
+            .map(|row| json!({"id":row.0,"extractState":row.1,"errorReason":row.2,"appearanceCount":row.3}))
             .collect(),
     )))
 }

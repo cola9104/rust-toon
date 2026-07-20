@@ -23,6 +23,8 @@ const props = defineProps<{
   projectId: number;
   scriptId?: number;
   messages: ChatMessage[];
+  starterLabel?: string;
+  starterPrompt?: string;
 }>();
 
 const emit = defineEmits<{
@@ -245,6 +247,12 @@ function handleSend() {
   send(text);
 }
 
+function handleStarter() {
+  if (!props.starterPrompt) return;
+  inputText.value = props.starterPrompt;
+  handleSend();
+}
+
 // Auto-connect on mount and when agentType/projectId/scriptId changes
 onMounted(() => {
   connect();
@@ -274,7 +282,14 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
     <!-- Messages area -->
     <div ref="chatContainer" class="chat-messages">
       <div v-if="messages.length === 0" class="chat-empty">
-        开始对话，发送消息给 Agent
+        <div>让 Agent 读取当前剧本和资产并启动制作流程</div>
+        <a-button
+          v-if="starterPrompt"
+          class="starter-button"
+          type="primary"
+          :disabled="!connected"
+          @click="handleStarter"
+        >{{ starterLabel || '开始制作' }}</a-button>
       </div>
 
       <div
@@ -421,6 +436,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   padding: 60px 0;
   font-size: 14px;
 }
+.starter-button { margin-top: 12px; }
 
 .chat-message {
   max-width: 85%;

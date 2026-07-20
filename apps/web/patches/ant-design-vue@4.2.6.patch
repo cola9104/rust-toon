@@ -1,0 +1,24 @@
+diff --git a/es/vc-table/Body/MeasureCell.js b/es/vc-table/Body/MeasureCell.js
+index 73daf433a9bdb0cf0eb277236dfd4751b37f5ac6..9f786c67c831a620494ed8d0d46a741015139faf 100644
+--- a/es/vc-table/Body/MeasureCell.js
++++ b/es/vc-table/Body/MeasureCell.js
+@@ -3,6 +3,7 @@ import { defineComponent, onMounted, ref } from 'vue';
+ import VCResizeObserver from '../../vc-resize-observer';
+ export default defineComponent({
+   name: 'MeasureCell',
++  emits: ['columnResize'],
+   props: ['columnKey'],
+   setup(props, _ref) {
+     let {
+diff --git a/lib/vc-table/Body/MeasureCell.js b/lib/vc-table/Body/MeasureCell.js
+index bb8944682f332f012d389957d777b158886af985..cbb74862253508189eefddaa615985e210fa04b8 100644
+--- a/lib/vc-table/Body/MeasureCell.js
++++ b/lib/vc-table/Body/MeasureCell.js
+@@ -9,6 +9,7 @@ var _vue = require("vue");
+ var _vcResizeObserver = _interopRequireDefault(require("../../vc-resize-observer"));
+ var _default = exports.default = (0, _vue.defineComponent)({
+   name: 'MeasureCell',
++  emits: ['columnResize'],
+   props: ['columnKey'],
+   setup(props, _ref) {
+     let {

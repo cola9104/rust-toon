@@ -13,23 +13,25 @@ import {
   Empty,
   Form,
   Input,
+  message,
   Modal,
   Popconfirm,
   Select,
   Space,
   Table,
   Tag,
-  message,
 } from 'ant-design-vue';
 
+import { getModelSimpleList } from '#/api/ai/model/model';
 import {
   createProject,
   deleteProject,
-  getProjects,
   getCreativeManuals,
+  getProjects,
   updateProject,
 } from '#/api/toonflow';
-import { getModelSimpleList } from '#/api/ai/model/model';
+
+import '../shared/page-card.css';
 
 defineOptions({ name: 'ToonflowProjects' });
 
@@ -187,7 +189,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 
 <template>
   <Page auto-content-height>
-    <Card :bordered="false" class="h-full">
+    <Card :bordered="false" class="toonflow-page-card h-full">
       <template #title>项目工作台</template>
       <template #extra>
         <Space>

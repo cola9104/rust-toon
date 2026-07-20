@@ -47,6 +47,8 @@ import {
   isAssetInCategory,
 } from './asset-types';
 
+import '../shared/page-card.css';
+
 const route = useRoute();
 const router = useRouter();
 const projects = ref<ToonflowApi.Project[]>([]);
@@ -60,6 +62,7 @@ const dubbingModalOpen = ref(false);
 const dubbingResult = ref('');
 const failedImageIds = reactive(new Set<number>());
 const generatingAssetIds = reactive(new Set<number>());
+const polishingAssetIds = reactive(new Set<number>());
 const activeCategory = ref<AssetCategory>('role');
 const assetSearch = ref('');
 
@@ -187,15 +190,37 @@ async function uploadMaterialFile(event: Event) {
 
 async function polishAsset(asset: ToonflowApi.Asset) {
   if (!selectedProjectId.value) return;
-  await polishAssetPrompt({
-    assetsId: asset.id,
-    projectId: selectedProjectId.value,
-    type: asset.type,
-    name: asset.name,
-    describe: asset.description || '',
+  if (polishingAssetIds.has(asset.id)) return;
+  const messageKey = `polish-asset-${asset.id}`;
+  polishingAssetIds.add(asset.id);
+  message.loading({
+    content: `正在润色“${asset.name}”的提示词…`,
+    duration: 0,
+    key: messageKey,
   });
-  message.success('资产提示词已生成');
-  await loadAssets();
+  try {
+    const result = await polishAssetPrompt({
+      assetsId: asset.id,
+      projectId: selectedProjectId.value,
+      type: asset.type,
+      name: asset.name,
+      describe: asset.description || '',
+    });
+    asset.prompt = result.prompt;
+    message.success({
+      content: `“${asset.name}”提示词润色完成`,
+      duration: 3,
+      key: messageKey,
+    });
+  } catch (error) {
+    message.error({
+      content: error instanceof Error ? error.message : `“${asset.name}”提示词润色失败`,
+      duration: 5,
+      key: messageKey,
+    });
+  } finally {
+    polishingAssetIds.delete(asset.id);
+  }
 }
 
 async function generateAssetPicture(asset: ToonflowApi.Asset) {
@@ -317,9 +342,8 @@ watch(() => route.query.projectId, (value) => {
 <template>
   <Page auto-content-height>
     <Card
-      :body-style="{ background: 'var(--ant-color-bg-container)', flex: '1' }"
       :bordered="false"
-      class="asset-library-card h-full"
+      class="toonflow-page-card h-full"
     >
       <template #title>
         <Space>
@@ -409,13 +433,19 @@ watch(() => route.query.projectId, (value) => {
                 </div>
               </template>
               <Card.Meta
-                :description="item.description || item.prompt || '暂无描述'"
+                :description="item.description || '暂无描述'"
                 :title="item.name"
               />
+              <div v-if="item.prompt" class="asset-prompt" :title="item.prompt">
+                <Tag color="blue">AI 提示词</Tag>
+                <span class="asset-prompt-text">{{ item.prompt }}</span>
+              </div>
               <div class="asset-meta">
-                <Typography.Text ellipsis type="secondary">
-                  来源：{{ item.sourceProjectName }}
-                </Typography.Text>
+                <Typography.Text
+                  :content="`来源：${item.sourceProjectName || '当前项目'}`"
+                  ellipsis
+                  type="secondary"
+                />
                 <Tag :color="item.linkedToProject ? 'green' : 'default'">
                   {{ item.linkedToProject ? '已引用' : '未引用' }}
                 </Tag>
@@ -432,7 +462,14 @@ watch(() => route.query.projectId, (value) => {
                   </Button>
                   <template v-if="item.projectId === selectedProjectId">
                     <Button type="link" @click="openAsset(item)">编辑</Button>
-                    <Button type="link" @click="polishAsset(item)">AI 润色</Button>
+                    <Button
+                      v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
+                      :loading="polishingAssetIds.has(item.id)"
+                      type="link"
+                      @click="polishAsset(item)"
+                    >
+                      {{ polishingAssetIds.has(item.id) ? '润色中' : 'AI 润色' }}
+                    </Button>
                     <Button
                       :loading="generatingAssetIds.has(item.id)"
                       type="link"
@@ -502,14 +539,7 @@ watch(() => route.query.projectId, (value) => {
 </template>
 
 <style scoped>
-.asset-library-tip { margin-bottom: 16px; }
-.asset-library-card {
-  background: var(--ant-color-bg-container);
-  display: flex;
-  flex-direction: column;
-  min-height: 100%;
-}
-.asset-category-tabs { margin-bottom: 4px; }
+.asset-library-tip { margin-bottom: 16px; }.asset-category-tabs { margin-bottom: 4px; }
 .category-count { margin-inline-end: 0; }
 .asset-toolbar {
   align-items: center;
@@ -560,6 +590,25 @@ watch(() => route.query.projectId, (value) => {
   width: 100%;
 }
 .asset-meta { align-items: center; display: flex; gap: 8px; justify-content: space-between; margin: 16px 0 12px; }
+.asset-prompt {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--ant-color-fill-quaternary);
+}
+.asset-prompt-text {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--ant-color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
 .asset-actions { border-top: 1px solid var(--ant-color-border-secondary); margin-top: auto; padding-top: 8px; }
 @media (max-width: 640px) {
   .asset-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
