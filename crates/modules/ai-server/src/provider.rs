@@ -227,12 +227,44 @@ impl OpenAiCompatibleProvider {
             .and_then(Value::as_str)
             .unwrap_or("/images/generations");
         let size = doubao::normalize_seedream_size(&config.model, &request.size);
-        let response = self
-            .request(config, path)
-            .json(&json!({"model":config.model,"prompt":request.prompt,"size":size,"n":1}))
+        let mut body = json!({"model":config.model,"prompt":request.prompt,"size":size,"n":1});
+        let path = if request.references.is_empty() {
+            path
+        } else if config.platform == rust_toon_ai_api::AiPlatform::DouBao.code() {
+            body["image"] = json!(request.references);
+            path
+        } else {
+            body["images"] = json!(
+                request
+                    .references
+                    .iter()
+                    .map(|url| json!({"image_url":url}))
+                    .collect::<Vec<_>>()
+            );
+            config
+                .config
+                .get("imageEditPath")
+                .and_then(Value::as_str)
+                .unwrap_or("/images/edits")
+        };
+        // Ark occasionally resets negotiated HTTP/2 POST streams while the same endpoint remains
+        // reachable over HTTP/1.1. Image jobs are long-lived and benefit from the conservative
+        // transport; chat and video clients keep their existing negotiation behavior.
+        let image_client = reqwest::Client::builder()
+            .http1_only()
+            .connect_timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|error| format!("创建图片 HTTP 客户端失败: {error:?}"))?;
+        let mut image_request =
+            image_client.post(format!("{}{}", config.url.trim_end_matches('/'), path));
+        if !config.api_key.is_empty() {
+            image_request = image_request.bearer_auth(config.api_key.trim_start_matches("Bearer "));
+        }
+        let response = image_request
+            .json(&body)
             .send()
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| format!("图片服务连接失败: {error:?}"))?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {

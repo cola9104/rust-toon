@@ -1,4 +1,7 @@
-use crate::{ToonState, ai_client, shared::require};
+use crate::{
+    ToonState, ai_client, shared::require, toonflow_asset_prompt,
+    toonflow_storage::persist_remote_image,
+};
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
@@ -103,11 +106,8 @@ async fn run(
     let prompt = ai_client::text(
         pool,
         "universalAi",
-        &format!("{system}\n{extra}"),
-        &format!(
-            "{label}名称：{}\n{label}描述：{}\n只输出可直接用于图片生成的提示词。",
-            item.name, item.describe
-        ),
+        &toonflow_asset_prompt::polish_system_prompt(&system, extra),
+        &toonflow_asset_prompt::polish_user_prompt(label, &item.name, &item.describe),
     )
     .await?;
     sqlx::query("UPDATE toonflow.assets SET prompt=$2,prompt_state='已完成',prompt_error_reason=NULL WHERE id=$1").bind(item.assets_id).bind(&prompt).execute(pool).await.map_err(|e|e.to_string())?;
@@ -269,19 +269,15 @@ async fn make_image(
             .await
             .map_err(|e| e.to_string())?;
     let style = style.ok_or_else(|| "项目为空".to_string())?.0;
-    let prompt = format!(
-        "画风：{style}\n类型：{}\n名称：{}\n{}{}",
-        item.type_,
-        item.name,
-        item.prompt,
-        if item.base64.is_some() {
-            "\n保持参考图主体特征一致。"
-        } else {
-            ""
-        }
+    let prompt = toonflow_asset_prompt::image_prompt(
+        &style,
+        &item.type_,
+        &item.prompt,
+        item.base64.is_some(),
     );
     match ai_client::image(pool, model, &prompt, resolution).await {
         Ok(path) => {
+            let path = persist_remote_image(&path, item.id).await?;
             let updated = sqlx::query("UPDATE toonflow.images SET file_path=$2,state='已完成' WHERE id=$1 AND state='生成中'")
                 .bind(image_id)
                 .bind(&path)

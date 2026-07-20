@@ -736,7 +736,10 @@ pub async fn list_assets(
                   a.audio_bind_state, a.prompt_error_reason
            FROM toonflow.assets a
            LEFT JOIN toonflow.images i ON i.id = a.image_id
-           WHERE a.project_id=$1
+           WHERE EXISTS (
+             SELECT 1 FROM toonflow.project_assets pa
+             WHERE pa.asset_id = a.id AND pa.project_id = $1
+           )
            ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)
@@ -753,6 +756,11 @@ pub async fn save_asset(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     let id = request.id.unwrap_or_else(|| next_id(0));
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin asset transaction"))?;
     sqlx::query(
         r#"INSERT INTO toonflow.assets
            (id, project_id, name, prompt, remark, type, description, script_id, parent_asset_id)
@@ -771,9 +779,21 @@ pub async fn save_asset(
     .bind(request.description)
     .bind(request.script_id)
     .bind(request.parent_asset_id)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to save asset"))?;
+    sqlx::query(
+        "INSERT INTO toonflow.project_assets(project_id,asset_id,linked_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
+    )
+    .bind(request.project_id)
+    .bind(id)
+    .bind(now_ms())
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to link saved asset"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit asset"))?;
     Ok(Json(ApiResponse::new(json!({ "id": id }))))
 }
 
@@ -833,20 +853,22 @@ pub async fn get_flow_data(
     .fetch_optional(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to get flow data"))?;
-    if let Some((data,)) = flow {
+    let (script, assets) = crate::toonflow_asset_context::load_script_context(
+        &state.pool,
+        request.project_id,
+        request.episodes_id,
+    )
+    .await
+    .map_err(|_| AppError::internal("failed to build production asset context"))?;
+    if let Some((mut data,)) = flow {
+        data["script"] = json!(script);
+        data["assets"] = assets;
         return Ok(Json(ApiResponse::new(data)));
     }
-    let script: Option<(String,)> =
-        sqlx::query_as("SELECT content FROM toonflow.scripts WHERE id=$1 AND project_id=$2")
-            .bind(request.episodes_id)
-            .bind(request.project_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to get script"))?;
     Ok(Json(ApiResponse::new(json!({
-        "script": script.map(|row| row.0).unwrap_or_default(),
+        "script": script,
         "scriptPlan": "",
-        "assets": [],
+        "assets": assets,
         "storyboardTable": "",
         "storyboard": [],
         "workbench": { "videoList": [] }
@@ -923,7 +945,7 @@ pub async fn get_storyboards(
     let mut result = Vec::with_capacity(rows.len());
     for row in rows {
         let asset_ids: Vec<(i64,)> = sqlx::query_as(
-            "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY asset_id",
+            "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id",
         )
         .bind(row.id)
         .fetch_all(&state.pool)
@@ -1066,12 +1088,13 @@ async fn sync_storyboard_assets(
         .execute(&mut **tx)
         .await
         .map_err(|_| AppError::internal("failed to update storyboard assets"))?;
-    for asset_id in asset_ids {
+    for (sort_order, asset_id) in asset_ids.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO toonflow.assets_storyboards (storyboard_id, asset_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+            "INSERT INTO toonflow.assets_storyboards (storyboard_id, asset_id, sort_order) VALUES ($1,$2,$3) ON CONFLICT(storyboard_id,asset_id) DO UPDATE SET sort_order=excluded.sort_order",
         )
         .bind(storyboard_id)
         .bind(asset_id)
+        .bind(sort_order as i32)
         .execute(&mut **tx)
         .await
         .map_err(|_| AppError::internal("failed to update storyboard assets"))?;

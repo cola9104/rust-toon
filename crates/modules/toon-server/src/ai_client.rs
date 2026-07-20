@@ -95,12 +95,24 @@ pub async fn image(
     prompt: &str,
     size: &str,
 ) -> Result<String, String> {
+    image_with_references(pool, configured, prompt, size, Vec::new()).await
+}
+
+/// Generates an image with ordered visual references when the configured provider supports edits.
+pub async fn image_with_references(
+    pool: &PgPool,
+    configured: &str,
+    prompt: &str,
+    size: &str,
+    references: Vec<String>,
+) -> Result<String, String> {
     rust_toon_ai_server::AiModelFactory::new(pool.clone())
         .image(
             model_id(configured, "图片")?,
             rust_toon_ai_api::ImageRequest {
                 prompt: prompt.into(),
                 size: size.into(),
+                references,
             },
         )
         .await

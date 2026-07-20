@@ -73,6 +73,11 @@ export namespace ToonflowApi {
     audioBindState?: number;
   }
 
+  export interface LibraryAsset extends Asset {
+    linkedToProject: boolean;
+    sourceProjectName: string;
+  }
+
   export interface Storyboard {
     id: number;
     scriptId: number;
@@ -212,6 +217,20 @@ export function getAssets(projectId: number) {
   return requestClient.post<ToonflowApi.Asset[]>('/toonflow/assets/getAssetsApi', {
     projectId,
   });
+}
+
+export function getAssetLibrary(projectId?: number) {
+  return requestClient.post<ToonflowApi.LibraryAsset[]>('/toonflow/assets/library', {
+    projectId,
+  });
+}
+
+export function linkProjectAsset(projectId: number, assetId: number) {
+  return requestClient.post('/toonflow/assets/link', { projectId, assetId });
+}
+
+export function unlinkProjectAsset(projectId: number, assetId: number) {
+  return requestClient.post('/toonflow/assets/unlink', { projectId, assetId });
 }
 
 export function saveAsset(data: Partial<ToonflowApi.Asset> & { name: string; projectId: number }) {

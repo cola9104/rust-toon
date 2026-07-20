@@ -187,11 +187,18 @@ pub async fn schedule_storyboard_generation(
             let ratio = ratio.clone();
             tokio::spawn(async move {
                 if permit.is_ok() {
-                    match ai_client::image(
+                    let references =
+                        crate::toonflow_asset_context::load_storyboard_asset_references(
+                            &pool, project_id, script_id, id,
+                        )
+                        .await
+                        .unwrap_or_default();
+                    match ai_client::image_with_references(
                         &pool,
                         &model,
                         &format!("{prompt}\n画面比例：{ratio}"),
                         &quality,
+                        references,
                     )
                     .await
                     {

@@ -73,7 +73,11 @@ async fn extract_group(
         .await
         .map_err(|error| error.to_string())?;
     let existing = sqlx::query_as::<_, (String, String)>(
-        "SELECT name,type FROM toonflow.assets WHERE project_id=$1",
+        r#"SELECT a.name,a.type FROM toonflow.assets a
+           WHERE a.project_id=$1 OR EXISTS(
+             SELECT 1 FROM toonflow.project_assets pa
+             WHERE pa.project_id=$1 AND pa.asset_id=a.id
+           )"#,
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -91,14 +95,16 @@ async fn extract_group(
     let output = ai_client::text(
         pool,
         "universalAi",
-        r#"从剧本中识别角色(role)、场景(scene)、道具(tool)。只返回一个 JSON 对象：
+        r#"从剧本中提取后续分镜和视频生成需要保持视觉一致的基础资产。只返回一个 JSON 对象：
 {"newAssets":[{"name":"","desc":"","type":"role","scriptIds":[1]}],"existingAssetRefs":[{"name":"","type":"role","scriptIds":[1]}]}
-已有资产只放 existingAssetRefs；新资产放 newAssets。名称必须稳定、简短，scriptIds 必须来自输入。不要输出 Markdown。"#,
+分类只能是：role=有名且需保持外观一致的角色；scene=反复出现或叙事关键场所；tool=被角色使用、推动剧情或需特写的关键道具；costume=需跨镜头保持一致的独立服装方案。
+不提取群演、一次性背景物、普通家具、无剧情作用的日常物品；角色当前穿着只写入角色 desc，只有可复用或需单独生成的服装才列 costume。
+同一实体跨多个剧本使用统一名称；已有资产必须放 existingAssetRefs，禁止换名重建；新资产放 newAssets。desc 要写可视化的稳定外观特征，不写动作和剧情。scriptIds 必须来自输入。不要输出 Markdown。"#,
         &format!("已有资产：{existing}\n\n{content}"),
     )
     .await?;
     let result = parse_result(&output)?;
-    let allowed = ["role", "scene", "tool"];
+    let allowed = ["role", "scene", "tool", "costume"];
     let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
     sqlx::query("DELETE FROM toonflow.script_assets WHERE script_id=ANY($1)")
         .bind(script_ids)
@@ -110,10 +116,11 @@ async fn extract_group(
             continue;
         }
         let existing_id: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 LIMIT 1",
+            "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 AND type=$3 LIMIT 1",
         )
         .bind(project_id)
         .bind(asset.name.trim())
+        .bind(&asset.type_)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
@@ -126,6 +133,9 @@ async fn extract_group(
                 .execute(&mut *tx).await.map_err(|error|error.to_string())?;
             id
         };
+        sqlx::query("INSERT INTO toonflow.project_assets(project_id,asset_id,linked_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+            .bind(project_id).bind(asset_id).bind(chrono::Utc::now().timestamp_millis())
+            .execute(&mut *tx).await.map_err(|error|error.to_string())?;
         for script_id in asset
             .script_ids
             .into_iter()
@@ -137,10 +147,17 @@ async fn extract_group(
     }
     for reference in result.existing_asset_refs {
         let asset_id: Option<i64> = sqlx::query_scalar(
-            "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 LIMIT 1",
+            r#"SELECT a.id FROM toonflow.assets a
+               WHERE a.name=$2 AND a.type=$3 AND (
+                 a.project_id=$1 OR EXISTS(
+                   SELECT 1 FROM toonflow.project_assets pa
+                   WHERE pa.project_id=$1 AND pa.asset_id=a.id
+                 )
+               ) ORDER BY CASE WHEN a.project_id=$1 THEN 0 ELSE 1 END LIMIT 1"#,
         )
         .bind(project_id)
         .bind(reference.name.trim())
+        .bind(&reference.type_)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;

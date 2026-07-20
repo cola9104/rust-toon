@@ -240,6 +240,32 @@ pub struct Generate {
     track_id: i64,
     upload_data: Value,
 }
+
+/// Combines caller-provided frames with canonical asset images while preserving their first-use order.
+fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value {
+    let mut references = upload_data
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .or_else(|| item.get("src").and_then(Value::as_str).map(str::to_string))
+        })
+        .filter(|reference| !reference.is_empty())
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    for reference in asset_references {
+        if !references
+            .iter()
+            .any(|item| item.as_str() == Some(&reference))
+        {
+            references.push(json!(reference));
+        }
+    }
+    json!(references)
+}
+
 pub async fn generate_video(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -247,6 +273,15 @@ pub async fn generate_video(
 ) -> Result<Json<ApiResponse<i64>>, AppError> {
     require(&user, "toon:scene:update")?;
     let id = chrono::Utc::now().timestamp_millis();
+    let asset_references = crate::toonflow_asset_context::load_track_asset_references(
+        &state.pool,
+        req.project_id,
+        req.script_id,
+        req.track_id,
+    )
+    .await
+    .map_err(|_| AppError::internal("failed to load video asset references"))?;
+    let references = merge_references(req.upload_data, asset_references);
     sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -257,7 +292,7 @@ pub async fn generate_video(
                 .await
                 .ok()
                 .flatten();
-        let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":req.upload_data});
+        let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":references});
         match ai_client::video(&pool, &req.model, payload).await {
             Ok(url) => {
                 let _ = sqlx::query(
@@ -522,7 +557,8 @@ fn video_prompt_name(model: &str, mode: &str) -> &'static str {
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::video_prompt_name;
+    use super::{merge_references, video_prompt_name};
+    use serde_json::json;
 
     #[test]
     fn selects_the_original_toonflow_video_prompt_variants() {
@@ -541,6 +577,28 @@ mod prompt_tests {
         assert_eq!(
             video_prompt_name("doubao-seedance-1-5-pro", "text"),
             "universal_multi_parameter"
+        );
+    }
+
+    #[test]
+    fn normalizes_storyboard_media_and_appends_unique_asset_references() {
+        let references = merge_references(
+            json!([
+                {"id": 1, "src": "https://example.com/storyboard.png"},
+                "https://example.com/direct.png"
+            ]),
+            vec![
+                "https://example.com/role.png".into(),
+                "https://example.com/direct.png".into(),
+            ],
+        );
+        assert_eq!(
+            references,
+            json!([
+                "https://example.com/storyboard.png",
+                "https://example.com/direct.png",
+                "https://example.com/role.png"
+            ])
         );
     }
 }
@@ -661,8 +719,17 @@ pub async fn batch_videos(
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:update")?;
     let mut jobs = Vec::new();
-    for (index, track) in req.track_data.into_iter().enumerate() {
+    for (index, mut track) in req.track_data.into_iter().enumerate() {
         let id = chrono::Utc::now().timestamp_millis() + index as i64;
+        let asset_references = crate::toonflow_asset_context::load_track_asset_references(
+            &state.pool,
+            req.project_id,
+            req.script_id,
+            track.track_id,
+        )
+        .await
+        .map_err(|_| AppError::internal("failed to load video asset references"))?;
+        track.upload_data = merge_references(track.upload_data, asset_references);
         sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(track.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
         jobs.push((id, track));
     }

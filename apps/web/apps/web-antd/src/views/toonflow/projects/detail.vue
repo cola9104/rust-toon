@@ -11,7 +11,6 @@ import {
   Card,
   Col,
   Form,
-  Image,
   Input,
   InputNumber,
   List,
@@ -34,7 +33,6 @@ import {
   addScript,
   addStoryboard,
   addVideoTrack,
-  batchBindAudio,
   batchGenerateVideoPrompts,
   batchGenerateVideos,
   clearAgentMemory,
@@ -44,12 +42,8 @@ import {
   exportFinalVideo,
   extractScriptAssets,
   getAssets,
-  getAgentMemories,
-  getScriptAgentPlan,
   getFlowData,
   getImageFlow,
-  generateAssetImage,
-  generateAssetDubbing,
   generateFlowImage,
   generateStoryboardImages,
   generateTrackVideo,
@@ -59,7 +53,6 @@ import {
   getNovelData,
   getProject,
   getProjectStatistics,
-  polishAssetPrompt,
   getScripts,
   getStoryboards,
   getVideoWorkbench,
@@ -68,7 +61,6 @@ import {
   retryTrackVideo,
   bindTrackStoryboards,
   cancelTrackVideo,
-  saveAsset,
   saveFlowData,
   saveImageFlow,
   saveScriptAgentPlan,
@@ -78,7 +70,6 @@ import {
   updateVideoTrackPrompt,
   updateImageFlow,
   uploadFlowImage,
-  uploadMaterial,
 } from '#/api/toonflow';
 import { router } from '#/router';
 import { parseNovelText } from './novel-import';
@@ -107,13 +98,11 @@ const novels = ref<ToonflowApi.NovelChapter[]>([]);
 const scripts = ref<ToonflowApi.Script[]>([]);
 const assets = ref<ToonflowApi.Asset[]>([]);
 const storyboards = ref<ToonflowApi.Storyboard[]>([]);
-const materialInput = ref<HTMLInputElement>();
 const selectedScriptId = ref<number>();
 const flowText = ref('{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}');
 
 const novelModalOpen = ref(false);
 const scriptModalOpen = ref(false);
-const assetModalOpen = ref(false);
 const storyboardModalOpen = ref(false);
 const flowImageModalOpen = ref(false);
 const flowImageResult = ref('');
@@ -123,9 +112,6 @@ const imageFlowEdges = ref<any[]>([]);
 const flowUploadInput = ref<HTMLInputElement>();
 const storyboardPreviewOpen = ref(false);
 const storyboardPreview = ref('');
-const dubbingModalOpen = ref(false);
-const dubbingResult = ref('');
-const dubbingForm = reactive({ assetsId: 0, assetName: '', text: '', voice: 'alloy' });
 const videoTracks = ref<any[]>([]);
 const flowImageForm = reactive({ prompt: '', references: '' });
 const agentType = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
@@ -269,15 +255,6 @@ const scriptForm = reactive({
   name: '',
   content: '',
   assets: [] as number[],
-});
-
-const assetForm = reactive({
-  id: undefined as number | undefined,
-  name: '',
-  type: 'role',
-  description: '',
-  prompt: '',
-  remark: '',
 });
 
 const storyboardForm = reactive({
@@ -494,92 +471,6 @@ async function extractAssetsFromScript(script: ToonflowApi.Script) {
   window.setTimeout(async () => {
     await Promise.all([loadScripts(), loadAssets()]);
   }, 3000);
-}
-
-async function uploadMaterialFile(event: Event) {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  input.value = '';
-  if (!file) return;
-  const base64Data = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ''));
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
-  await uploadMaterial({
-    projectId: projectId.value,
-    base64Data,
-    type: 'clip',
-    name: file.name,
-  });
-  message.success('素材上传成功');
-  await loadAssets();
-}
-
-function openAsset(asset?: any) {
-  Object.assign(assetForm, {
-    id: asset?.id,
-    name: asset?.name ?? '',
-    type: asset?.type ?? 'role',
-    description: asset?.description ?? '',
-    prompt: asset?.prompt ?? '',
-    remark: asset?.remark ?? '',
-  });
-  assetModalOpen.value = true;
-}
-
-async function saveAssetForm() {
-  await saveAsset({
-    ...assetForm,
-    projectId: projectId.value,
-  });
-  assetModalOpen.value = false;
-  await loadAssets();
-}
-
-async function polishAsset(asset: any) {
-  const result = await polishAssetPrompt({ assetsId: asset.id, projectId: projectId.value, type: asset.type, name: asset.name, describe: asset.description || '' });
-  asset.prompt = result.prompt;
-  message.success('资产提示词已生成');
-  await loadAssets();
-}
-
-async function generateAssetPicture(asset: any) {
-  if (!project.value?.imageModel) return message.warning('请先在项目配置中选择图片模型');
-  await generateAssetImage({ projectId: projectId.value, model: String(project.value.imageModel), resolution: imageQuality.value, id: asset.id, type: asset.type, name: asset.name, prompt: asset.prompt || asset.description || '' });
-  message.success('资产图片已生成');
-  await loadAssets();
-}
-
-async function matchAssetVoice(asset: any) {
-  await batchBindAudio(projectId.value, [asset.id]);
-  message.success('已匹配项目中的音色资产');
-  await loadAssets();
-}
-
-function openDubbing(asset: any) {
-  Object.assign(dubbingForm, {
-    assetsId: asset.id,
-    assetName: asset.name,
-    text: asset.description || asset.prompt || '',
-    voice: 'alloy',
-  });
-  dubbingResult.value = '';
-  dubbingModalOpen.value = true;
-}
-
-async function createDubbing() {
-  if (!dubbingForm.text.trim()) return message.warning('请输入配音文本');
-  const result = await generateAssetDubbing({
-    projectId: projectId.value,
-    assetsId: dubbingForm.assetsId,
-    text: dubbingForm.text,
-    voice: dubbingForm.voice,
-  });
-  dubbingResult.value = result.url;
-  message.success('角色配音已生成并绑定');
-  await loadAssets();
 }
 
 async function loadAgentMemory() {
@@ -851,12 +742,16 @@ watch(projectId, () => loadAll());
           </Table>
         </Tabs.TabPane>
 
-        <Tabs.TabPane key="script" tab="剧本与资产">
-          <Row :gutter="16">
-            <Col :span="14">
+        <Tabs.TabPane key="script" tab="剧本">
               <Card size="small" title="剧本">
                 <template #extra>
                   <Space>
+                    <Button
+                      size="small"
+                      @click="router.push({ path: '/toonflow/assets', query: { projectId } })"
+                    >
+                      打开资产库
+                    </Button>
                     <Button size="small" @click="openScript()">手动新增</Button>
                   </Space>
                 </template>
@@ -876,50 +771,6 @@ watch(projectId, () => loadAll());
                   </template>
                 </List>
               </Card>
-            </Col>
-            <Col :span="10">
-              <Card size="small" title="资产">
-                <template #extra>
-                  <Space>
-                    <input
-                      ref="materialInput"
-                      accept="image/*,audio/*,video/*"
-                      class="hidden"
-                      type="file"
-                      @change="uploadMaterialFile"
-                    />
-                    <Button size="small" @click="materialInput?.click()">上传素材</Button>
-                    <Button size="small" type="primary" @click="openAsset()">新增资产</Button>
-                  </Space>
-                </template>
-                <List :data-source="assets" size="small">
-                  <template #renderItem="{ item }">
-                    <List.Item>
-                      <template #actions>
-                        <Button type="link" @click="openAsset(item)">编辑</Button>
-                        <Button type="link" @click="polishAsset(item)">AI 润色</Button>
-                        <Button type="link" @click="generateAssetPicture(item)">生成图片</Button>
-                        <Button v-if="item.type !== 'audio'" type="link" @click="matchAssetVoice(item)">匹配音色</Button>
-                        <Button v-if="item.type !== 'audio'" type="link" @click="openDubbing(item)">生成配音</Button>
-                      </template>
-                      <List.Item.Meta :description="item.description" :title="item.name">
-                        <template #avatar>
-                          <Image
-                            v-if="item.imageFilePath"
-                            :height="56"
-                            :src="item.imageFilePath"
-                            :width="56"
-                            class="asset-thumb"
-                          />
-                          <Tag v-else>{{ item.type }}</Tag>
-                        </template>
-                      </List.Item.Meta>
-                    </List.Item>
-                  </template>
-                </List>
-              </Card>
-            </Col>
-          </Row>
         </Tabs.TabPane>
 
         <Tabs.TabPane key="production" tab="生产">
@@ -1101,30 +952,6 @@ watch(projectId, () => loadAll());
       </Form>
     </Modal>
 
-    <Modal v-model:open="assetModalOpen" title="资产" width="760px" @ok="saveAssetForm">
-      <Form :label-col="{ span: 4 }">
-        <Form.Item label="名称">
-          <Input v-model:value="assetForm.name" />
-        </Form.Item>
-        <Form.Item label="类型">
-          <Select
-            v-model:value="assetForm.type"
-            :options="[
-              { label: '角色', value: 'role' },
-              { label: '场景', value: 'scene' },
-              { label: '道具', value: 'tool' },
-            ]"
-          />
-        </Form.Item>
-        <Form.Item label="描述">
-          <Input.TextArea v-model:value="assetForm.description" :rows="3" />
-        </Form.Item>
-        <Form.Item label="提示词">
-          <Input.TextArea v-model:value="assetForm.prompt" :rows="4" />
-        </Form.Item>
-      </Form>
-    </Modal>
-
     <Modal v-model:open="storyboardModalOpen" title="分镜" width="820px" @ok="saveStoryboardForm">
       <Form :label-col="{ span: 4 }">
         <Form.Item label="轨道">
@@ -1145,34 +972,6 @@ watch(projectId, () => loadAll());
         </Form.Item>
         <Form.Item label="图片提示词">
           <Input.TextArea v-model:value="storyboardForm.prompt" :rows="5" />
-        </Form.Item>
-      </Form>
-    </Modal>
-    <Modal
-      v-model:open="dubbingModalOpen"
-      :title="`生成配音 · ${dubbingForm.assetName}`"
-      width="720px"
-      @ok="createDubbing"
-    >
-      <Form layout="vertical">
-        <Form.Item label="音色">
-          <Select
-            v-model:value="dubbingForm.voice"
-            :options="[
-              { label: 'Alloy', value: 'alloy' },
-              { label: 'Echo', value: 'echo' },
-              { label: 'Fable', value: 'fable' },
-              { label: 'Nova', value: 'nova' },
-              { label: 'Onyx', value: 'onyx' },
-              { label: 'Shimmer', value: 'shimmer' },
-            ]"
-          />
-        </Form.Item>
-        <Form.Item label="配音文本">
-          <Input.TextArea v-model:value="dubbingForm.text" :rows="7" />
-        </Form.Item>
-        <Form.Item v-if="dubbingResult" label="生成结果">
-          <audio :src="dubbingResult" controls class="w-full" />
         </Form.Item>
       </Form>
     </Modal>
@@ -1291,10 +1090,6 @@ watch(projectId, () => loadAll());
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-}
-.asset-thumb {
-  object-fit: cover;
-  border-radius: 6px;
 }
 .workspace-card {
   height: 680px;

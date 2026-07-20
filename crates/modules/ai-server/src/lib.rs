@@ -467,6 +467,7 @@ async fn test(
                     ImageRequest {
                         prompt,
                         size: "1024x1024".into(),
+                        references: Vec::new(),
                     },
                 )
                 .await?,

@@ -40,6 +40,8 @@ chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 futures-util = "0.3"
+hex = "0.4"
+hmac = "0.12"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 redis = { version = "0.32", default-features = false, features = ["aio", "tokio-comp"] }
@@ -64,6 +66,7 @@ rust-toon-toon-api = { path = "crates/modules/toon-api" }
 rust-toon-toon-server = { path = "crates/modules/toon-server" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal"] }
 tower = "0.5"

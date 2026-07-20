@@ -257,6 +257,8 @@ pub struct ChatResponse {
 pub struct ImageRequest {
     pub prompt: String,
     pub size: String,
+    #[serde(default)]
+    pub references: Vec<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaResponse {

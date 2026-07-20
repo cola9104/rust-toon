@@ -8,6 +8,9 @@ mod toonflow_agent_runtime;
 mod toonflow_agent_tools;
 mod toonflow_agents;
 mod toonflow_asset_ai;
+mod toonflow_asset_context;
+mod toonflow_asset_library;
+mod toonflow_asset_prompt;
 mod toonflow_audio;
 mod toonflow_image_workflow;
 mod toonflow_manuals;
@@ -16,6 +19,7 @@ mod toonflow_novel_events;
 mod toonflow_project;
 mod toonflow_resources;
 mod toonflow_script_ai;
+mod toonflow_storage;
 mod toonflow_video;
 mod toonflow_video_export;
 mod toonflow_ws;
@@ -476,6 +480,15 @@ pub fn routes(state: ToonState) -> Router {
         )
         .route("/toonflow/script/delScript", post(toonflow::delete_scripts))
         .route("/toonflow/assets/getAssetsApi", post(toonflow::list_assets))
+        .route(
+            "/toonflow/assets/library",
+            post(toonflow_asset_library::list),
+        )
+        .route("/toonflow/assets/link", post(toonflow_asset_library::link))
+        .route(
+            "/toonflow/assets/unlink",
+            post(toonflow_asset_library::unlink),
+        )
         .route("/toonflow/assets/saveAssets", post(toonflow::save_asset))
         .route("/toonflow/assets/addAssets", post(toonflow::save_asset))
         .route("/toonflow/assets/updateAssets", post(toonflow::save_asset))
@@ -753,6 +766,10 @@ pub fn routes(state: ToonState) -> Router {
 
     Router::new()
         .route("/toon/capabilities", get(capabilities))
+        .route(
+            "/toonflow/assets/files/{*key}",
+            get(toonflow_storage::serve_image),
+        )
         .route("/api/socket/{agent}", get(toonflow_ws::ws_handler))
         .route("/socket/{agent}", get(toonflow_ws::ws_handler))
         .merge(protected)

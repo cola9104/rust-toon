@@ -235,6 +235,7 @@ async fn draw(
             ImageRequest {
                 prompt: v.prompt,
                 size: format!("{}x{}", v.width, v.height),
+                references: Vec::new(),
             },
         )
         .await;

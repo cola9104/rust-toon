@@ -639,13 +639,27 @@ pub(crate) async fn execute_inner(
             let script_id = request
                 .script_id
                 .ok_or_else(|| AppError::bad_request("生产工具缺少 scriptId"))?;
-            let data:Option<Value>=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get flow data"))?;
-            let data = data.unwrap_or_else(|| json!({}));
             let key = request
                 .arguments
                 .get("key")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            if matches!(key, "script" | "assets") {
+                let (script, assets) = crate::toonflow_asset_context::load_script_context(
+                    &state.pool,
+                    request.project_id,
+                    script_id,
+                )
+                .await
+                .map_err(|_| AppError::internal("failed to build production asset context"))?;
+                return Ok(if key == "script" {
+                    json!(script)
+                } else {
+                    assets
+                });
+            }
+            let data:Option<Value>=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get flow data"))?;
+            let data = data.unwrap_or_else(|| json!({}));
             Ok(if key.is_empty() {
                 data
             } else {
@@ -672,6 +686,9 @@ pub(crate) async fn execute_inner(
                 .and_then(Value::as_i64)
                 .unwrap_or(now_ms() * 1000);
             sqlx::query("INSERT INTO toonflow.assets(id,name,prompt,type,description,parent_asset_id,project_id,start_time)VALUES($1,$2,'',$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET name=excluded.name,description=excluded.description").bind(id).bind(request.arguments.get("name").and_then(Value::as_str).unwrap_or("衍生资产")).bind(parent_type.ok_or_else(||AppError::not_found("parent asset not found"))?).bind(request.arguments.get("desc").and_then(Value::as_str).unwrap_or_default()).bind(parent).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save derived asset"))?;
+            sqlx::query("INSERT INTO toonflow.project_assets(project_id,asset_id,linked_at)VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
+                .bind(request.project_id).bind(id).bind(now_ms()).execute(&state.pool).await
+                .map_err(|_|AppError::internal("failed to link derived asset to project"))?;
             if let Some(script_id) = request.script_id {
                 sqlx::query("INSERT INTO toonflow.script_assets(script_id,asset_id)VALUES($1,$2) ON CONFLICT DO NOTHING").bind(script_id).bind(id).execute(&state.pool).await.ok();
             }
@@ -827,8 +844,8 @@ pub(crate) async fn execute_inner(
                 .get("associateAssetsIds")
                 .and_then(Value::as_array)
             {
-                for asset_id in ids.iter().filter_map(Value::as_i64) {
-                    sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id)VALUES($1,$2) ON CONFLICT DO NOTHING").bind(id).bind(asset_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
+                for (sort_order, asset_id) in ids.iter().filter_map(Value::as_i64).enumerate() {
+                    sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order)VALUES($1,$2,$3) ON CONFLICT(storyboard_id,asset_id) DO UPDATE SET sort_order=excluded.sort_order").bind(id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
                 }
             }
             tx.commit()
