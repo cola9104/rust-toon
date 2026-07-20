@@ -2,6 +2,7 @@
 import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 import { AiModelTypeEnum } from '@vben/constants';
@@ -28,8 +29,11 @@ import {
   getCreativeManuals,
   updateProject,
 } from '#/api/toonflow';
-import { router } from '#/router';
 import { getModelSimpleList } from '#/api/ai/model/model';
+
+defineOptions({ name: 'ToonflowProjects' });
+
+const router = useRouter();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -169,7 +173,10 @@ async function openProject(project: { id?: number }) {
     return;
   }
   try {
-    await router.push(`/toonflow/projects/${project.id}`);
+    await router.push({
+      name: 'ToonflowProjectDetail',
+      params: { id: String(project.id) },
+    });
   } catch (error) {
     message.error(error instanceof Error ? error.message : '项目详情页打开失败');
   }

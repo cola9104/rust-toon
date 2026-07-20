@@ -2,7 +2,7 @@
 import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
@@ -71,11 +71,13 @@ import {
   updateImageFlow,
   uploadFlowImage,
 } from '#/api/toonflow';
-import { router } from '#/router';
 import { parseNovelText } from './novel-import';
 import AgentChat from './AgentChat.vue';
 
+defineOptions({ name: 'ToonflowProjectDetail' });
+
 const route = useRoute();
+const router = useRouter();
 const projectId = computed(() => Number(route.params.id));
 
 const activeTab = ref('novel');
