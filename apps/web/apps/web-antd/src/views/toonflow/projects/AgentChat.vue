@@ -28,14 +28,32 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  (e: 'activity', payload: { status: string; toolName: string }): void;
+  (e: 'clear-memory', memoryType: 'all' | 'message' | 'summary'): void;
+  (e: 'workspace-preview', payload: { key: 'scriptPlan' | 'storyboardTable'; value: string }): void;
   (e: 'tool-result', payload: { toolName: string; result: any }): void;
 }>();
 
 const accessStore = useAccessStore();
 const connected = ref(false);
 const connecting = ref(false);
+const thinkEnabled = ref(false);
+const thinkLevel = ref(1);
 
 let ws: WebSocket | null = null;
+const completedToolCalls = new Set<string>();
+const workspacePreviewValues = new Map<string, string>();
+
+function emitWorkspacePreview(text: string) {
+  for (const key of ['scriptPlan', 'storyboardTable'] as const) {
+    const match = text.match(new RegExp(`<${key}>([\\s\\S]*?)<\\/${key}>`));
+    const value = match?.[1]?.trim();
+    if (value && workspacePreviewValues.get(key) !== value) {
+      workspacePreviewValues.set(key, value);
+      emit('workspace-preview', { key, value });
+    }
+  }
+}
 
 const isolationKey = computed(() => {
   const sid = props.agentType === 'productionAgent' ? (props.scriptId ?? 'none') : 'project';
@@ -109,6 +127,9 @@ function updateThinkConfig(think: boolean, thinkLevel: number) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'updateThinkConfig', think, thinkLevel }));
 }
+function applyThinkConfig() {
+  updateThinkConfig(thinkEnabled.value, thinkLevel.value);
+}
 
 function handleServerMessage(frame: any) {
   const { event: type, data } = frame;
@@ -134,12 +155,19 @@ function handleServerMessage(frame: any) {
         msg.status = data.status;
         if (data.ext) Object.assign(msg, { ext: data.ext });
       }
+      emit('activity', { status: data.status || 'pending', toolName: '__agent__' });
       break;
     }
     case 'content:add': {
       const msg = props.messages.find((m) => m.id === data.messageId);
       if (msg) {
         msg.content.push(data.content);
+        if (data.content?.type === 'toolcall') {
+          emit('activity', {
+            status: data.content.status || 'pending',
+            toolName: data.content.data?.toolCallName || 'unknown',
+          });
+        }
         scrollToBottom();
       }
       break;
@@ -153,6 +181,7 @@ function handleServerMessage(frame: any) {
           if (data.strategy === 'append' && data.data !== undefined) {
             if (block.type === 'text' || block.type === 'markdown') {
               block.data = (block.data || '') + (typeof data.data === 'string' ? data.data : '');
+              emitWorkspacePreview(String(block.data || ''));
             } else if (block.type === 'thinking') {
               if (typeof data.data === 'object' && data.data.text) {
                 block.data.text = (block.data.text || '') + data.data.text;
@@ -171,13 +200,19 @@ function handleServerMessage(frame: any) {
             } else {
               block.data = data.data;
             }
-            // Emit tool result when toolcall completes
-            if (block.type === 'toolcall' && (data.status === 'complete' || data.status === 'error')) {
-              emit('tool-result', {
-                toolName: block.data.toolCallName || 'unknown',
-                result: data.data?.result || block.data.result || block.data,
-              });
-            }
+          }
+          if (
+            block.type === 'toolcall' &&
+            (data.status === 'complete' || data.status === 'error') &&
+            !completedToolCalls.has(block.id)
+          ) {
+            completedToolCalls.add(block.id);
+            const toolName = block.data.toolCallName || 'unknown';
+            emit('activity', { status: data.status, toolName });
+            emit('tool-result', {
+              toolName,
+              result: data.data?.result || block.data.result || block.data,
+            });
           }
         }
       }
@@ -211,11 +246,6 @@ function toolCallStatusColor(status: string) {
   if (status === 'complete') return '#52c41a';
   if (status === 'error') return '#ff4d4f';
   return '#1677ff';
-}
-
-function thinkingCollapsed(contentId: string) {
-  // Default: collapsed when complete, expanded when streaming
-  return document.getElementById(contentId)?.dataset?.status === 'complete';
 }
 
 const inputText = ref('');
@@ -277,6 +307,20 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
       <span class="status-text">
         {{ connecting ? '连接中...' : connected ? '已连接' : '未连接' }}
       </span>
+      <div class="agent-controls">
+        <label><a-switch v-model:checked="thinkEnabled" size="small" @change="applyThinkConfig" /> 深度思考</label>
+        <a-select v-model:value="thinkLevel" size="small" :disabled="!thinkEnabled" style="width: 88px" @change="applyThinkConfig">
+          <a-select-option :value="0">快速</a-select-option><a-select-option :value="1">基础</a-select-option><a-select-option :value="2">深入</a-select-option><a-select-option :value="3">完整</a-select-option>
+        </a-select>
+        <a-dropdown>
+          <a-button size="small">记忆</a-button>
+          <template #overlay><a-menu>
+            <a-menu-item @click="emit('clear-memory', 'message')">清除消息记忆</a-menu-item>
+            <a-menu-item @click="emit('clear-memory', 'summary')">清除摘要记忆</a-menu-item>
+            <a-menu-item danger @click="emit('clear-memory', 'all')">清除全部记忆</a-menu-item>
+          </a-menu></template>
+        </a-dropdown>
+      </div>
     </div>
 
     <!-- Messages area -->
@@ -296,7 +340,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
         v-for="msg in messages"
         :key="msg.id"
         class="chat-message"
-        :class="[`chat-message-${msg.role.split(':')[0].replace('assistant', 'agent')}`]"
+        :class="[`chat-message-${msg.role.replace('assistant', 'agent')}`]"
       >
         <!-- Message header -->
         <div class="message-header">
@@ -420,6 +464,8 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   background: #d9d9d9;
 }
 .status-text { color: #8c8c8c; }
+.agent-controls { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.agent-controls label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
 
 .chat-messages {
   flex: 1;

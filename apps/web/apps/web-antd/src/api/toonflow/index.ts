@@ -159,7 +159,11 @@ export const saveImageFlow = (nodes: any[], edges: any[], assetId?: number) => r
 export const updateImageFlow = (flowId: number, nodes: any[], edges: any[]) => requestClient.post('/production/editImage/updateImageFlow', { flowId, nodes, edges });
 export const uploadFlowImage = (projectId: number, scriptId: number, base64Data: string) => requestClient.post<string>('/production/editImage/uploadImage', { projectId, scriptId, base64Data });
 export const generateStoryboardImages = (data: { storyboardIds: number[]; projectId: number; scriptId: number; concurrentCount?: number; compulsory?: boolean }) => requestClient.post('/production/storyboard/batchGenerateImage', data);
+export const pollStoryboardImages = (ids: number[]) => requestClient.post<Array<Pick<ToonflowApi.Storyboard, 'filePath' | 'id' | 'prompt' | 'reason' | 'src' | 'state'>>>('/production/storyboard/pollingImage', { ids });
+export const batchDeleteStoryboards = (ids: number[], projectId: number) => requestClient.post('/production/storyboard/batchDelete', { ids, projectId });
 export const previewStoryboardImages = (storyboardIds: number[]) => requestClient.post<string | null>('/production/storyboard/previewImage', { storyboardIds });
+export const downloadStoryboardPreview = (storyboardIds: number[]) => requestClient.download<Blob>('/production/storyboard/downPreviewImage', { method: 'POST', data: { storyboardIds } });
+export const updateStoryboardUrl = (id: number, url: string, flowId: number) => requestClient.post('/production/storyboard/updateStoryboardUrl', { id, url, flowId });
 export const getCreativeManuals = () => requestClient.get<ToonflowApi.CreativeManual[]>('/toonflow/manuals');
 export const saveCreativeManual = (manual: Partial<ToonflowApi.CreativeManual> & { kind: 'director' | 'visual'; name: string; path: string }) => requestClient.post(`/project/${manual.kind === 'visual' ? (manual.id ? 'editVisualManual' : 'addVisualManual') : (manual.id ? 'editDirectorlManual' : 'addDirectorManual')}`, { name: manual.name, images: manual.images ?? [], data: manual.data ?? [], ...(manual.kind === 'visual' ? { stylePath: manual.path } : { directorManual: manual.path }) });
 export const deleteCreativeManual = (kind: 'director' | 'visual', name: string) => requestClient.post(`/project/${kind === 'visual' ? 'deleteVisualManual' : 'deleteDirectorManual'}`, { name });
@@ -285,6 +289,14 @@ export function removeStoryboard(id: number) {
   return requestClient.post('/toonflow/production/storyboard/removeFrame', { id });
 }
 
+export function editStoryboardInfo(data: Pick<ToonflowApi.Storyboard, 'associateAssetsIds' | 'duration' | 'id' | 'prompt' | 'shouldGenerateImage' | 'track' | 'videoDesc'>) {
+  return requestClient.post('/toonflow/production/storyboard/editStoryboardInfo', data);
+}
+
+export function reorderStoryboards(projectId: number, scriptId: number, storyboardIds: number[]) {
+  return requestClient.post('/toonflow/production/storyboard/reorder', { projectId, scriptId, storyboardIds });
+}
+
 
 export function getAgentDeployments() {
   return requestClient.get<ToonflowApi.AgentDeployment[]>('/toonflow/setting/agentDeploy');
@@ -305,6 +317,7 @@ export const reorderVideoTracks = (projectId: number, scriptId: number, trackIds
 export const bindTrackStoryboards = (trackId: number, storyboardIds: number[]) => requestClient.post('/production/workbench/bindStoryboards', { trackId, storyboardIds });
 export const cancelTrackVideo = (id: number) => requestClient.post('/production/workbench/cancelVideo', { id });
 export const retryTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/retryVideo', data);
+export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
 export const exportFinalVideo = (projectId: number, scriptId: number) => requestClient.post<{ taskId: number; state: string }>('/production/workbench/exportVideo', { projectId, scriptId });
 export const selectTrackVideo = (trackId: number, videoId: number) => requestClient.post('/production/workbench/selectVideo', { trackId, videoId });
 export const deleteTrackVideo = (id: number) => requestClient.post('/production/workbench/delVideo', { id });
@@ -323,7 +336,7 @@ export const getAgentRunEvents = (runId: number, afterId = 0) => requestClient.p
 export const retryAgent = (id: number) => requestClient.post<{ id: number; state: string; retryOf: number }>('/agents/retry', { id });
 export const getAgentMemories = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string) => requestClient.post<ToonflowApi.AgentMemory[]>('/agents/memories', { agentType, isolationKey });
 export const getAgentRuns = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string) => requestClient.post<ToonflowApi.AgentRun[]>('/agents/runs', { agentType, isolationKey });
-export const clearAgentMemory = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string) => requestClient.post('/agents/clearMemory', { agentType, isolationKey });
+export const clearAgentMemory = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string, memoryType: 'all' | 'message' | 'summary' = 'all') => requestClient.post('/agents/clearMemory', { agentType, isolationKey, memoryType });
 export const getScriptAgentPlan = (projectId: number) => requestClient.post<{ id: number; data: { storySkeleton: string; adaptationStrategy: string; script: Array<{ id: number; name: string; content: string }> } }>('/scriptAgent/getPlanData', { projectId, agentType: 'scriptAgent' });
 export const saveScriptAgentPlan = (projectId: number, data: Record<string, any>) => requestClient.post<{ id: number }>('/scriptAgent/setPlanData', { projectId, agentType: 'scriptAgent', data });
 export const executeAgentTool = (data: { agentType: 'productionAgent' | 'scriptAgent'; projectId: number; scriptId?: number; toolName: string; arguments?: Record<string, any> }) => requestClient.post<{ callId: number; result: any }>('/agents/tools/execute', data);

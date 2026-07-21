@@ -1,7 +1,4 @@
-use crate::{
-    ToonState, ai_client, shared::require, toonflow_asset_prompt, toonflow_image_edit_prompt,
-    toonflow_prompt_store,
-};
+use crate::{ToonState, ai_client, shared::require, toonflow_image_edit_prompt};
 use axum::{Json, extract::State};
 use base64::Engine;
 use image::{DynamicImage, ImageFormat, RgbaImage, imageops};
@@ -10,6 +7,61 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
+
+async fn normalize_image_references(references: Vec<String>) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::with_capacity(references.len());
+    for reference in references {
+        if reference.starts_with("data:")
+            || reference.starts_with("http://")
+            || reference.starts_with("https://")
+        {
+            normalized.push(reference);
+        } else if reference.starts_with("/toonflow/assets/files/") {
+            normalized.push(crate::toonflow_storage::image_data_url(&reference).await?);
+        } else {
+            return Err(format!("不支持的参考图地址：{reference}"));
+        }
+    }
+    Ok(normalized)
+}
+
+fn validate_storyboard_prompt(prompt: &str, reference_count: usize) -> Result<(), String> {
+    if prompt.trim().is_empty() {
+        return Err("分镜图片提示词为空，请先按首位帧模式重新写入分镜面板".to_string());
+    }
+    for index in 1..=reference_count {
+        let marker = format!("@图{index}");
+        if !prompt.contains(&marker) {
+            return Err(format!(
+                "分镜图片提示词缺少参考资产绑定 {marker}，请重新生成分镜面板"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn storyboard_image_size(quality: &str, ratio: &str) -> String {
+    let long_edge = match quality.trim().to_ascii_uppercase().as_str() {
+        "1K" => 1280.0,
+        "4K" => 3840.0,
+        _ => 2560.0,
+    };
+    let Some((width, height)) = ratio.split_once(':').and_then(|(width, height)| {
+        Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))
+    }) else {
+        return quality.to_string();
+    };
+    if width <= 0.0 || height <= 0.0 {
+        return quality.to_string();
+    }
+    let (pixel_width, pixel_height) = if width >= height {
+        (long_edge, long_edge * height / width)
+    } else {
+        (long_edge * width / height, long_edge)
+    };
+    let align = |value: f64| ((value / 32.0).round().max(1.0) * 32.0) as u32;
+    format!("{}x{}", align(pixel_width), align(pixel_height))
+}
 
 #[derive(Deserialize)]
 pub struct FlowId {
@@ -110,7 +162,9 @@ pub async fn generate_flow_image(
     Json(req): Json<FlowImage>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
-    let references = req.references.unwrap_or_default();
+    let references = normalize_image_references(req.references.unwrap_or_default())
+        .await
+        .map_err(AppError::bad_request)?;
     let prompt = toonflow_image_edit_prompt::build(
         toonflow_image_edit_prompt::ImageEditTarget::parse(&req.target_type),
         &req.prompt,
@@ -174,6 +228,11 @@ pub async fn schedule_storyboard_generation(
     if storyboard_ids.is_empty() {
         return Err(AppError::bad_request("storyboardIds不能为空"));
     }
+    crate::toonflow_storyboard_asset_validation::reject_base_roles_for_storyboards(
+        pool,
+        storyboard_ids,
+    )
+    .await?;
     let rows=sqlx::query_as::<_,(i64,String,i32)>("SELECT id,prompt,should_generate_image FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND id=ANY($3)").bind(project_id).bind(script_id).bind(storyboard_ids).fetch_all(pool).await.map_err(|_|AppError::internal("failed to get storyboards"))?;
     if rows.is_empty() {
         return Err(AppError::not_found("未查到分镜数据"));
@@ -214,24 +273,41 @@ pub async fn schedule_storyboard_generation(
             let ratio = ratio.clone();
             tokio::spawn(async move {
                 if permit.is_ok() {
-                    let references =
+                    let reference_paths =
                         crate::toonflow_asset_context::load_storyboard_asset_references(
                             &pool, project_id, script_id, id,
                         )
                         .await
                         .unwrap_or_default();
-                    let storyboard_instruction =
-                        toonflow_prompt_store::load(&pool, "storyboard_image", "").await;
+                    let references = match normalize_image_references(reference_paths).await {
+                        Ok(references) => references,
+                        Err(reason) => {
+                            let reason = format!("分镜参考资产读取失败：{reason}");
+                            let _ = sqlx::query(
+                                "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+                            )
+                            .bind(id)
+                            .bind(reason)
+                            .execute(&pool)
+                            .await;
+                            return;
+                        }
+                    };
+                    if let Err(reason) = validate_storyboard_prompt(&prompt, references.len()) {
+                        let _ = sqlx::query(
+                            "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+                        )
+                        .bind(id)
+                        .bind(reason)
+                        .execute(&pool)
+                        .await;
+                        return;
+                    }
                     match ai_client::image_with_references(
                         &pool,
                         &model,
-                        &toonflow_asset_prompt::storyboard_prompt_with_instruction(
-                            &prompt,
-                            &ratio,
-                            references.len(),
-                            Some(&storyboard_instruction),
-                        ),
-                        &quality,
+                        &prompt,
+                        &storyboard_image_size(&quality, &ratio),
                         references,
                     )
                     .await
@@ -248,6 +324,37 @@ pub async fn schedule_storyboard_generation(
         }
     });
     Ok(response)
+}
+
+#[cfg(test)]
+mod prompt_tests {
+    use super::{storyboard_image_size, validate_storyboard_prompt};
+
+    #[test]
+    fn accepts_ordered_reference_markers() {
+        assert!(
+            validate_storyboard_prompt("@图1 为角色，@图2 为场景，【画面】二人对视", 2).is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_missing_reference_markers() {
+        let error = validate_storyboard_prompt("@图1 为角色，【画面】二人对视", 2)
+            .expect_err("missing @图2 must be rejected");
+        assert!(error.contains("@图2"));
+    }
+
+    #[test]
+    fn rejects_empty_prompt() {
+        assert!(validate_storyboard_prompt("  ", 0).is_err());
+    }
+
+    #[test]
+    fn converts_project_ratio_to_provider_dimensions() {
+        assert_eq!(storyboard_image_size("2K", "16:9"), "2560x1440");
+        assert_eq!(storyboard_image_size("2K", "9:16"), "1440x2560");
+        assert_eq!(storyboard_image_size("2K", "1:1"), "2560x2560");
+    }
 }
 
 pub async fn generate_storyboards(
@@ -300,8 +407,8 @@ pub async fn update_storyboard_url(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeleteStoryboards {
-    ids: Vec<i64>,
-    project_id: i64,
+    pub(crate) ids: Vec<i64>,
+    pub(crate) project_id: i64,
 }
 pub async fn delete_storyboards(
     user: CurrentUser,
@@ -317,19 +424,61 @@ pub async fn delete_storyboards(
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to begin transaction"))?;
+    let rows: Vec<(i64, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT id,track_id,flow_id FROM toonflow.storyboards WHERE id=ANY($1) AND project_id=$2",
+    )
+    .bind(&req.ids)
+    .bind(req.project_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to load storyboards"))?;
+    if rows.is_empty() {
+        return Err(AppError::not_found("当前选择分镜不存在"));
+    }
+    let storyboard_ids = rows.iter().map(|row| row.0).collect::<Vec<_>>();
+    let track_ids = rows
+        .iter()
+        .filter_map(|row| row.1)
+        .collect::<std::collections::BTreeSet<_>>();
+    let flow_ids = rows.iter().filter_map(|row| row.2).collect::<Vec<_>>();
     sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE storyboard_id=ANY($1)")
-        .bind(&req.ids)
+        .bind(&storyboard_ids)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete storyboard assets"))?;
-    let result = sqlx::query("DELETE FROM toonflow.storyboards WHERE id=ANY($1) AND project_id=$2")
-        .bind(req.ids)
+    sqlx::query("DELETE FROM toonflow.storyboards WHERE id=ANY($1) AND project_id=$2")
+        .bind(&storyboard_ids)
         .bind(req.project_id)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete storyboards"))?;
-    if result.rows_affected() == 0 {
-        return Err(AppError::not_found("当前选择分镜不存在"));
+    if !flow_ids.is_empty() {
+        sqlx::query("DELETE FROM toonflow.image_flows WHERE id=ANY($1)")
+            .bind(&flow_ids)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to delete storyboard image flows"))?;
+    }
+    for track_id in track_ids {
+        let remaining: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM toonflow.storyboards WHERE track_id=$1")
+                .bind(track_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to inspect storyboard track"))?;
+        if remaining == 0 {
+            sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=$1")
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to delete storyboard track"))?;
+        } else {
+            sqlx::query("UPDATE toonflow.video_tracks SET duration=(SELECT coalesce(sum(CASE WHEN duration ~ '^[0-9]+$' THEN duration::integer ELSE 0 END),0)::integer FROM toonflow.storyboards WHERE track_id=$1) WHERE id=$1")
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to update storyboard track"))?;
+        }
     }
     tx.commit()
         .await
@@ -448,4 +597,31 @@ pub async fn download_storyboards(
         )
         .body(axum::body::Body::from(png))
         .map_err(|_| AppError::internal("failed to build download"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_image_references;
+
+    #[tokio::test]
+    async fn keeps_provider_usable_reference_urls() {
+        let references = vec![
+            "https://cdn.example.com/reference.jpg".to_string(),
+            "data:image/png;base64,iVBORw0KGgo=".to_string(),
+        ];
+        assert_eq!(
+            normalize_image_references(references.clone())
+                .await
+                .unwrap(),
+            references
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_unknown_relative_reference_paths() {
+        let error = normalize_image_references(vec!["/unknown/image.jpg".to_string()])
+            .await
+            .unwrap_err();
+        assert!(error.contains("不支持的参考图地址"));
+    }
 }

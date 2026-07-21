@@ -1,10 +1,11 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
+import { downloadFileFromBlob } from '@vben/utils';
 
 import {
   Button,
@@ -33,14 +34,17 @@ import {
   addScript,
   addStoryboard,
   addVideoTrack,
+  batchDeleteStoryboards,
   batchGenerateVideoPrompts,
   batchGenerateVideos,
   clearAgentMemory,
   deleteNovel,
   deleteScripts,
   deleteTrackVideo,
+  downloadStoryboardPreview,
   exportFinalVideo,
   executeAgentTool,
+  editStoryboardInfo,
   extractScriptAssets,
   getAssets,
   getFlowData,
@@ -50,6 +54,8 @@ import {
   generateTrackVideo,
   generateVideoPrompt,
   previewStoryboardImages,
+  pollStoryboardImages,
+  pollTrackVideos,
   pollScriptAssets,
   generateNovelEvents,
   getNovelData,
@@ -59,6 +65,7 @@ import {
   getStoryboards,
   getVideoWorkbench,
   removeStoryboard,
+  reorderStoryboards,
   reorderVideoTracks,
   retryTrackVideo,
   bindTrackStoryboards,
@@ -69,6 +76,7 @@ import {
   selectTrackVideo,
   updateNovel,
   updateScript,
+  updateStoryboardUrl,
   updateVideoTrackPrompt,
   updateImageFlow,
   uploadFlowImage,
@@ -119,13 +127,22 @@ const storyboardModalOpen = ref(false);
 const flowImageModalOpen = ref(false);
 const imageFlowId = ref<number>();
 const editingAssetId = ref<number>();
+const editingStoryboardId = ref<number>();
+const editingStoryboard = ref<ToonflowApi.Storyboard>();
 const editingAssetName = ref('');
 const imageFlowNodes = ref<any[]>([]);
 const imageFlowEdges = ref<any[]>([]);
+const imageFlowEditorKey = ref(0);
 const generatingImageNodeId = ref('');
 const storyboardPreviewOpen = ref(false);
 const storyboardPreview = ref('');
+const productionAgentCollapsed = ref(false);
+const productionAgentActivity = ref('等待指令');
+let productionAgentSyncTimer: ReturnType<typeof setInterval> | undefined;
 const videoTracks = ref<any[]>([]);
+const trackBindingOpen = ref(false);
+const trackBindingTarget = ref<any>();
+const trackBindingStoryboardIds = ref<number[]>([]);
 const agentType = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
 const scriptPlan = reactive({ storySkeleton: '', adaptationStrategy: '' });
 
@@ -160,10 +177,10 @@ function updatePipelineStage(toolName: string, status: StageStatus) {
   if (!stageKey) return;
   const idx = pipelineStages.findIndex((s) => s.key === stageKey);
   if (idx >= 0) {
-    pipelineStages[idx].status = status;
+    pipelineStages[idx]!.status = status;
     // Mark previous stages as completed
     for (let i = 0; i < idx; i++) {
-      if (pipelineStages[i].status === 'active') pipelineStages[i].status = 'completed';
+      if (pipelineStages[i]!.status === 'active') pipelineStages[i]!.status = 'completed';
     }
   }
 }
@@ -216,15 +233,15 @@ function onAgentToolResult(payload: { toolName: string; result: any }) {
 
   // Match tool name to workspace tab and pipeline stage
   if (toolName.includes('storySkeleton') || toolName.includes('skeleton')) {
-    workspaceTabs[0].content = extractXmlContent(content, 'storySkeleton') || content;
+    workspaceTabs[0]!.content = extractXmlContent(content, 'storySkeleton') || content;
     workspaceActiveTab.value = 'adaptationStrategy';
     updatePipelineStage(toolName, 'completed');
   } else if (toolName.includes('adaptationStrategy') || toolName.includes('adaptation')) {
-    workspaceTabs[1].content = extractXmlContent(content, 'adaptationStrategy') || content;
+    workspaceTabs[1]!.content = extractXmlContent(content, 'adaptationStrategy') || content;
     workspaceActiveTab.value = 'script';
     updatePipelineStage(toolName, 'completed');
   } else if (toolName.includes('script') && !toolName.includes('get_script')) {
-    workspaceTabs[2].content = extractScriptItems(content);
+    workspaceTabs[2]!.content = extractScriptItems(content);
     workspaceActiveTab.value = 'script';
     updatePipelineStage(toolName, 'completed');
   } else if (toolName === 'save_scripts') {
@@ -240,14 +257,14 @@ function onAgentToolResult(payload: { toolName: string; result: any }) {
 function extractXmlContent(text: string, tag: string): string | null {
   const regex = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i');
   const match = text.match(regex);
-  return match ? match[1].trim() : null;
+  return match?.[1]?.trim() ?? null;
 }
 
 function extractScriptItems(text: string): string {
   const matches = text.matchAll(/<scriptItem\s+name="([^"]*)">([\s\S]*?)<\/scriptItem>/gi);
   const items: string[] = [];
   for (const m of matches) {
-    items.push(`### ${m[1]}\n\n${m[2].trim()}`);
+    items.push(`### ${m[1]}\n\n${m[2]?.trim() ?? ''}`);
   }
   return items.length > 0 ? items.join('\n\n---\n\n') : text;
 }
@@ -280,7 +297,7 @@ function renderMarkdown(text: string): string {
 
 // Agent chat messages (WebSocket-driven)
 interface ChatContentBlock { type: string; id: string; data: any; status: string }
-interface ChatMessage { id: string; role: string; name?: string; status: string; datetime: string; content: ChatContentBlock[] }
+interface ChatMessage { id: string; role: 'assistant' | 'system' | 'user'; name?: string; status: string; datetime: string; content: ChatContentBlock[] }
 const scriptChatMessages = ref<ChatMessage[]>([]);
 const productionChatMessages = ref<ChatMessage[]>([]);
 const activeAgentMessages = computed(() =>
@@ -290,6 +307,7 @@ const activeAgentMessages = computed(() =>
 );
 const agentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
 const productionAgentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
+const productionFlowCanvasRef = ref<InstanceType<typeof ProductionFlowCanvas> | null>(null);
 
 const novelForm = reactive({
   id: undefined as number | undefined,
@@ -310,6 +328,7 @@ const scriptForm = reactive({
 });
 
 const storyboardForm = reactive({
+  id: undefined as number | undefined,
   prompt: '',
   duration: 4,
   state: '未生成',
@@ -348,15 +367,6 @@ const novelColumns = [
   { title: '状态', dataIndex: 'eventState', width: 96, align: 'center' as const },
   { title: '事件', dataIndex: 'event', width: 360 },
   { title: '操作', key: 'action', width: 220, fixed: 'right' as const },
-];
-
-const storyboardColumns = [
-  { title: '顺序', dataIndex: 'index', width: 60 },
-  { title: '轨道', dataIndex: 'track', width: 80 },
-  { title: '时长', dataIndex: 'duration', width: 70 },
-  { title: '状态', dataIndex: 'state', width: 90 },
-  { title: '提示词', dataIndex: 'prompt', ellipsis: true },
-  { title: '操作', key: 'action', width: 90 },
 ];
 
 async function loadProject() {
@@ -618,6 +628,31 @@ async function resetProductionAgent() {
   window.setTimeout(() => productionAgentChatRef.value?.connect(), 200);
   message.success('当前剧本的分镜制作 Agent 已重新开始');
 }
+function changeProductionScript(value: unknown) {
+  const scriptId = Number(value);
+  if (!Number.isFinite(scriptId)) return;
+  const running = productionChatMessages.value.some((item: any) =>
+    item.status === 'pending' || item.status === 'streaming',
+  );
+  if (!running) {
+    selectedScriptId.value = scriptId;
+    return;
+  }
+  Modal.confirm({
+    title: 'Agent 正在执行',
+    content: '切换剧本不会停止当前 Agent，但当前画布将切换到另一份工作区。确认继续吗？',
+    okText: '确认切换',
+    cancelText: '留在当前剧本',
+    onOk: () => { selectedScriptId.value = scriptId; },
+  });
+}
+async function clearProductionAgentMemory(memoryType: 'all' | 'message' | 'summary') {
+  if (!selectedScriptId.value) return;
+  const isolationKey = `productionAgent:${projectId.value}:${selectedScriptId.value}`;
+  await clearAgentMemory('productionAgent', isolationKey, memoryType);
+  if (memoryType !== 'summary') productionChatMessages.value = [];
+  message.success(memoryType === 'message' ? '消息记忆已清除' : memoryType === 'summary' ? '摘要记忆已清除' : '全部记忆已清除');
+}
 
 async function saveAgentWorkspace() {
   await saveScriptAgentPlan(projectId.value, {
@@ -652,6 +687,79 @@ async function saveFlowText() {
   }
   await saveFlowData(projectId.value, selectedScriptId.value, data);
   message.success('生产工作流已保存');
+}
+
+let flowCanvasSaveTimer: ReturnType<typeof setTimeout> | undefined;
+function flowObject() {
+  try { return JSON.parse(flowText.value || '{}') as Record<string, any>; }
+  catch { return {}; }
+}
+function persistFlowObject(data: Record<string, any>) {
+  flowText.value = JSON.stringify(data, null, 2);
+  if (flowCanvasSaveTimer) clearTimeout(flowCanvasSaveTimer);
+  flowCanvasSaveTimer = setTimeout(async () => {
+    if (!selectedScriptId.value) return;
+    await saveFlowData(projectId.value, selectedScriptId.value, data);
+  }, 500);
+}
+function saveProductionCanvasPositions(positions: Record<string, { x: number; y: number }>) {
+  const data = flowObject();
+  data.canvas = { ...(data.canvas || {}), layoutVersion: 7, positions };
+  persistFlowObject(data);
+}
+function updateProductionFlowSection(key: 'scriptPlan' | 'storyboardTable', value: string) {
+  const data = flowObject();
+  data[key] = value;
+  persistFlowObject(data);
+  message.success(key === 'scriptPlan' ? '导演规划已保存' : '分镜表已保存');
+}
+function previewProductionFlowSection(payload: { key: 'scriptPlan' | 'storyboardTable'; value: string }) {
+  const data = flowObject();
+  data[payload.key] = payload.value;
+  flowText.value = JSON.stringify(data, null, 2);
+}
+function onProductionAgentActivity(payload: { status: string; toolName: string }) {
+  const names: Record<string, string> = {
+    run_sub_agent_derive_assets: '分析衍生资产', run_sub_agent_generate_assets: '生成衍生资产',
+    run_sub_agent_director_plan: '生成导演规划', run_sub_agent_storyboard_table: '生成分镜表',
+    run_sub_agent_storyboard_panel: '构建分镜面板', run_sub_agent_storyboard_gen: '生成分镜图',
+    run_sub_agent_supervision: '监制检查', generate_storyboard: '生成分镜图',
+  };
+  const toolStages: Record<string, string> = {
+    add_deriveAsset: 'script',
+    del_deriveAsset: 'script',
+    generate_deriveAsset: 'script',
+    run_sub_agent_derive_assets: 'script',
+    run_sub_agent_generate_assets: 'script',
+    run_sub_agent_director_plan: 'scriptPlan',
+    run_sub_agent_storyboard_table: 'storyboardTable',
+    run_sub_agent_supervision: 'storyboardTable',
+    run_sub_agent_storyboard_panel: 'storyboard',
+    run_sub_agent_storyboard_gen: 'storyboard',
+    generate_storyboard: 'storyboard',
+    generate_video_prompt: 'workbench',
+    generate_video: 'workbench',
+  };
+  if (payload.status === 'pending' || payload.status === 'streaming') {
+    const stage = toolStages[payload.toolName];
+    if (stage) nextTick(() => productionFlowCanvasRef.value?.focusStage(stage));
+  }
+  if (payload.toolName === '__agent__') {
+    if (payload.status === 'pending' || payload.status === 'streaming') {
+      if (!productionAgentSyncTimer) {
+        productionAgentSyncTimer = setInterval(() => void loadFlow(), 1800);
+      }
+      productionAgentActivity.value = 'Agent 执行中';
+    } else {
+      if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
+      productionAgentSyncTimer = undefined;
+      void loadFlow();
+      productionAgentActivity.value = payload.status === 'error' ? 'Agent 执行失败' : 'Agent 已完成';
+    }
+    return;
+  }
+  const name = names[payload.toolName] || payload.toolName;
+  productionAgentActivity.value = payload.status === 'complete' ? `${name}完成` : payload.status === 'error' ? `${name}失败` : name;
 }
 
 function collectUpstreamNodeIds(nodeId: string) {
@@ -711,10 +819,12 @@ function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
 async function openAssetImageFlow(asset: ToonflowApi.Asset) {
   if (!selectedScriptId.value) return message.warning('请先选择剧本');
   editingAssetId.value = asset.id;
+  editingStoryboardId.value = undefined;
   editingAssetName.value = asset.name;
   imageFlowId.value = asset.flowId;
   imageFlowNodes.value = [];
   imageFlowEdges.value = [];
+  imageFlowEditorKey.value += 1;
   if (imageFlowId.value) {
     const flow = await getImageFlow(imageFlowId.value);
     imageFlowNodes.value = flow?.nodes ?? [];
@@ -760,10 +870,145 @@ async function openAssetImageFlow(asset: ToonflowApi.Asset) {
       { id: `edge-${promptId}-${generatedId}`, source: promptId, target: generatedId },
     ];
   }
+  restoreMissingImageFlowEdges();
   flowImageModalOpen.value = true;
 }
 
+async function openStoryboardImageFlow(storyboard: ToonflowApi.Storyboard) {
+  if (!selectedScriptId.value) return message.warning('请先选择剧本');
+  editingAssetId.value = undefined;
+  editingStoryboardId.value = storyboard.id;
+  editingStoryboard.value = storyboard;
+  editingAssetName.value = `分镜 ${storyboard.index ?? storyboard.id}`;
+  imageFlowId.value = storyboard.flowId;
+  imageFlowNodes.value = [];
+  imageFlowEdges.value = [];
+  imageFlowEditorKey.value += 1;
+  if (imageFlowId.value) {
+    const flow = await getImageFlow(imageFlowId.value);
+    imageFlowNodes.value = flow?.nodes ?? [];
+    imageFlowEdges.value = flow?.edges ?? [];
+  }
+  if (imageFlowNodes.value.length === 0) {
+    const suffix = Date.now();
+    const promptId = `prompt-${suffix}`;
+    const generatedId = `generated-${suffix}`;
+    const referenceNodes = (storyboard.associateAssetsIds ?? []).flatMap((assetId, index) => {
+      const asset = productionAssets.value.find((item) => item.id === assetId);
+      return asset?.imageFilePath
+        ? [{
+            id: `upload-asset-${assetId}-${suffix}`,
+            type: 'upload',
+            position: { x: 0, y: (index + 1) * 220 },
+            data: {
+              assetId,
+              assetName: asset.name,
+              assetSlot: index,
+              assetType: asset.type,
+              image: assetFileUrl(asset.imageFilePath),
+            },
+          }]
+        : [];
+    });
+    imageFlowNodes.value = [
+      ...referenceNodes,
+      {
+        id: promptId,
+        type: 'prompt',
+        position: { x: 350, y: 0 },
+        data: { prompt: storyboard.prompt || storyboard.videoDesc || '' },
+      },
+      {
+        id: generatedId,
+        type: 'generated',
+        position: { x: 700, y: 0 },
+        data: {
+          generatedImage: assetFileUrl(storyboard.filePath || storyboard.src),
+          prompt: storyboard.prompt || '',
+          references: [],
+          targetType: 'storyboard',
+        },
+      },
+    ];
+    imageFlowEdges.value = [
+      ...referenceNodes.map((node) => ({ id: `edge-${node.id}-${generatedId}`, source: node.id, target: generatedId })),
+      { id: `edge-${promptId}-${generatedId}`, source: promptId, target: generatedId },
+    ];
+  }
+  const generatedNode = imageFlowNodes.value.find((node) => node.type === 'generated');
+  if (generatedNode) {
+    generatedNode.data.generatedImage ||= assetFileUrl(storyboard.filePath || storyboard.src);
+    for (const [index, assetId] of (storyboard.associateAssetsIds ?? []).entries()) {
+      if (imageFlowNodes.value.some((node) => node.type === 'upload' && node.data.assetSlot === index)) continue;
+      const asset = productionAssets.value.find((item) => item.id === assetId);
+      if (!asset) continue;
+      const nodeId = `upload-asset-${assetId}-${Date.now()}-${index}`;
+      imageFlowNodes.value.push({
+        id: nodeId,
+        type: 'upload',
+        position: { x: 0, y: index * 220 },
+        data: {
+          assetId,
+          assetName: asset.name,
+          assetSlot: index,
+          assetType: asset.type,
+          image: assetFileUrl(asset.imageFilePath),
+        },
+      });
+      imageFlowEdges.value.push({ id: `edge-${nodeId}-${generatedNode.id}`, source: nodeId, target: generatedNode.id });
+    }
+  }
+  restoreMissingImageFlowEdges();
+  flowImageModalOpen.value = true;
+}
+
+const imageFlowAssetOptions = computed(() =>
+  productionAssets.value
+    .filter((asset) => !!asset.imageFilePath && (asset.type !== 'role' || !!asset.parentAssetId))
+    .map((asset) => ({
+      id: asset.id,
+      image: assetFileUrl(asset.imageFilePath),
+      label: asset.name,
+      type: asset.type,
+    })),
+);
+
+async function selectImageFlowAsset(nodeId: string, assetId: number) {
+  const node = imageFlowNodes.value.find((item) => item.id === nodeId && item.type === 'upload');
+  const asset = productionAssets.value.find((item) => item.id === assetId);
+  if (!node || !asset?.imageFilePath) return;
+  node.data.assetId = asset.id;
+  node.data.assetName = asset.name;
+  node.data.assetType = asset.type;
+  node.data.image = assetFileUrl(asset.imageFilePath);
+  const storyboard = editingStoryboard.value;
+  const slot = Number(node.data.assetSlot);
+  if (storyboard && Number.isInteger(slot)) {
+    const assetIds = [...(storyboard.associateAssetsIds ?? [])];
+    assetIds[slot] = asset.id;
+    await editStoryboardInfo({
+      associateAssetsIds: assetIds,
+      duration: storyboard.duration,
+      id: storyboard.id,
+      prompt: storyboard.prompt || '',
+      shouldGenerateImage: storyboard.shouldGenerateImage ?? 1,
+      track: storyboard.track,
+      videoDesc: storyboard.videoDesc || '',
+    });
+    storyboard.associateAssetsIds = assetIds;
+    message.success(`已将参考资产更换为“${asset.name}”`);
+  }
+}
+
 async function saveVisualImageFlow() {
+  const storyboardGeneratedImage = editingStoryboardId.value
+    ? [...imageFlowNodes.value]
+        .reverse()
+        .find((node) => node.type === 'generated' && node.data.generatedImage)?.data.generatedImage
+    : undefined;
+  if (editingStoryboardId.value && !storyboardGeneratedImage) {
+    return message.warning('请先执行图片编辑节点并生成结果');
+  }
   if (imageFlowId.value) {
     await updateImageFlow(imageFlowId.value, imageFlowNodes.value, imageFlowEdges.value);
   } else {
@@ -773,8 +1018,15 @@ async function saveVisualImageFlow() {
       editingAssetId.value,
     );
     imageFlowId.value = result.id;
-    await loadFlow();
   }
+  if (editingStoryboardId.value && imageFlowId.value) {
+    await updateStoryboardUrl(
+      editingStoryboardId.value,
+      storyboardGeneratedImage,
+      imageFlowId.value,
+    );
+  }
+  await loadFlow();
   message.success('图片工作流已保存');
 }
 
@@ -796,6 +1048,19 @@ function connectImageFlow(connection: any) {
   if (!connection.source || !connection.target || connection.source === connection.target) return;
   const exists = imageFlowEdges.value.some((edge) => edge.source === connection.source && edge.target === connection.target);
   if (!exists) imageFlowEdges.value.push({ id: `edge-${connection.source}-${connection.target}-${Date.now()}`, source: connection.source, target: connection.target });
+}
+
+function restoreMissingImageFlowEdges() {
+  if (imageFlowEdges.value.length || imageFlowNodes.value.length < 2) return;
+  const generatedNode = imageFlowNodes.value.find((node) => node.type === 'generated');
+  if (!generatedNode) return;
+  imageFlowEdges.value = imageFlowNodes.value
+    .filter((node) => node.id !== generatedNode.id && ['prompt', 'upload'].includes(node.type))
+    .map((node) => ({
+      id: `edge-${node.id}-${generatedNode.id}`,
+      source: node.id,
+      target: generatedNode.id,
+    }));
 }
 
 async function planImageEditWithAgent(nodeId: string) {
@@ -824,17 +1089,25 @@ function removeImageFlowNode(id: string) {
   );
 }
 
-function openStoryboard() {
+const insertAfterStoryboardId = ref<number>();
+function openStoryboard(item?: ToonflowApi.Storyboard, keepInsertPosition = false) {
+  if (!keepInsertPosition) insertAfterStoryboardId.value = undefined;
   Object.assign(storyboardForm, {
-    prompt: '',
-    duration: 4,
-    state: '未生成',
-    videoDesc: '',
-    shouldGenerateImage: 1,
-    track: 'main',
-    associateAssetsIds: [],
+    id: item?.id,
+    prompt: item?.prompt ?? '',
+    duration: item?.duration ?? 4,
+    state: item?.state ?? '未生成',
+    videoDesc: item?.videoDesc ?? '',
+    shouldGenerateImage: item?.shouldGenerateImage ?? 1,
+    track: item?.track ?? 'main',
+    associateAssetsIds: [...(item?.associateAssetsIds ?? [])],
   });
   storyboardModalOpen.value = true;
+}
+
+function beginInsertStoryboard(item: ToonflowApi.Storyboard) {
+  insertAfterStoryboardId.value = item.id;
+  openStoryboard(undefined, true);
 }
 
 async function saveStoryboardForm() {
@@ -842,13 +1115,26 @@ async function saveStoryboardForm() {
     message.warning('请先选择剧本');
     return;
   }
-  await addStoryboard({
-    ...storyboardForm,
-    projectId: projectId.value,
-    scriptId: selectedScriptId.value,
-  });
+  if (storyboardForm.id) {
+    await editStoryboardInfo({ ...storyboardForm, id: storyboardForm.id });
+  } else {
+    const created = await addStoryboard({
+      ...storyboardForm,
+      projectId: projectId.value,
+      scriptId: selectedScriptId.value,
+    });
+    const afterId = insertAfterStoryboardId.value;
+    await loadFlow();
+    if (afterId && created.id) {
+      const ids = storyboards.value.map((item) => item.id).filter((id) => id !== created.id);
+      const index = ids.indexOf(afterId);
+      ids.splice(index < 0 ? ids.length : index + 1, 0, created.id);
+      await saveStoryboardOrder(ids);
+    }
+    insertAfterStoryboardId.value = undefined;
+  }
   storyboardModalOpen.value = false;
-  await loadFlow();
+  if (storyboardForm.id) await loadFlow();
 }
 
 async function deleteStoryboard(row: any) {
@@ -856,11 +1142,66 @@ async function deleteStoryboard(row: any) {
   await loadFlow();
 }
 
+const storyboardBusy = ref(false);
+let storyboardPollTimer: ReturnType<typeof setTimeout> | undefined;
+let storyboardPollAttempts = 0;
+
+function scheduleStoryboardPolling() {
+  if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
+  storyboardPollAttempts = 0;
+  const refresh = async () => {
+    const generatingIds = storyboards.value
+      .filter((item) => item.state === '生成中')
+      .map((item) => item.id);
+    if (generatingIds.length === 0 || storyboardPollAttempts >= 90) {
+      storyboardBusy.value = false;
+      return;
+    }
+    try {
+      const completed = await pollStoryboardImages(generatingIds);
+      const updates = new Map(completed.map((item) => [item.id, item]));
+      storyboards.value = storyboards.value.map((item) =>
+        updates.has(item.id) ? { ...item, ...updates.get(item.id) } : item,
+      );
+    } finally {
+      storyboardPollAttempts += 1;
+      storyboardPollTimer = setTimeout(refresh, 2000);
+    }
+  };
+  storyboardPollTimer = setTimeout(refresh, 1200);
+}
+
+async function generateStoryboards(ids: number[], compulsory = false) {
+  if (!selectedScriptId.value || ids.length === 0) return message.warning('请先选择需要生成的分镜');
+  storyboardBusy.value = true;
+  try {
+    await generateStoryboardImages({
+      storyboardIds: ids,
+      projectId: projectId.value,
+      scriptId: selectedScriptId.value,
+      concurrentCount: 5,
+      compulsory,
+    });
+    storyboards.value = storyboards.value.map((item) =>
+      ids.includes(item.id) ? { ...item, reason: undefined, state: '生成中' } : item,
+    );
+    message.success(`已提交 ${ids.length} 个分镜生成任务`);
+    scheduleStoryboardPolling();
+  } catch (error) {
+    storyboardBusy.value = false;
+    throw error;
+  }
+}
+
+async function batchDeleteSelectedStoryboards(ids: number[]) {
+  await batchDeleteStoryboards(ids, projectId.value);
+  message.success(`已删除 ${ids.length} 个分镜`);
+  await loadFlow();
+}
+
 async function generateAllStoryboardImages() {
   if (!selectedScriptId.value || storyboards.value.length === 0) return message.warning('当前剧本没有可生成的分镜');
-  await generateStoryboardImages({ storyboardIds: storyboards.value.map((item) => item.id), projectId: projectId.value, scriptId: selectedScriptId.value, concurrentCount: 5 });
-  message.success('分镜图片生成任务已提交');
-  window.setTimeout(loadFlow, 3000);
+  await generateStoryboards(storyboards.value.map((item) => item.id));
 }
 
 async function previewAllStoryboardImages() {
@@ -870,21 +1211,108 @@ async function previewAllStoryboardImages() {
   storyboardPreviewOpen.value = true;
 }
 
-async function createVideoTrack() { if (!selectedScriptId.value) return message.warning('请先选择剧本'); await addVideoTrack(projectId.value, selectedScriptId.value); await loadFlow(); }
+async function downloadAllStoryboardImages() {
+  const ids = storyboards.value.map((item) => item.id);
+  if (ids.length === 0) return message.warning('当前没有分镜');
+  const blob = await downloadStoryboardPreview(ids);
+  downloadFileFromBlob({ fileName: `storyboard-${selectedScriptId.value ?? 'preview'}.png`, source: blob });
+}
+
+async function downloadSelectedStoryboardImages(ids: number[]) {
+  if (ids.length === 0) return message.warning('请至少选择一个分镜');
+  const blob = await downloadStoryboardPreview(ids);
+  downloadFileFromBlob({ fileName: `storyboard-selected-${selectedScriptId.value ?? 'preview'}.png`, source: blob });
+}
+
+async function saveStoryboardOrder(ids: number[]) {
+  if (!selectedScriptId.value) return;
+  await reorderStoryboards(projectId.value, selectedScriptId.value, ids);
+  const order = new Map(ids.map((id, index) => [id, index]));
+  storyboards.value = [...storyboards.value]
+    .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0))
+    .map((item, index) => ({ ...item, index }));
+  message.success('分镜顺序已保存');
+}
+
+async function openVideoTrack(trackId: number) {
+  activeTab.value = 'video';
+  await nextTick();
+  document.getElementById(`video-track-${trackId}`)?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'start',
+  });
+}
+
+async function createVideoTrack() {
+  if (!selectedScriptId.value) return message.warning('请先选择剧本');
+  const id = await addVideoTrack(projectId.value, selectedScriptId.value);
+  await loadFlow();
+  const track = videoTracks.value.find((item: any) => item.id === id) ?? { id, medias: [] };
+  openTrackBinding(track);
+  message.success('轨道已新增，请选择要移入的分镜');
+}
 async function moveVideoTrack(index:number,direction:-1|1){if(!selectedScriptId.value)return;const target=index+direction;if(target<0||target>=videoTracks.value.length)return;const list=[...videoTracks.value];[list[index],list[target]]=[list[target],list[index]];videoTracks.value=list;await reorderVideoTracks(projectId.value,selectedScriptId.value,list.map(track=>track.id))}
-async function bindUnassignedStoryboards(track:any){const ids=storyboards.value.filter(item=>!videoTracks.value.some(other=>other.medias?.some((media:any)=>media.id===item.id))).map(item=>item.id);if(!ids.length)return message.info('没有未绑定的分镜');await bindTrackStoryboards(track.id,ids);await loadFlow();message.success('分镜已绑定到轨道')}
+function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=(track.medias??[]).map((media:any)=>media.id);trackBindingOpen.value=true}
+async function confirmTrackBinding(){const track=trackBindingTarget.value;if(!track)return;await bindTrackStoryboards(track.id,trackBindingStoryboardIds.value);trackBindingOpen.value=false;await loadFlow();message.success('分镜已移入该轨道')}
 async function saveTrackPrompt(track:any) { await updateVideoTrackPrompt(track.id, track.prompt || ''); message.success('视频提示词已保存'); }
 async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoMode.value}); message.success('视频提示词已生成'); }
-async function generateVideo(track:any) { if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型'); const id=await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',duration:track.duration||5,audio:false,uploadData:track.medias??[] }); message.success(`视频任务 ${id} 已提交`); window.setTimeout(loadFlow,3000); }
+let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
+function startVideoPolling() {
+  if (videoPollTimer) clearTimeout(videoPollTimer);
+  const refresh = async () => {
+    if (!selectedScriptId.value) return;
+    const generating = videoTracks.value.flatMap((track: any) =>
+      (track.videoList ?? []).filter((video: any) => video.state === '生成中').map((video: any) => video.id),
+    );
+    if (!generating.length) {
+      videoPollTimer = undefined;
+      return;
+    }
+    try {
+      const updates = await pollTrackVideos(projectId.value, selectedScriptId.value, generating);
+      for (const video of updates) {
+        if (video.state === '生成成功') {
+          message.success({ content: `视频任务 ${video.id} 生成完成`, key: `video-${video.id}` });
+        } else if (video.state === '生成失败') {
+          message.error({ content: video.errorReason || `视频任务 ${video.id} 生成失败`, duration: 6, key: `video-${video.id}` });
+        }
+      }
+      const updateMap = new Map(updates.map((video) => [video.id, video]));
+      videoTracks.value = videoTracks.value.map((track: any) => ({
+        ...track,
+        videoList: (track.videoList ?? []).map((video: any) => ({
+          ...video,
+          ...(updateMap.get(video.id) ?? {}),
+        })),
+      }));
+    } catch {
+      // Keep polling; transient status failures should not hide the running task.
+    }
+    videoPollTimer = setTimeout(refresh, 2000);
+  };
+  videoPollTimer = setTimeout(refresh, 800);
+}
+async function generateVideo(track:any) {
+  if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型');
+  const options = track.generation ?? {};
+  const medias = [...(track.medias ?? [])];
+  const id = await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:options.model||project.value.videoModel,mode:options.mode||videoMode.value,resolution:options.resolution||'1080p',duration:options.duration||track.duration||5,audio:Boolean(options.audio),uploadData:medias });
+  track.videoList = [{ id, state: '生成中', src: '', errorReason: undefined }, ...(track.videoList ?? [])];
+  message.loading({ content: `轨道 ${track.id} 正在生成视频`, duration: 2, key: `video-${id}` });
+  startVideoPolling();
+}
 async function generateAllVideoPrompts(){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await batchGenerateVideoPrompts({projectId:projectId.value,model:project.value.videoModel,mode:videoMode.value,concurrentCount:5,trackData:videoTracks.value.map(track=>({trackId:track.id,info:track.medias??[]}))});message.success('批量提示词任务已提交');window.setTimeout(loadFlow,3000)}
 async function generateAllVideos(){if(!selectedScriptId.value||!project.value?.videoModel)return message.warning('请先选择剧本并配置视频模型');await batchGenerateVideos({projectId:projectId.value,scriptId:selectedScriptId.value,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,trackData:videoTracks.value.map(track=>({trackId:track.id,prompt:track.prompt||'',duration:track.duration||5,uploadData:track.medias??[]}))});message.success('批量视频任务已提交');window.setTimeout(loadFlow,3000)}
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
-async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,uploadData:track.medias??[]});message.success('视频重试任务已提交');window.setTimeout(loadFlow,3000)}
+async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,uploadData:track.medias??[]});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
 watch(selectedScriptId, () => {
+  if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
+  productionAgentSyncTimer = undefined;
+  productionAgentActivity.value = '等待指令';
   productionChatMessages.value = [];
   loadFlow();
 });
@@ -898,6 +1326,9 @@ watch(activeTab, (tab) => {
 onMounted(loadAll);
 onBeforeUnmount(() => {
   if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
+  if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
+  if (videoPollTimer) clearTimeout(videoPollTimer);
+  if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
 });
 watch(projectId, () => loadAll());
 </script>
@@ -1028,33 +1459,61 @@ watch(projectId, () => loadAll());
 
         <Tabs.TabPane key="production" tab="分镜制作">
           <Row :gutter="16" class="production-layout">
-            <Col :xs="24" :xl="18">
+            <Col :span="24">
               <Space class="production-tools mb-3" wrap>
                 <Select
-                  v-model:value="selectedScriptId"
+                  :value="selectedScriptId"
                   :options="scriptOptions"
                   placeholder="选择剧本"
                   style="width: 240px"
+                  @change="changeProductionScript"
                 />
                 <Button @click="loadFlow">刷新制作数据</Button>
                 <Button type="primary" @click="saveFlowText">保存分镜工作区</Button>
-                <Button @click="openStoryboard">新增分镜</Button>
+                <Button @click="openStoryboard()">新增分镜</Button>
                 <Button type="primary" @click="generateAllStoryboardImages">批量生成分镜图</Button>
                 <Button @click="previewAllStoryboardImages">合成预览</Button>
+                <Button v-if="productionAgentCollapsed" @click="productionAgentCollapsed = false">展开 Agent</Button>
               </Space>
               <ProductionFlowCanvas
+                ref="productionFlowCanvasRef"
                 :assets="productionAssets"
                 :flow-text="flowText"
                 :script="selectedScript"
+                :storyboard-busy="storyboardBusy"
                 :storyboards="storyboards"
+                :video-mode="videoMode"
+                :video-model="project?.videoModel"
+                :video-ratio="project?.videoRatio"
+                :video-tracks="videoTracks"
+                @cancel-track-video="cancelVideo"
+                @delete-track-video="removeVideo"
+                @batch-delete-storyboards="batchDeleteSelectedStoryboards"
                 @edit-asset="openAssetImageFlow"
+                @edit-storyboard="openStoryboard"
+                @edit-storyboard-image="openStoryboardImageFlow"
+                @export-storyboard-images="downloadSelectedStoryboardImages"
+                @export-video="exportVideo"
+                @generate-storyboards="generateStoryboards"
+                @generate-track-video="generateVideo"
+                @generate-video-prompt="createVideoPrompt"
+                @insert-storyboard-after="beginInsertStoryboard"
+                @open-video-track="openVideoTrack"
+                @retry-track-video="retryVideo"
+                @remove-storyboard="deleteStoryboard"
+                @reorder-storyboards="saveStoryboardOrder"
+                @save-positions="saveProductionCanvasPositions"
+                @save-video-prompt="saveTrackPrompt"
+                @select-track-video="chooseVideo"
+                @update-flow-section="updateProductionFlowSection"
               />
             </Col>
-            <Col :xs="24" :xl="6">
+            <Col v-if="!productionAgentCollapsed" :span="24" class="production-agent-panel">
               <Card class="production-agent-card" size="small" title="分镜制作 Agent">
                 <template #extra>
                   <Space>
-                    <Tag color="blue">连续记忆</Tag>
+                    <Tag color="blue">{{ productionAgentActivity }}</Tag>
+                    <Button size="small" @click="productionAgentCollapsed = true">折叠</Button>
                     <Button size="small" @click="resetProductionAgent">重新开始</Button>
                   </Space>
                 </template>
@@ -1069,7 +1528,10 @@ watch(projectId, () => loadAll());
                   :messages="productionChatMessages"
                   starter-label="开始制作视频"
                   starter-prompt="立即读取当前已有剧本和人物基础资产，从「人物衍生资产分析」开始制作。人物父资产都是白色基础内衣底模，必须逐一检查当前剧本中的每个角色，并为每个出场角色写入至少一套符合其身份和剧情的正式服装衍生；另行补充剧本明确出现的换装、重伤、变身或稳定形态变化。请直接调用 run_sub_agent_derive_assets 实际写入，不要重新生成剧本，不要只汇报状态，也不要在执行前询问是否开始。完成后展示衍生清单并暂停等待我确认生成。"
+                  @activity="onProductionAgentActivity"
+                  @clear-memory="clearProductionAgentMemory"
                   @tool-result="onAgentToolResult"
+                  @workspace-preview="previewProductionFlowSection"
                 />
               </Card>
             </Col>
@@ -1088,13 +1550,24 @@ watch(projectId, () => loadAll());
             />
           </Card>
           <Space class="mb-3"><Select v-model:value="selectedScriptId" :options="scriptOptions" placeholder="选择剧本" style="width:240px"/><Button type="primary" @click="createVideoTrack">新增轨道</Button><Button @click="generateAllVideoPrompts">批量提示词</Button><Button @click="generateAllVideos">批量视频</Button><Button type="primary" @click="exportVideo">导出成片</Button><Button @click="loadFlow">刷新状态</Button></Space>
-          <Card v-for="(track,trackIndex) in videoTracks" :key="track.id" class="mb-3" size="small">
+          <Card v-for="(track,trackIndex) in videoTracks" :id="`video-track-${track.id}`" :key="track.id" class="mb-3 video-track-card" size="small">
             <template #title>轨道 {{ track.id }} · {{ track.duration || 0 }} 秒</template>
-            <template #extra><Space><Button :disabled="trackIndex===0" @click="moveVideoTrack(trackIndex,-1)">上移</Button><Button :disabled="trackIndex===videoTracks.length-1" @click="moveVideoTrack(trackIndex,1)">下移</Button><Button @click="bindUnassignedStoryboards(track)">绑定未分配分镜</Button><Button @click="createVideoPrompt(track)">AI 生成提示词</Button><Button @click="saveTrackPrompt(track)">保存提示词</Button><Button type="primary" @click="generateVideo(track)">生成视频</Button></Space></template>
+            <template #extra><Space><Button :disabled="trackIndex===0" @click="moveVideoTrack(trackIndex,-1)">上移</Button><Button :disabled="trackIndex===videoTracks.length-1" @click="moveVideoTrack(trackIndex,1)">下移</Button><Button @click="openTrackBinding(track)">调整分镜</Button><Button @click="createVideoPrompt(track)">AI 生成提示词</Button><Button @click="saveTrackPrompt(track)">保存提示词</Button><Button type="primary" @click="generateVideo(track)">生成视频</Button></Space></template>
             <Input.TextArea v-model:value="track.prompt" :rows="3" placeholder="视频生成提示词"/>
             <div class="mt-2"><Tag v-for="media in track.medias" :key="media.id">{{media.index}} · 分镜 {{media.id}}</Tag></div>
-            <div class="mt-3 flex gap-3 overflow-x-auto"><div v-for="video in track.videoList" :key="video.id"><video v-if="video.src" :src="video.src" controls class="h-40 rounded border"/><Tag>{{video.state}}</Tag><Space><Button v-if="video.state==='生成成功'" size="small" type="link" @click="chooseVideo(track,video)">{{track.selectVideoId===video.id?'已选中':'选择'}}</Button><Button v-if="video.state==='生成中'" size="small" type="link" @click="cancelVideo(video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" type="link" @click="retryVideo(video,track)">重试</Button><Button danger size="small" type="link" @click="removeVideo(video)">删除</Button></Space></div><Tag v-if="!track.videoList?.length">暂无候选视频</Tag></div>
+            <div class="mt-3 flex gap-3 overflow-x-auto"><div v-for="video in track.videoList" :key="video.id"><video v-if="video.src" :src="video.src" controls class="h-40 rounded border"/><Tag :color="video.state==='生成成功'?'green':video.state==='生成失败'?'red':video.state==='生成中'?'processing':'default'">{{video.state}}</Tag><div v-if="video.errorReason" class="max-w-80 whitespace-normal text-xs text-red-500">{{video.errorReason}}</div><Space><Button v-if="video.state==='生成成功'" size="small" type="link" @click="chooseVideo(track,video)">{{track.selectVideoId===video.id?'已选中':'选择'}}</Button><Button v-if="video.state==='生成中'" size="small" type="link" @click="cancelVideo(video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" type="link" @click="retryVideo(video,track)">重试</Button><Button danger size="small" type="link" @click="removeVideo(video)">删除</Button></Space></div><Tag v-if="!track.videoList?.length">暂无候选视频</Tag></div>
           </Card>
+          <Modal v-model:open="trackBindingOpen" :title="`调整轨道 ${trackBindingTarget?.id ?? ''} 的分镜`" width="720px" @ok="confirmTrackBinding">
+            <p class="mb-3 text-gray-500">选中的分镜会从原轨道移入当前轨道，可多选。</p>
+            <Select
+              v-model:value="trackBindingStoryboardIds"
+              mode="multiple"
+              option-filter-prop="label"
+              :options="storyboards.map((item:any)=>({ value:item.id, label:`${item.index ?? '-'} · ${item.videoDesc || item.prompt || `分镜 ${item.id}`}` }))"
+              placeholder="选择要移入该轨道的分镜"
+              style="width:100%"
+            />
+          </Modal>
         </Tabs.TabPane>
 
         <Tabs.TabPane v-if="false" key="agent" tab="Agent 工作台">
@@ -1216,13 +1689,22 @@ watch(projectId, () => loadAll());
             placeholder="选择剧本使用的角色、场景、道具"
           />
         </Form.Item>
+        <Form.Item label="生成图片">
+          <Select
+            v-model:value="storyboardForm.shouldGenerateImage"
+            :options="[
+              { label: '需要生成', value: 1 },
+              { label: '不生成', value: 0 },
+            ]"
+          />
+        </Form.Item>
         <Form.Item label="内容">
           <Input.TextArea v-model:value="scriptForm.content" :rows="14" />
         </Form.Item>
       </Form>
     </Modal>
 
-    <Modal v-model:open="storyboardModalOpen" title="分镜" width="820px" @ok="saveStoryboardForm">
+    <Modal v-model:open="storyboardModalOpen" :title="storyboardForm.id ? '编辑分镜' : '新增分镜'" width="820px" @ok="saveStoryboardForm">
       <Form :label-col="{ span: 4 }">
         <Form.Item label="轨道">
           <Input v-model:value="storyboardForm.track" />
@@ -1245,8 +1727,10 @@ watch(projectId, () => loadAll());
         </Form.Item>
       </Form>
     </Modal>
-    <Modal v-model:open="flowImageModalOpen" :title="`${editingAssetName} · 图片编辑工作流`" width="94vw" :footer="null">
+    <Modal v-model:open="flowImageModalOpen" :title="`${editingAssetName} · 图片生成流`" width="94vw" :footer="null">
       <ImageFlowEditor
+        :key="imageFlowEditorKey"
+        :asset-options="imageFlowAssetOptions"
         v-model:edges="imageFlowEdges"
         v-model:nodes="imageFlowNodes"
         :loading-node-id="generatingImageNodeId"
@@ -1256,11 +1740,16 @@ watch(projectId, () => loadAll());
         @generate="createFlowImage"
         @remove="removeImageFlowNode"
         @save="saveVisualImageFlow"
+        @select-asset="selectImageFlowAsset"
         @upload="uploadImageFlowReference"
       />
     </Modal>
-    <Modal v-model:open="storyboardPreviewOpen" title="分镜合成预览" width="1100px" :footer="null">
+    <Modal v-model:open="storyboardPreviewOpen" title="分镜合成预览" width="1100px">
       <img v-if="storyboardPreview" :src="storyboardPreview" class="w-full rounded border" />
+      <template #footer>
+        <Button @click="storyboardPreviewOpen = false">关闭</Button>
+        <Button type="primary" @click="downloadAllStoryboardImages">下载 PNG</Button>
+      </template>
     </Modal>
   </Page>
 </template>
@@ -1313,6 +1802,7 @@ watch(projectId, () => loadAll());
 }
 
 .production-layout {
+  position: relative;
   align-items: flex-start;
 }
 
@@ -1325,8 +1815,19 @@ watch(projectId, () => loadAll());
 }
 
 .production-agent-card {
-  position: sticky;
-  top: 12px;
+  height: 100%;
+  border-radius: 10px 0 0 10px;
+  box-shadow: -8px 0 28px rgb(15 23 42 / 16%);
+}
+
+.production-agent-panel {
+  position: absolute;
+  z-index: 20;
+  top: 52px;
+  right: 0;
+  width: min(420px, 92vw);
+  height: calc(100% - 52px);
+  padding: 0 !important;
 }
 
 .production-agent-card :deep(.ant-card-body) {
@@ -1337,16 +1838,26 @@ watch(projectId, () => loadAll());
   margin-bottom: 8px;
 }
 
+@media (min-width: 1200px) {
+  .production-layout:has(.production-agent-panel) :deep(.production-flow-shell) {
+    margin-right: 436px;
+  }
+}
+
 .production-agent-card :deep(.agent-chat-wrapper) {
   height: 600px;
 }
 
-@media (max-width: 1199px) {
-  .production-agent-card {
-    position: static;
-    margin-top: 16px;
-  }
+.video-track-card {
+  scroll-margin-top: 16px;
+}
 
+.video-track-card:target,
+.video-track-card:focus-within {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 25%, transparent);
+}
+
+@media (max-width: 1199px) {
   .production-agent-card :deep(.agent-chat-wrapper) {
     height: 520px;
   }

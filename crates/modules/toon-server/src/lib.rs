@@ -23,6 +23,9 @@ mod toonflow_prompt_store;
 mod toonflow_resources;
 mod toonflow_script_ai;
 mod toonflow_storage;
+mod toonflow_storyboard_asset_validation;
+mod toonflow_storyboard_panel_validation;
+mod toonflow_storyboard_table_validation;
 mod toonflow_video;
 mod toonflow_video_export;
 mod toonflow_ws;
@@ -41,6 +44,181 @@ use rust_toon_toon_api::ToonCapability;
 pub struct ToonState {
     pool: PgPool,
     tokens: TokenService,
+}
+
+#[cfg(test)]
+mod storyboard_database_tests {
+    use std::time::Duration;
+
+    use axum::{Json, extract::State};
+    use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+    use rust_toon_framework_security::{
+        CurrentUser, DataScope, Permission, PermissionSet, SecurityConfig, TokenService,
+    };
+
+    use super::{ToonState, toonflow, toonflow_image_workflow};
+
+    fn user() -> CurrentUser {
+        CurrentUser {
+            user_id: "storyboard-test".into(),
+            username: "storyboard-test".into(),
+            tenant_id: None,
+            role_codes: vec!["admin".into()],
+            permissions: PermissionSet::new([
+                Permission::new("toon:scene:create").unwrap(),
+                Permission::new("toon:scene:delete").unwrap(),
+                Permission::new("toon:scene:read").unwrap(),
+                Permission::new("toon:scene:update").unwrap(),
+            ]),
+            data_scope: DataScope::All,
+        }
+    }
+
+    fn storyboard(id: i64, track: &str, duration: i64) -> toonflow::SaveStoryboardRequest {
+        toonflow::SaveStoryboardRequest {
+            id: Some(id),
+            prompt: format!("storyboard {id}"),
+            duration: Some(duration),
+            state: "未生成".into(),
+            video_desc: Some(format!("shot {id}")),
+            should_generate_image: 1,
+            file_path: None,
+            script_id: None,
+            project_id: None,
+            track: Some(track.into()),
+            associate_assets_ids: vec![],
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-storyboard-sync.sh"]
+    async fn groups_edits_and_deletes_storyboard_tracks_transactionally() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+        let project_id = 9_100_001_i64;
+        let script_id = 9_100_002_i64;
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO toonflow.projects(id,name,create_time,update_time) VALUES($1,'storyboard test',0,0)")
+            .bind(project_id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO toonflow.scripts(id,name,project_id,create_time) VALUES($1,'episode',$2,0)")
+            .bind(script_id).bind(project_id).execute(&pool).await.unwrap();
+        let tokens = TokenService::new(
+            SecurityConfig::new(
+                "storyboard-test-secret-at-least-32-bytes",
+                "test",
+                "test",
+                Duration::from_secs(60),
+            )
+            .unwrap(),
+        );
+        let state = ToonState::new(pool.clone(), tokens);
+
+        let _ = toonflow::batch_add_storyboards(
+            user(),
+            State(state.clone()),
+            Json(toonflow::BatchStoryboardRequest {
+                project_id,
+                script_id,
+                data: vec![
+                    storyboard(9_100_010, "main", 3),
+                    storyboard(9_100_011, "main", 5),
+                ],
+            }),
+        )
+        .await
+        .unwrap();
+        let grouped: Vec<(Option<i64>,)> = sqlx::query_as(
+            "SELECT track_id FROM toonflow.storyboards WHERE project_id=$1 ORDER BY id",
+        )
+        .bind(project_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(grouped.len(), 2);
+        assert_eq!(grouped[0].0, grouped[1].0);
+        let main_track_id = grouped[0].0.unwrap();
+        let main_duration: i32 =
+            sqlx::query_scalar("SELECT duration FROM toonflow.video_tracks WHERE id=$1")
+                .bind(main_track_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(main_duration, 8);
+
+        let _ = toonflow::edit_storyboard_info(
+            user(),
+            State(state.clone()),
+            Json(toonflow::EditStoryboardInfoRequest {
+                id: 9_100_010,
+                prompt: "edited".into(),
+                video_desc: "edited shot".into(),
+                duration: Some(7),
+                track: Some("secondary".into()),
+                should_generate_image: 1,
+                associate_assets_ids: vec![],
+            }),
+        )
+        .await
+        .unwrap();
+        let durations: Vec<(String, i32)> = sqlx::query_as(
+            "SELECT s.track,t.duration FROM toonflow.storyboards s JOIN toonflow.video_tracks t ON t.id=s.track_id WHERE s.project_id=$1 ORDER BY s.track",
+        )
+        .bind(project_id).fetch_all(&pool).await.unwrap();
+        assert_eq!(durations, vec![("main".into(), 5), ("secondary".into(), 7)]);
+
+        let flow_id = 9_100_020_i64;
+        sqlx::query("INSERT INTO toonflow.image_flows(id,flow_data) VALUES($1,'{}')")
+            .bind(flow_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE toonflow.storyboards SET flow_id=$2 WHERE id=$1")
+            .bind(9_100_010_i64)
+            .bind(flow_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let _ = toonflow_image_workflow::delete_storyboards(
+            user(),
+            State(state),
+            Json(toonflow_image_workflow::DeleteStoryboards {
+                ids: vec![9_100_010, 9_100_011],
+                project_id,
+            }),
+        )
+        .await
+        .unwrap();
+        let storyboard_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM toonflow.storyboards WHERE project_id=$1")
+                .bind(project_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let track_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM toonflow.video_tracks WHERE project_id=$1")
+                .bind(project_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let flow_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM toonflow.image_flows WHERE id=$1")
+                .bind(flow_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((storyboard_count, track_count, flow_count), (0, 0, 0));
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }
 
 impl ToonState {
@@ -525,6 +703,10 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow::remove_storyboard),
         )
         .route(
+            "/toonflow/production/storyboard/reorder",
+            post(toonflow::reorder_storyboards),
+        )
+        .route(
             "/toonflow/setting/agentDeploy",
             get(toonflow::list_agent_deployments).post(toonflow::update_agent_deployment),
         )
@@ -578,6 +760,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/api/production/storyboard/removeFrame",
             post(toonflow::remove_storyboard),
+        )
+        .route(
+            "/api/production/storyboard/reorder",
+            post(toonflow::reorder_storyboards),
         )
         .route("/assets/getImage", post(toonflow_asset_ai::get_images))
         .route("/cornerScape/pollingAudio", post(toonflow_audio::poll))
@@ -667,8 +853,24 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_image_workflow::generate_storyboards),
         )
         .route(
+            "/production/storyboard/pollingImage",
+            post(toonflow_image_workflow::poll_storyboards),
+        )
+        .route(
+            "/production/storyboard/updateStoryboardUrl",
+            post(toonflow_image_workflow::update_storyboard_url),
+        )
+        .route(
+            "/production/storyboard/batchDelete",
+            post(toonflow_image_workflow::delete_storyboards),
+        )
+        .route(
             "/production/storyboard/previewImage",
             post(toonflow_image_workflow::preview_storyboards),
+        )
+        .route(
+            "/production/storyboard/downPreviewImage",
+            post(toonflow_image_workflow::download_storyboards),
         )
         .route(
             "/production/workbench/addTrack",
@@ -713,6 +915,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/production/workbench/generateVideo",
             post(toonflow_video::generate_video),
+        )
+        .route(
+            "/production/workbench/checkVideoStateList",
+            post(toonflow_video::check_states),
         )
         .route(
             "/production/workbench/generateVideoPrompt",

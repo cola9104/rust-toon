@@ -236,7 +236,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .production-asset-row {
   display: flex;
-  width: max-content;
+  width: 100%;
   min-width: 100%;
   align-items: center;
   padding: 10px 0;

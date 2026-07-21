@@ -2,31 +2,65 @@
 import type { Edge, Node } from '@vue-flow/core';
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { Handle, Position, VueFlow } from '@vue-flow/core';
-import { Empty, Tag } from 'ant-design-vue';
+import { Button, Empty, Input, Modal, Tag } from 'ant-design-vue';
+
+import { MarkdownView } from '#/components/markdown-view';
 
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
 
-import { assetFileUrl } from '../assets/asset-types';
 import ProductionAssetStrip from './ProductionAssetStrip.vue';
+import { normalizeProductionDocument } from './production-flow-document';
+import StoryboardPanel from './StoryboardPanel.vue';
+import VideoWorkbenchPanel from './VideoWorkbenchPanel.vue';
 
 const props = defineProps<{
   assets: ToonflowApi.Asset[];
+  storyboardBusy?: boolean;
   flowText: string;
   script?: ToonflowApi.Script;
   storyboards: ToonflowApi.Storyboard[];
+  videoMode?: string;
+  videoModel?: number;
+  videoRatio?: string;
+  videoTracks: any[];
 }>();
 
 const emit = defineEmits<{
+  batchDeleteStoryboards: [ids: number[]];
+  cancelTrackVideo: [video: any];
+  deleteTrackVideo: [video: any];
   editAsset: [asset: ToonflowApi.Asset];
+  editStoryboard: [storyboard: ToonflowApi.Storyboard];
+  editStoryboardImage: [storyboard: ToonflowApi.Storyboard];
+  exportStoryboardImages: [ids: number[]];
+  exportVideo: [];
+  generateStoryboards: [ids: number[], compulsory: boolean];
+  insertStoryboardAfter: [storyboard: ToonflowApi.Storyboard];
+  generateTrackVideo: [track: any];
+  generateVideoPrompt: [track: any];
+  openVideoTrack: [trackId: number];
+  retryTrackVideo: [video: any, track: any];
+  savePositions: [positions: Record<string, { x: number; y: number }>];
+  saveVideoPrompt: [track: any];
+  selectTrackVideo: [track: any, video: any];
+  updateFlowSection: [key: 'scriptPlan' | 'storyboardTable', value: string];
+  removeStoryboard: [storyboard: ToonflowApi.Storyboard];
+  reorderStoryboards: [ids: number[]];
 }>();
 
+const flowInstance = ref<any>();
+const spacePressed = ref(false);
+const editorOpen = ref(false);
+const workbenchOpen = ref(false);
+const editorKey = ref<'scriptPlan' | 'storyboardTable'>('scriptPlan');
+const editorValue = ref('');
 const flowData = computed<Record<string, any>>(() => {
   try {
     return JSON.parse(props.flowText || '{}');
@@ -36,48 +70,118 @@ const flowData = computed<Record<string, any>>(() => {
 });
 
 const directorPlan = computed(() =>
-  textValue(flowData.value.scriptPlan || flowData.value.directorPlan),
+  normalizeProductionDocument(
+    flowData.value.scriptPlan || flowData.value.directorPlan,
+    'scriptPlan',
+  ),
 );
 const storyboardPlan = computed(() =>
-  textValue(flowData.value.storyboardTable || flowData.value.storyboard),
+  normalizeProductionDocument(flowData.value.storyboardTable, 'storyboardTable'),
+);
+const workbenchCover = computed(() => {
+  for (const track of props.videoTracks) {
+    const videos = track.videoList ?? track.video_list ?? [];
+    const selectedId = track.selectVideoId ?? track.select_video_id ?? track.videoId ?? track.video_id;
+    const selected = videos.find((video: any) => video.id === selectedId);
+    const available = selected ?? videos.find((video: any) => video.src);
+    if (available?.src) return available.src;
+  }
+  return '';
+});
+const defaultPositions = {
+  script: { x: 0, y: 0 },
+  scriptPlan: { x: 1000, y: 0 },
+  storyboardTable: { x: 2000, y: 0 },
+  storyboard: { x: 3000, y: 0 },
+  workbench: { x: 4000, y: 0 },
+};
+const savedPositions = computed(() =>
+  flowData.value.canvas?.layoutVersion === 7 ? flowData.value.canvas.positions || {} : {},
 );
 const nodes = computed<Node[]>(() => [
-  { id: 'script', type: 'script', position: { x: 40, y: 40 }, data: {} },
-  { id: 'assets', type: 'assets', position: { x: 40, y: 390 }, data: {} },
-  { id: 'director', type: 'director', position: { x: 1080, y: 40 }, data: {} },
-  { id: 'storyboard-table', type: 'storyboardTable', position: { x: 1680, y: 40 }, data: {} },
-  { id: 'storyboard', type: 'storyboard', position: { x: 2440, y: 40 }, data: {} },
+  ...Object.entries(defaultPositions).map(([id, position]) => ({
+    id, type: id, dragHandle: '.dragHandle', position: savedPositions.value[id] || position, data: {},
+  })),
 ]);
 
 const edges: Edge[] = [
-  { id: 'script-assets', source: 'script', target: 'assets', animated: true },
-  { id: 'assets-director', source: 'assets', target: 'director', animated: true },
-  { id: 'director-storyboard-table', source: 'director', target: 'storyboard-table', animated: true },
-  { id: 'storyboard-table-panel', source: 'storyboard-table', target: 'storyboard', animated: true },
+  { id: 'script-plan', source: 'script', target: 'scriptPlan', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
+  { id: 'plan-table', source: 'scriptPlan', target: 'storyboardTable', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
+  { id: 'table-panel', source: 'storyboardTable', target: 'storyboard', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
+  { id: 'panel-workbench', source: 'storyboard', target: 'workbench', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
 ];
 
-function textValue(value: any) {
-  if (!value) return '';
-  if (typeof value === 'string') return value;
-  return JSON.stringify(value, null, 2);
+function openEditor(key: 'scriptPlan' | 'storyboardTable') {
+  editorKey.value = key;
+  editorValue.value = key === 'scriptPlan' ? directorPlan.value : storyboardPlan.value;
+  editorOpen.value = true;
+}
+function saveEditor() {
+  emit('updateFlowSection', editorKey.value, editorValue.value);
+  editorOpen.value = false;
+}
+function saveNodePositions(event: any) {
+  const positions: Record<string, { x: number; y: number }> = {
+    ...defaultPositions,
+    ...savedPositions.value,
+  };
+  for (const node of flowInstance.value?.getNodes?.() || []) {
+    positions[node.id] = { x: node.position.x, y: node.position.y };
+  }
+  for (const node of event?.nodes || []) {
+    positions[node.id] = { x: node.position.x, y: node.position.y };
+  }
+  if (event?.node) positions[event.node.id] = event.node.position;
+  emit('savePositions', positions);
 }
 
-function shortText(value: string, limit = 1800) {
-  return value.length > limit ? `${value.slice(0, limit)}…` : value;
+function focusStage(stageId: string) {
+  void flowInstance.value?.fitView({
+    duration: 350,
+    maxZoom: 1,
+    nodes: [{ id: stageId }],
+    padding: 0.12,
+  });
 }
+
+defineExpose({ focusStage });
+
+function handleSpaceDown(event: KeyboardEvent) {
+  if (event.code !== 'Space' || event.repeat) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.matches('input, textarea, [contenteditable="true"]')) return;
+  event.preventDefault();
+  spacePressed.value = true;
+}
+function handleSpaceUp(event: KeyboardEvent) {
+  if (event.code === 'Space') spacePressed.value = false;
+}
+onMounted(() => {
+  window.addEventListener('keydown', handleSpaceDown);
+  window.addEventListener('keyup', handleSpaceUp);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleSpaceDown);
+  window.removeEventListener('keyup', handleSpaceUp);
+});
 </script>
 
 <template>
-  <div class="production-flow-shell">
+  <div class="production-flow-shell" :class="{ 'space-panning': spacePressed }">
     <VueFlow
       :nodes="nodes"
       :edges="edges"
       :min-zoom="0.35"
       :max-zoom="1.4"
       :default-viewport="{ x: 20, y: 20, zoom: 0.68 }"
-      :nodes-draggable="false"
+      :pan-on-scroll="true"
+      :zoom-on-scroll="false"
+      :nodes-draggable="!spacePressed"
+      :pan-on-drag="spacePressed ? [0] : true"
       :nodes-connectable="false"
       class="production-flow"
+      @init="flowInstance = $event"
+      @node-drag-stop="saveNodePositions"
     >
       <Background :gap="18" :size="1" pattern-color="#cbd5e1" />
       <Controls position="bottom-left" />
@@ -85,43 +189,38 @@ function shortText(value: string, limit = 1800) {
       <template #node-script>
         <section class="flow-stage-node stage-script">
           <Handle type="source" :position="Position.Right" />
-          <header class="stage-header">
-            <div><span class="stage-index">1</span> 已选剧本</div>
+          <header class="stage-header dragHandle">
+            <div><span class="stage-index">1</span> 剧本与衍生资产</div>
             <Tag :color="script ? 'green' : 'default'">{{ script ? '已就绪' : '等待选择' }}</Tag>
           </header>
           <div v-if="script" class="script-body">
             <h3>{{ script.name }}</h3>
-            <pre>{{ shortText(script.content) }}</pre>
+            <pre>{{ script.content }}</pre>
           </div>
           <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="请先选择需要制作的剧本" />
+          <section class="embedded-assets" :class="{ waiting: !script }">
+            <header class="embedded-assets-header">
+              <div>衍生资产</div>
+              <Tag :color="assets.length ? 'green' : 'gold'">
+                {{ assets.length ? '资产已载入' : '等待 Agent 分析' }}
+              </Tag>
+            </header>
+            <ProductionAssetStrip :assets="assets" @edit="emit('editAsset', $event)" />
+          </section>
         </section>
       </template>
 
-      <template #node-assets>
-        <section class="flow-stage-node stage-assets" :class="{ waiting: !script }">
-          <Handle type="target" :position="Position.Top" />
-          <Handle type="source" :position="Position.Right" />
-          <header class="stage-header simple-header">
-            <div><span class="stage-index">2</span> 原资产与人物衍生资产</div>
-            <Tag :color="assets.length ? 'green' : 'gold'">
-              {{ assets.length ? '资产已载入' : '等待 Agent 分析' }}
-            </Tag>
-          </header>
-          <ProductionAssetStrip :assets="assets" @edit="emit('editAsset', $event)" />
-        </section>
-      </template>
-
-      <template #node-director>
+      <template #node-scriptPlan>
         <section class="flow-stage-node stage-text stage-director" :class="{ waiting: !directorPlan }">
           <Handle type="target" :position="Position.Left" />
           <Handle type="source" :position="Position.Right" />
-          <header class="stage-header">
-            <div><span class="stage-index">3</span> 导演规划</div>
-            <Tag :color="directorPlan ? 'green' : 'processing'">
-              {{ directorPlan ? 'Agent 已完成' : '等待 Agent 输出' }}
-            </Tag>
+          <header class="stage-header dragHandle">
+            <div>导演规划</div>
+            <Button size="small" type="link" @click="openEditor('scriptPlan')">编辑</Button>
           </header>
-          <pre v-if="directorPlan">{{ shortText(directorPlan) }}</pre>
+          <div v-if="directorPlan" class="director-content">
+            <MarkdownView :content="directorPlan" />
+          </div>
           <div v-else class="stage-waiting">Agent 将根据剧本和人物资产生成导演规划</div>
         </section>
       </template>
@@ -130,13 +229,13 @@ function shortText(value: string, limit = 1800) {
         <section class="flow-stage-node stage-table" :class="{ waiting: !storyboardPlan }">
           <Handle type="target" :position="Position.Left" />
           <Handle type="source" :position="Position.Right" />
-          <header class="stage-header">
-            <div><span class="stage-index">4</span> 分镜表</div>
-            <Tag :color="storyboardPlan ? 'green' : 'processing'">
-              {{ storyboardPlan ? 'Agent 已完成' : '等待 Agent 输出' }}
-            </Tag>
+          <header class="stage-header dragHandle">
+            <div>分镜表</div>
+            <Button size="small" type="link" @click="openEditor('storyboardTable')">编辑</Button>
           </header>
-          <pre v-if="storyboardPlan" class="table-content">{{ shortText(storyboardPlan, 5200) }}</pre>
+          <div v-if="storyboardPlan" class="storyboard-table-content">
+            <MarkdownView :content="storyboardPlan" />
+          </div>
           <div v-else class="stage-waiting">导演规划确认后，Agent 将构建结构化分镜表</div>
         </section>
       </template>
@@ -144,40 +243,79 @@ function shortText(value: string, limit = 1800) {
       <template #node-storyboard>
         <section class="flow-stage-node stage-storyboard" :class="{ waiting: !storyboards.length }">
           <Handle type="target" :position="Position.Left" />
-          <header class="stage-header">
-            <div><span class="stage-index">5</span> 分镜面板与分镜图</div>
-            <Tag :color="storyboards.length ? 'green' : 'processing'">
-              {{ storyboards.length ? `${storyboards.length} 个分镜` : '等待 Agent 输出' }}
-            </Tag>
+          <Handle type="source" :position="Position.Right" />
+          <header class="stage-header dragHandle">
+            <div>分镜面板</div>
           </header>
-          <div v-if="storyboards.length" class="storyboard-grid">
-            <article v-for="item in storyboards" :key="item.id" class="storyboard-card">
-              <div class="storyboard-cover">
-                <img
-                  v-if="item.filePath || item.src"
-                  :src="assetFileUrl(item.filePath || item.src)"
-                  :alt="`分镜 ${item.index}`"
-                />
-                <span v-else>{{ item.state === '生成中' ? '生成中…' : '等待图片' }}</span>
-                <Tag class="storyboard-index" color="blue">{{ item.index ?? item.id }}</Tag>
-              </div>
-              <div class="storyboard-card-body">
-                <b>{{ item.track || '默认轨道' }} · {{ item.duration || 0 }}s</b>
-                <p>{{ item.videoDesc || item.prompt || '等待 Agent 写入描述' }}</p>
-              </div>
-            </article>
-          </div>
-          <div v-else class="stage-waiting">
-            分镜表确认后，Agent 将写入分镜面板并按需生成图片
+          <StoryboardPanel
+            :busy="storyboardBusy"
+            :storyboards="storyboards"
+            @batch-delete="emit('batchDeleteStoryboards', $event)"
+            @edit="emit('editStoryboard', $event)"
+            @edit-image="emit('editStoryboardImage', $event)"
+            @export-images="emit('exportStoryboardImages', $event)"
+            @generate="(ids, compulsory) => emit('generateStoryboards', ids, compulsory)"
+            @insert-after="emit('insertStoryboardAfter', $event)"
+            @open-track="emit('openVideoTrack', $event)"
+            @remove="emit('removeStoryboard', $event)"
+            @reorder="emit('reorderStoryboards', $event)"
+          />
+        </section>
+      </template>
+
+      <template #node-workbench>
+        <section class="flow-stage-node stage-workbench" @click.stop="workbenchOpen = true">
+          <Handle type="target" :position="Position.Left" />
+          <header class="stage-header dragHandle">
+            <div>视频工作台</div>
+          </header>
+          <div class="workbench-preview">
+            <video v-if="workbenchCover" :src="workbenchCover" muted preload="metadata" />
+            <div class="workbench-play" aria-hidden="true"><span /></div>
           </div>
         </section>
       </template>
     </VueFlow>
+    <Modal
+      v-model:open="workbenchOpen"
+      :closable="false"
+      :footer="null"
+      :keyboard="true"
+      :mask-closable="false"
+      :style="{ top: '0', paddingBottom: '0' }"
+      :width="'100vw'"
+      wrap-class-name="toonflow-workbench-modal"
+    >
+      <VideoWorkbenchPanel
+        :assets="assets"
+        :storyboards="storyboards"
+        :tracks="videoTracks"
+        :video-mode="videoMode"
+        :video-model="videoModel"
+        :video-ratio="videoRatio"
+        @close="workbenchOpen = false"
+        @cancel-video="emit('cancelTrackVideo', $event)"
+        @delete-video="emit('deleteTrackVideo', $event)"
+        @generate-prompt="emit('generateVideoPrompt', $event)"
+        @generate-video="emit('generateTrackVideo', $event)"
+        @open-track="emit('openVideoTrack', $event)"
+        @retry-video="(video, track) => emit('retryTrackVideo', video, track)"
+        @reorder-storyboards="emit('reorderStoryboards', $event)"
+        @save-prompt="emit('saveVideoPrompt', $event)"
+        @select-video="(track, video) => emit('selectTrackVideo', track, video)"
+        @export-storyboard-images="emit('exportStoryboardImages', $event)"
+        @export-video="emit('exportVideo')"
+      />
+    </Modal>
+    <Modal v-model:open="editorOpen" :title="editorKey === 'scriptPlan' ? '编辑导演规划' : '编辑分镜表'" width="90vw" @ok="saveEditor">
+      <Input.TextArea v-model:value="editorValue" :auto-size="{ minRows: 18, maxRows: 32 }" />
+    </Modal>
   </div>
 </template>
 
 <style scoped>
 .production-flow-shell {
+  position: relative;
   height: calc(100vh - 250px);
   min-height: 720px;
   overflow: hidden;
@@ -190,6 +328,8 @@ function shortText(value: string, limit = 1800) {
   width: 100%;
   height: 100%;
 }
+.production-flow-shell.space-panning,
+.production-flow-shell.space-panning * { cursor: grab !important; }
 
 .flow-stage-node {
   width: 520px;
@@ -198,6 +338,18 @@ function shortText(value: string, limit = 1800) {
   border-radius: 12px;
   background: var(--ant-color-bg-container);
   box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+}
+
+.stage-header {
+  border-bottom: 0;
+}
+
+.stage-header > div:first-child {
+  width: fit-content;
+  padding: 5px 10px;
+  border-radius: 8px 0;
+  color: #fff;
+  background: #000;
 }
 
 .flow-stage-node.waiting {
@@ -209,7 +361,7 @@ function shortText(value: string, limit = 1800) {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--ant-color-border-secondary);
+  border-bottom: 0;
   font-weight: 600;
 }
 
@@ -232,26 +384,193 @@ function shortText(value: string, limit = 1800) {
 
 .stage-script {
   width: 920px;
+  max-width: 920px;
   min-height: 250px;
 }
 
-.stage-assets {
-  width: 920px;
+.embedded-assets {
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.embedded-assets-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 4px;
+  font-weight: 600;
+}
+
+.embedded-assets :deep(.production-assets) {
+  border: 0;
+  border-radius: 0;
+}
+
+.embedded-assets :deep(.production-assets-heading) {
+  display: none;
+}
+
+.embedded-assets :deep(.production-assets-canvas) {
+  width: 100%;
+  max-height: none;
+  overflow: visible;
 }
 
 .stage-director {
-  width: 520px;
+  width: fit-content;
+  min-width: 200px;
+  max-width: 920px;
+  overflow: visible;
+}
+
+.director-content {
+  min-width: 520px;
+  margin-top: 8px;
+  padding: 0 16px 16px;
+  user-select: text;
+}
+
+.director-content :deep(.markdown-view) {
+  width: auto;
+  max-width: 888px;
 }
 
 .stage-table {
-  width: 680px;
-  min-height: 720px;
+  width: fit-content;
+  min-width: 200px;
+  max-width: 920px;
+  overflow: visible;
+}
+
+.storyboard-table-content {
+  min-width: 680px;
+  margin-top: 8px;
+  padding: 0 16px 16px;
+  user-select: text;
+}
+
+.storyboard-table-content :deep(.markdown-view) {
+  width: auto;
+  max-width: 888px;
+}
+
+.director-content :deep(.markdown-view),
+.storyboard-table-content :deep(.markdown-view) {
+  color: var(--ant-color-text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.director-content :deep(.markdown-view > :first-child),
+.storyboard-table-content :deep(.markdown-view > :first-child) {
+  margin-top: 0;
+}
+
+.director-content :deep(.markdown-view h1),
+.director-content :deep(.markdown-view h2),
+.director-content :deep(.markdown-view h3),
+.storyboard-table-content :deep(.markdown-view h1),
+.storyboard-table-content :deep(.markdown-view h2),
+.storyboard-table-content :deep(.markdown-view h3) {
+  margin: 16px 0 8px;
+  color: var(--ant-color-text);
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.director-content :deep(.markdown-view p),
+.storyboard-table-content :deep(.markdown-view p) {
+  margin: 0 0 8px;
+}
+
+.director-content :deep(.markdown-view ul),
+.director-content :deep(.markdown-view ol),
+.storyboard-table-content :deep(.markdown-view ul),
+.storyboard-table-content :deep(.markdown-view ol) {
+  margin: 0 0 10px;
+  padding-left: 24px;
+  color: var(--ant-color-text);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.director-content :deep(.markdown-view li),
+.storyboard-table-content :deep(.markdown-view li) {
+  margin: 2px 0;
+}
+
+.storyboard-table-content :deep(.markdown-view table) {
+  display: table;
+  width: 100%;
+  margin: 8px 0 12px;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.storyboard-table-content :deep(.markdown-view th),
+.storyboard-table-content :deep(.markdown-view td) {
+  padding: 8px 10px;
+  border: 1px solid var(--ant-color-border-secondary);
+  vertical-align: top;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.storyboard-table-content :deep(.markdown-view th) {
+  background: var(--ant-color-fill-quaternary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.storyboard-table-content :deep(.markdown-view tr:nth-child(even) td) {
+  background: color-mix(in srgb, var(--ant-color-fill-quaternary) 55%, transparent);
 }
 
 .stage-storyboard {
-  width: 760px;
-  min-height: 620px;
+  width: 920px;
+  max-width: 920px;
 }
+.stage-workbench {
+  width: 320px;
+  min-width: 280px;
+  cursor: pointer;
+  transition: filter 0.1s ease;
+}
+.stage-workbench:active { filter: brightness(0.92); }
+.workbench-preview {
+  position: relative;
+  display: grid;
+  width: calc(100% - 24px);
+  overflow: hidden;
+  aspect-ratio: 16 / 9;
+  margin: 0 12px 12px;
+  border-radius: 8px;
+  background: var(--ant-color-fill-secondary);
+  place-items: center;
+}
+.workbench-preview video { width: 100%; height: 100%; object-fit: cover; }
+.workbench-play {
+  position: absolute;
+  display: grid;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  background: rgb(0 0 0 / 42%);
+  place-items: center;
+  transition: transform 0.1s ease;
+}
+.workbench-play span {
+  width: 0;
+  height: 0;
+  margin-left: 5px;
+  border-top: 12px solid transparent;
+  border-bottom: 12px solid transparent;
+  border-left: 19px solid #fff;
+}
+.stage-workbench:hover .workbench-play { transform: scale(1.08); }
+.dragHandle { cursor: grab; }
+.dragHandle:active { cursor: grabbing; }
 
 .script-body,
 .stage-text,
@@ -261,6 +580,11 @@ function shortText(value: string, limit = 1800) {
 
 .script-body {
   padding: 12px 16px 16px;
+}
+
+.script-body pre {
+  max-height: none;
+  overflow: visible;
 }
 
 .script-body h3 {
@@ -292,10 +616,6 @@ pre {
   max-height: 300px;
   overflow: auto;
   padding: 10px 14px 14px;
-}
-
-.table-content {
-  max-height: 650px;
 }
 
 .storyboard-grid {
@@ -381,4 +701,11 @@ pre {
   border: 2px solid #fff;
   background: var(--ant-color-primary);
 }
+</style>
+
+<style>
+.toonflow-workbench-modal { overflow: hidden; }
+.toonflow-workbench-modal .ant-modal { width: 100vw !important; max-width: 100vw; margin: 0; padding: 0; inset-inline: 0; }
+.toonflow-workbench-modal .ant-modal-content { width: 100vw; max-width: 100vw; height: 100vh; padding: 0; overflow: hidden; border-radius: 0; box-sizing: border-box; }
+.toonflow-workbench-modal .ant-modal-body { width: 100%; max-width: 100vw; height: 100%; padding: 0; overflow: hidden; box-sizing: border-box; }
 </style>

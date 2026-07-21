@@ -23,6 +23,15 @@ export const overridesPreferences = defineOverridesPreferences({
     defaultHomePath: '/workspace',
     name: import.meta.env.VITE_APP_TITLE,
     enableRefreshToken: true,
+    layout: 'sidebar-nav',
+  },
+  navigation: {
+    split: false,
+  },
+  sidebar: {
+    collapsed: false,
+    enable: true,
+    hidden: false,
   },
   footer: {
     /** 默认关闭 footer 页脚，因为有一定遮挡 */

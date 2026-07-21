@@ -25,6 +25,15 @@ async function initApplication() {
   updatePreferences({
     app: {
       accessMode: 'backend',
+      layout: 'sidebar-nav',
+    },
+    navigation: {
+      split: false,
+    },
+    sidebar: {
+      collapsed: false,
+      enable: true,
+      hidden: false,
     },
   });
 

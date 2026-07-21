@@ -1,4 +1,10 @@
-use std::{net::IpAddr, time::Duration};
+use std::{
+    collections::hash_map::DefaultHasher,
+    env,
+    hash::{Hash, Hasher},
+    net::IpAddr,
+    time::Duration,
+};
 
 use axum::{
     Json,
@@ -23,8 +29,26 @@ impl Default for RateLimitConfig {
     fn default() -> Self {
         Self {
             namespace: "rate-limit".to_string(),
-            max_requests: 120,
+            max_requests: 300,
             window: Duration::from_secs(60),
+        }
+    }
+}
+
+impl RateLimitConfig {
+    pub fn from_env() -> Self {
+        Self {
+            namespace: env::var("RATE_LIMIT_NAMESPACE").unwrap_or_else(|_| "rate-limit".into()),
+            max_requests: env::var("RATE_LIMIT_MAX_REQUESTS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(300),
+            window: Duration::from_secs(
+                env::var("RATE_LIMIT_WINDOW_SECONDS")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(60),
+            ),
         }
     }
 }
@@ -48,6 +72,9 @@ pub async fn rate_limit(
 ) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
+    if path == "/health" {
+        return next.run(request).await;
+    }
     let actor = client_key(&request);
     let key = state.redis.key(
         &state.config.namespace,
@@ -93,6 +120,17 @@ fn client_key(request: &Request) -> String {
                     IpAddr::V6(ip) => ip.to_string(),
                 })
         })
+        .or_else(|| {
+            request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .map(|value| {
+                    let mut hasher = DefaultHasher::new();
+                    value.hash(&mut hasher);
+                    format!("auth-{:x}", hasher.finish())
+                })
+        })
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -110,5 +148,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(client_key(&request), "10.0.0.1");
+    }
+
+    #[test]
+    fn separates_authenticated_clients_without_connect_info() {
+        let first = Request::builder()
+            .header("authorization", "Bearer first")
+            .body(Body::empty())
+            .unwrap();
+        let second = Request::builder()
+            .header("authorization", "Bearer second")
+            .body(Body::empty())
+            .unwrap();
+        assert_ne!(client_key(&first), client_key(&second));
+        assert!(client_key(&first).starts_with("auth-"));
     }
 }

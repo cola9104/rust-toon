@@ -59,7 +59,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(redis) = redis {
         app = app.layer(from_fn_with_state(
-            RateLimitState::new(redis, RateLimitConfig::default()),
+            RateLimitState::new(redis, RateLimitConfig::from_env()),
             rust_toon_framework_redis::rate_limit,
         ));
     }

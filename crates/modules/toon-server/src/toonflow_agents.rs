@@ -49,6 +49,13 @@ pub struct SessionRequest {
     agent_type: String,
     isolation_key: String,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearMemoryRequest {
+    agent_type: String,
+    isolation_key: String,
+    memory_type: Option<String>,
+}
 #[derive(Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryRow {
@@ -117,9 +124,9 @@ pub fn agent_key_for(agent_type: &str) -> Result<&'static str, String> {
 }
 
 async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
-    let project: Option<(String,String,String,String,String,Option<i64>,Option<i64>)> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model FROM toonflow.projects WHERE id=$1")
+    let project: Option<(String,String,String,String,String,Option<i64>,Option<i64>,String)> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model,mode FROM toonflow.projects WHERE id=$1")
         .bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to load agent project"))?;
-    let (name, kind, intro, style, ratio, image_model, video_model) =
+    let (name, kind, intro, style, ratio, image_model, video_model, mode) =
         project.ok_or_else(|| AppError::not_found("project not found"))?;
     if request.agent_type == "scriptAgent" {
         let chapters: i64 =
@@ -148,13 +155,18 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
             .map(|(n, c)| format!("\n当前剧本：{n}\n剧本内容：{c}"))
             .unwrap_or_default();
         Ok(format!(
-            "## 生产上下文\n项目：{name}\n图像模型 ID：{}\n视频模型 ID：{}\n视频画幅：{ratio}{script_context}",
+            "## 生产上下文\n项目：{name}\n图像模型 ID：{}\n视频模型 ID：{}\n视频画幅：{ratio}\n视频生成模式：{mode}\n分镜面板写入模式：{}{script_context}",
             image_model
                 .map(|x| x.to_string())
                 .unwrap_or_else(|| "未配置".into()),
             video_model
                 .map(|x| x.to_string())
-                .unwrap_or_else(|| "未配置".into())
+                .unwrap_or_else(|| "未配置".into()),
+            if mode == "text" {
+                "纯文本多参模式"
+            } else {
+                "首位帧模式"
+            }
         ))
     }
 }
@@ -301,6 +313,10 @@ fn tool_names(agent_type: &str) -> &'static [&'static str] {
             "update_storyboard",
             "generate_storyboard",
             "delete_storyboard",
+            "get_video_workbench",
+            "generate_video_prompt",
+            "update_video_prompt",
+            "select_video",
             "run_sub_agent_derive_assets",
             "run_sub_agent_generate_assets",
             "run_sub_agent_director_plan",
@@ -373,6 +389,18 @@ fn tool_def(name: &str) -> Value {
         "delete_storyboard" => {
             json!({"type":"function","function":{"name":"delete_storyboard","description":"批量删除分镜记录。","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"}}},"required":["ids"]}}})
         }
+        "get_video_workbench" => {
+            json!({"type":"function","function":{"name":"get_video_workbench","description":"读取当前剧本的视频工作台、视频轨道、提示词、生成状态和候选视频。","parameters":{"type":"object","properties":{}}}})
+        }
+        "generate_video_prompt" => {
+            json!({"type":"function","function":{"name":"generate_video_prompt","description":"为指定视频轨道生成视频提示词。","parameters":{"type":"object","properties":{"trackId":{"type":"integer"}},"required":["trackId"]}}})
+        }
+        "update_video_prompt" => {
+            json!({"type":"function","function":{"name":"update_video_prompt","description":"更新指定视频轨道的视频提示词。","parameters":{"type":"object","properties":{"trackId":{"type":"integer"},"prompt":{"type":"string"}},"required":["trackId","prompt"]}}})
+        }
+        "select_video" => {
+            json!({"type":"function","function":{"name":"select_video","description":"从指定轨道的成功候选视频中确认选用一个视频。","parameters":{"type":"object","properties":{"trackId":{"type":"integer"},"videoId":{"type":"integer"}},"required":["trackId","videoId"]}}})
+        }
         "run_sub_agent_derive_assets" => {
             json!({"type":"function","function":{"name":"run_sub_agent_derive_assets","description":"【阶段2】派发衍生资产分析任务给执行层「执行导演」子Agent。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
         }
@@ -389,7 +417,7 @@ fn tool_def(name: &str) -> Value {
             json!({"type":"function","function":{"name":"run_sub_agent_storyboard_panel","description":"【阶段5】派发分镜面板写入任务给执行层子Agent。将分镜表逐条写入面板。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
         }
         "run_sub_agent_storyboard_table" => {
-            json!({"type":"function","function":{"name":"run_sub_agent_storyboard_table","description":"【阶段4】派发分镜表构建任务给执行层子Agent。构建完整分镜表。完成后必须审核。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
+            json!({"type":"function","function":{"name":"run_sub_agent_storyboard_table","description":"【阶段4】派发分镜表构建或修复任务给执行层子Agent。成功写入后会自动复审并在同一结果中返回基于最新版本的 A/B/C/D 评分；同一轮无需再次调用监制。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
         }
         "run_sub_agent_supervision" => {
             json!({"type":"function","function":{"name":"run_sub_agent_supervision","description":"【审核】派发审核任务给监督层「监制」子Agent。对分镜表进行质量审核。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
@@ -1064,13 +1092,20 @@ pub async fn runs(
 pub async fn clear(
     user: CurrentUser,
     State(state): State<ToonState>,
-    Json(request): Json<SessionRequest>,
+    Json(request): Json<ClearMemoryRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     validate_agent(&request.agent_type)?;
-    sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2")
+    let memory_type = request.memory_type.as_deref().unwrap_or("all");
+    if !matches!(memory_type, "message" | "summary" | "all") {
+        return Err(AppError::bad_request(
+            "memoryType 仅支持 message、summary 或 all",
+        ));
+    }
+    sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND ($3='all' OR ($3='summary' AND memory_type='summary') OR ($3='message' AND memory_type<>'summary'))")
         .bind(request.agent_type)
         .bind(request.isolation_key)
+        .bind(memory_type)
         .execute(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to clear memories"))?;

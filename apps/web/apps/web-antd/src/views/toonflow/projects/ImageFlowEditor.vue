@@ -7,7 +7,14 @@ import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import { Handle, Position, VueFlow } from '@vue-flow/core';
 import { MiniMap } from '@vue-flow/minimap';
-import { Button, Card, Input, Select, Space } from 'ant-design-vue';
+import { Button, Card, Image, Input, Select, Space, Tag } from 'ant-design-vue';
+
+interface AssetOption {
+  id: number;
+  image: string;
+  label: string;
+  type: string;
+}
 
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
@@ -16,6 +23,7 @@ import '@vue-flow/minimap/dist/style.css';
 
 const props = defineProps<{
   edges: Edge[];
+  assetOptions?: AssetOption[];
   loadingNodeId?: string;
   nodes: Node[];
 }>();
@@ -27,6 +35,7 @@ const emit = defineEmits<{
   generate: [nodeId: string];
   remove: [nodeId: string];
   save: [];
+  selectAsset: [nodeId: string, assetId: number];
   'update:edges': [edges: Edge[]];
   'update:nodes': [nodes: Node[]];
   upload: [nodeId: string, file: File];
@@ -81,11 +90,21 @@ function onUpload(event: Event) {
       <MiniMap pannable zoomable />
 
       <template #node-upload="{ id, data }">
-        <Card class="flow-node" size="small" title="图片输入">
+        <Card class="flow-node" size="small" :title="data.assetName ? `资产参考 · ${data.assetName}` : '图片输入'">
           <template #extra><Button danger size="small" type="link" @click="emit('remove', id)">删除</Button></template>
-          <img v-if="data.image" :src="data.image" class="preview" />
+          <Image v-if="data.image" :src="data.image" :alt="data.assetName || '参考图'" class="preview-image" />
           <div v-else class="empty">选择资产图、分镜图或本地图片</div>
-          <Button block size="small" @click="chooseUpload(id)">上传图片</Button>
+          <Select
+            v-if="data.assetSlot !== undefined"
+            :value="data.assetId"
+            :options="(assetOptions || []).map((asset) => ({ label: asset.label, value: asset.id }))"
+            class="asset-select"
+            option-filter-prop="label"
+            show-search
+            @change="emit('selectAsset', id, Number($event))"
+          />
+          <Tag v-if="data.assetType">{{ data.assetType === 'role' ? '衍生人物' : data.assetType === 'scene' ? '场景' : '道具' }}</Tag>
+          <Button v-if="data.assetSlot === undefined" block size="small" @click="chooseUpload(id)">更换图片</Button>
           <Handle type="source" :position="Position.Right" />
         </Card>
       </template>
@@ -130,6 +149,9 @@ function onUpload(event: Event) {
 .flow-node { width: 290px; box-shadow: 0 5px 18px rgb(0 0 0 / 8%); }
 .flow-node.generated { width: 320px; }
 .preview, .empty { width: 100%; height: 150px; margin-bottom: 10px; border-radius: 6px; object-fit: contain; background: #f5f5f5; }
+.preview-image { display: block; width: 100%; margin-bottom: 10px; }
+.preview-image :deep(.ant-image-img) { width: 100%; height: 150px; border-radius: 6px; object-fit: contain; background: #f5f5f5; }
+.asset-select { width: 100%; margin-bottom: 8px; }
 .empty { display: flex; align-items: center; justify-content: center; padding: 16px; color: #8c8c8c; text-align: center; }
 .field { width: 100%; margin-bottom: 8px; }
 .actions { margin-top: 10px; }

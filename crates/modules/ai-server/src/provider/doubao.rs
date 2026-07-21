@@ -44,12 +44,25 @@ impl DouBaoMediaProvider {
             .filter(|value| !value.trim().is_empty())
             .ok_or_else(|| "Seedance 视频提示词不能为空".to_string())?;
         let mut content = vec![json!({"type":"text","text":prompt})];
+        let mode = payload
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("singleImage");
+        let reference_count = payload
+            .get("references")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
         if let Some(references) = payload.get("references").and_then(Value::as_array) {
             for (index, reference) in references.iter().filter_map(Value::as_str).enumerate() {
-                let role = if index == 0 {
-                    "first_frame"
-                } else {
-                    "reference_image"
+                let role = match mode {
+                    "text" => "reference_image",
+                    "startEndRequired" | "endFrameOptional"
+                        if index + 1 == reference_count && reference_count > 1 =>
+                    {
+                        "last_frame"
+                    }
+                    _ if index == 0 => "first_frame",
+                    _ => "reference_image",
                 };
                 content.push(json!({
                     "type":"image_url",
@@ -214,6 +227,21 @@ mod tests {
         assert_eq!(body["content"][1]["role"], "first_frame");
         assert_eq!(body["ratio"], "16:9");
         assert_eq!(body["generate_audio"], true);
+    }
+
+    #[test]
+    fn assigns_first_and_last_frame_roles_without_reference_media() {
+        let body = DouBaoMediaProvider::video_body(
+            &config(),
+            json!({
+                "prompt":"镜头推进",
+                "mode":"startEndRequired",
+                "references":["https://example.com/first.png","https://example.com/last.png"]
+            }),
+        )
+        .unwrap();
+        assert_eq!(body["content"][1]["role"], "first_frame");
+        assert_eq!(body["content"][2]["role"], "last_frame");
     }
 
     #[test]

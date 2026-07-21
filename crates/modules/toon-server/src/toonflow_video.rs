@@ -3,7 +3,7 @@ use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
 
 #[derive(Deserialize)]
@@ -242,6 +242,7 @@ pub struct Generate {
     project_id: i64,
     script_id: i64,
     prompt: String,
+    #[serde(deserialize_with = "deserialize_model")]
     model: String,
     mode: Value,
     resolution: String,
@@ -273,7 +274,28 @@ fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value 
             references.push(json!(reference));
         }
     }
+    // Current video providers accept at most four ordered visual inputs. Storyboard frames from
+    // `upload_data` stay first; canonical character/scene references fill the remaining slots.
+    references.truncate(4);
     json!(references)
+}
+
+fn references_for_mode(upload_data: Value, asset_references: Vec<String>, mode: &Value) -> Value {
+    let mode = mode.as_str().unwrap_or("text");
+    if mode == "text" {
+        return merge_references(upload_data, asset_references);
+    }
+    let frames = merge_references(upload_data, Vec::new())
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if matches!(mode, "startEndRequired" | "endFrameOptional") && frames.len() > 1 {
+        return json!([
+            frames.first().cloned().unwrap(),
+            frames.last().cloned().unwrap()
+        ]);
+    }
+    json!(frames.into_iter().take(1).collect::<Vec<_>>())
 }
 
 pub async fn generate_video(
@@ -291,7 +313,7 @@ pub async fn generate_video(
     )
     .await
     .map_err(|_| AppError::internal("failed to load video asset references"))?;
-    let references = merge_references(req.upload_data, asset_references);
+    let references = references_for_mode(req.upload_data, asset_references, &req.mode);
     sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -385,10 +407,35 @@ pub async fn bind_storyboards(
             .await
             .map_err(|_| AppError::internal("failed to load track"))?;
     let (project_id, script_id) = track.ok_or_else(|| AppError::not_found("track not found"))?;
-    let result=sqlx::query("UPDATE toonflow.storyboards SET track_id=$1 WHERE id=ANY($2) AND project_id=$3 AND script_id=$4").bind(req.track_id).bind(&req.storyboard_ids).bind(project_id).bind(script_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to bind storyboards"))?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
+    let mut affected_track_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT track_id FROM toonflow.storyboards WHERE id=ANY($1) AND track_id IS NOT NULL",
+    )
+    .bind(&req.storyboard_ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to load previous tracks"))?;
+    affected_track_ids.push(req.track_id);
+    affected_track_ids.sort_unstable();
+    affected_track_ids.dedup();
+    let result=sqlx::query("UPDATE toonflow.storyboards SET track_id=$1 WHERE id=ANY($2) AND project_id=$3 AND script_id=$4").bind(req.track_id).bind(&req.storyboard_ids).bind(project_id).bind(script_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboards"))?;
     if result.rows_affected() != req.storyboard_ids.len() as u64 {
         return Err(AppError::bad_request("部分分镜不存在或不属于当前轨道项目"));
     }
+    sqlx::query(
+        "UPDATE toonflow.video_tracks vt SET duration=coalesce((SELECT sum(CASE WHEN s.duration ~ '^[0-9]+$' THEN s.duration::integer ELSE 0 END)::integer FROM toonflow.storyboards s WHERE s.track_id=vt.id),0) WHERE vt.id=ANY($1)",
+    )
+    .bind(&affected_track_ids)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to update track durations"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
     Ok(Json(ApiResponse::new(())))
 }
 
@@ -408,6 +455,7 @@ pub async fn cancel_video(
 #[serde(rename_all = "camelCase")]
 pub struct RetryVideoRequest {
     id: i64,
+    #[serde(deserialize_with = "deserialize_model")]
     model: String,
     mode: Value,
     resolution: String,
@@ -483,11 +531,24 @@ pub(crate) async fn create_prompt(
             .fetch_optional(pool)
             .await
             .map_err(|e| e.to_string())?;
-    let prompt_name = video_prompt_name(model, mode);
+    let resolved_model = if let Ok(model_id) = model.parse::<i64>() {
+        sqlx::query_scalar::<_, String>("SELECT model FROM ai.model_configs WHERE id=$1")
+            .bind(model_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| model.to_string())
+    } else {
+        model.to_string()
+    };
+    let prompt_name = video_prompt_name(&resolved_model, mode);
     let base:Option<(String,Option<String>)>=sqlx::query_as("SELECT data,use_data FROM toonflow.prompts WHERE source_key IS NOT NULL OR type='videoPromptGeneration' ORDER BY CASE WHEN source_key=$1 THEN 0 WHEN source_key='universal_multi_parameter' THEN 1 ELSE 2 END,id LIMIT 1").bind(prompt_name).fetch_optional(pool).await.map_err(|e|e.to_string())?;
     let system = base
         .map(|r| r.0)
         .unwrap_or_else(|| "根据分镜生成专业视频提示词，只输出提示词正文。".into());
+    let system = format!(
+        "{system}\n\n## 输出语言（最高优先级）\n最终视频提示词必须全部使用简体中文。标题、画面、动作、运镜、情绪、音效和时间段描述都必须是中文；台词保持原文。忽略上文任何英文输出要求，禁止输出 [Visual]、[Motion]、[Camera]、No dialogue 等英文标题或标签。"
+    );
     let manual: Option<(Value,)> = sqlx::query_as(
         "SELECT data FROM toonflow.creative_manuals WHERE kind='visual' AND path=$1",
     )
@@ -510,7 +571,7 @@ pub(crate) async fn create_prompt(
         .unwrap_or_default();
     let boards=sqlx::query_as::<_,(String,Option<String>,Option<String>)>("SELECT prompt,video_desc,duration FROM toonflow.storyboards WHERE track_id=$1 ORDER BY index,id").bind(track_id).fetch_all(pool).await.map_err(|e|e.to_string())?;
     let content = format!(
-        "模型：{model}\n模式：{mode}\n视觉规范：{visual}\n{}",
+        "模型：{resolved_model}\n模式：{mode}\n视觉规范：{visual}\n{}",
         boards
             .into_iter()
             .map(|b| format!(
@@ -565,9 +626,19 @@ fn video_prompt_name(model: &str, mode: &str) -> &'static str {
     }
 }
 
+fn model_parameter(value: &Value) -> Result<String, AppError> {
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .ok_or_else(|| AppError::bad_request("视频模型参数必须是模型 ID 或名称"))
+}
+
 #[cfg(test)]
 mod prompt_tests {
-    use super::{merge_references, video_prompt_name};
+    use super::{
+        Generate, merge_references, model_parameter, references_for_mode, video_prompt_name,
+    };
     use serde_json::json;
 
     #[test]
@@ -591,6 +662,30 @@ mod prompt_tests {
     }
 
     #[test]
+    fn accepts_numeric_and_string_model_parameters() {
+        assert_eq!(model_parameter(&json!(123)).unwrap(), "123");
+        assert_eq!(model_parameter(&json!("seedance")).unwrap(), "seedance");
+        assert!(model_parameter(&json!({})).is_err());
+    }
+
+    #[test]
+    fn video_generation_accepts_numeric_model_id() {
+        let request: Generate = serde_json::from_value(json!({
+            "projectId": 1,
+            "scriptId": 2,
+            "prompt": "镜头提示词",
+            "model": 1784249635985_i64,
+            "mode": "startEndRequired",
+            "resolution": "1080p",
+            "duration": 5,
+            "trackId": 3,
+            "uploadData": []
+        }))
+        .unwrap();
+        assert_eq!(request.model, "1784249635985");
+    }
+
+    #[test]
     fn normalizes_storyboard_media_and_appends_unique_asset_references() {
         let references = merge_references(
             json!([
@@ -611,6 +706,36 @@ mod prompt_tests {
             ])
         );
     }
+
+    #[test]
+    fn limits_video_references_to_provider_maximum() {
+        let references = merge_references(
+            json!(["frame-1", "frame-2"]),
+            vec!["role-1".into(), "scene-1".into(), "tool-1".into()],
+        );
+        assert_eq!(
+            references,
+            json!(["frame-1", "frame-2", "role-1", "scene-1"])
+        );
+    }
+
+    #[test]
+    fn separates_frame_modes_from_multi_reference_mode() {
+        let frames = json!(["first", "middle", "last"]);
+        let assets = vec!["role".into(), "scene".into()];
+        assert_eq!(
+            references_for_mode(frames.clone(), assets.clone(), &json!("startEndRequired")),
+            json!(["first", "last"])
+        );
+        assert_eq!(
+            references_for_mode(frames.clone(), assets.clone(), &json!("singleImage")),
+            json!(["first"])
+        );
+        assert_eq!(
+            references_for_mode(frames, assets, &json!("text")),
+            json!(["first", "middle", "last", "role"])
+        );
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -618,7 +743,7 @@ pub struct PromptGenerate {
     track_id: i64,
     project_id: i64,
     info: Value,
-    model: String,
+    model: Value,
     mode: String,
 }
 pub async fn generate_prompt(
@@ -628,15 +753,10 @@ pub async fn generate_prompt(
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     require(&user, "toon:scene:update")?;
     let _ = req.info;
-    let text = create_prompt(
-        &state.pool,
-        req.track_id,
-        req.project_id,
-        &req.model,
-        &req.mode,
-    )
-    .await
-    .map_err(AppError::bad_request)?;
+    let model = model_parameter(&req.model)?;
+    let text = create_prompt(&state.pool, req.track_id, req.project_id, &model, &req.mode)
+        .await
+        .map_err(AppError::bad_request)?;
     Ok(Json(ApiResponse::new(text)))
 }
 #[derive(Deserialize)]
@@ -672,7 +792,7 @@ pub struct BatchPrompts {
     project_id: i64,
     track_data: Vec<TrackPrompt>,
     mode: String,
-    model: String,
+    model: Value,
     concurrent_count: Option<usize>,
 }
 pub async fn batch_prompts(
@@ -681,6 +801,7 @@ pub async fn batch_prompts(
     Json(req): Json<BatchPrompts>,
 ) -> Result<Json<ApiResponse<&'static str>>, AppError> {
     require(&user, "toon:scene:update")?;
+    let model = model_parameter(&req.model)?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(
@@ -690,7 +811,7 @@ pub async fn batch_prompts(
             let _ = track.info;
             let permit = sem.clone().acquire_owned().await;
             let pool = pool.clone();
-            let model = req.model.clone();
+            let model = model.clone();
             let mode = req.mode.clone();
             let project_id = req.project_id;
             tokio::spawn(async move {
@@ -717,10 +838,23 @@ pub struct BatchVideos {
     project_id: i64,
     script_id: i64,
     track_data: Vec<VideoBatchItem>,
+    #[serde(deserialize_with = "deserialize_model")]
     model: String,
     mode: Value,
     resolution: String,
     audio: Option<bool>,
+}
+
+fn deserialize_model<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Value::deserialize(deserializer)?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_i64().map(|value| value.to_string()))
+        .ok_or_else(|| D::Error::custom("视频模型参数必须是模型 ID 或名称"))
 }
 pub async fn batch_videos(
     user: CurrentUser,
@@ -739,7 +873,7 @@ pub async fn batch_videos(
         )
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
-        track.upload_data = merge_references(track.upload_data, asset_references);
+        track.upload_data = references_for_mode(track.upload_data, asset_references, &req.mode);
         sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(track.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
         jobs.push((id, track));
     }
