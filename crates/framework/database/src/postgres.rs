@@ -2,13 +2,15 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 
 use crate::DatabaseConfig;
 
-// Yudao System, Infra compatibility, seed cleanup, performance, media, menu cleanup,
-// Toonflow track ordering, and bigint video timestamps are embedded here.
-// Recompile this crate whenever the embedded SQL migration catalog changes.
-// SQLx embeds this directory at compile time; adding a migration must rebuild
-// this module so local development and release binaries see the complete catalog (84 migrations).
+// SQLx embeds the migration directory at compile time.
+// 0001_initial.sql is the consolidated baseline. Add new migrations after it
+// and never edit a migration after it has been released.
+// Recompile this crate whenever the migration catalog changes.
+//
+// Migrations are the sole source of truth for database schema and baseline data.
+// sql/bootstrap/current.sql is a reference-only pg_dump snapshot kept for
+// documentation and manual inspection — it is NOT loaded by the application.
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../../sql/postgresql");
-const CURRENT_DATABASE_BASELINE: &str = include_str!("../../../../sql/bootstrap/current.sql");
 
 pub async fn connect(config: &DatabaseConfig) -> Result<PgPool, sqlx::Error> {
     PgPoolOptions::new()
@@ -52,9 +54,6 @@ async fn initialize_empty_database(pool: &PgPool) -> anyhow::Result<()> {
         "database has application tables but no migration history; refusing to overwrite it"
     );
 
-    tracing::info!("empty database detected; loading the current Rust Toon baseline");
-    sqlx::raw_sql(CURRENT_DATABASE_BASELINE)
-        .execute(pool)
-        .await?;
+    tracing::info!("empty database detected; running all migrations from scratch");
     Ok(())
 }

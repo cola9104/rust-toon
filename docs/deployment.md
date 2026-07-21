@@ -6,11 +6,11 @@ AI 编码助手接手项目时应先阅读仓库根目录的 [AI 启动交接指
 
 1. 执行 `docker compose -f script/docker/docker-compose.yml up -d`。
 2. 按 [配置文档](configuration.md) 导出数据库、JWT 和管理员环境变量。
-3. 执行 `cargo run -p rust-toon-gateway`。
+3. 执行 `cargo run -p rust-toon-gateway`（首次启动自动初始化数据库并执行全部迁移）。
 4. 在 `apps/web` 执行 `pnpm install && pnpm dev:antd`。
 5. 检查 `GET http://127.0.0.1:8080/health`，然后访问 `http://127.0.0.1:5666`。
 
-PostgreSQL 容器只创建空数据库。数据库结构统一由网关启动时的 SQLx Migrator 管理，禁止同时把 SQL 文件挂载进 `/docker-entrypoint-initdb.d`，否则无法可靠记录迁移版本。
+数据库结构由网关的 SQLx Migrator 自动管理，启动时仅执行迁移，禁止同时把 SQL 文件挂载进 `/docker-entrypoint-initdb.d`。
 
 ## 后端生产构建
 
@@ -96,10 +96,16 @@ location /api/ {
 
 ## 数据库迁移
 
+数据库结构由 Rust 网关启动时的 SQLx Migrator 统一管理，不依赖 Docker 卷挂载或外部 SQL 导入。
+
 - 迁移文件位于 `sql/postgresql`，版本号必须是唯一整数前缀。
 - 网关连接数据库后、监听端口前自动执行迁移。
+- 空数据库首次启动时直接执行全部迁移。`0001_initial.sql` 提供当前完整 schema 和基准数据，不依赖 `sql/bootstrap/current.sql`。
+- 每次修改 schema 或基准数据都必须新增更高版本的迁移，并更新空库迁移测试的版本数和数据断言。
+- 全部迁移在干净参考库执行成功后，重新导出 `sql/bootstrap/current.sql` 用于人工比对；应用不得依赖该文件启动。
 - 发布前运行 `bash script/test-database-migrations.sh`，验证空 PostgreSQL 18 可完成全部迁移。
 - 已在生产执行的迁移不得修改；后续结构变化应新增更高版本迁移。
+- 本次迁移历史已合并为新的 `0001`，保留旧 `_sqlx_migrations` 记录的数据库需要清空后重建。
 - 正式升级前必须备份数据库，并先在备份副本验证升级。
 
 ## 首次管理员

@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 71);
+    assert_eq!(applied, 1);
 
     let storyboard_asset_order_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
@@ -118,6 +118,30 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("read seeded administrators");
     assert!(administrators > 0);
+
+    let baseline_tenants: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM system_tenant WHERE deleted = 0")
+            .fetch_one(&pool)
+            .await
+            .expect("read baseline tenants");
+    assert_eq!(
+        baseline_tenants, 3,
+        "fresh migration bootstrap must restore the current baseline tenants, not synthesize a default company"
+    );
+
+    let current_baseline_tenant_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1 FROM system_tenant
+            WHERE id = 1 AND name = '芋道源码' AND deleted = 0
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect current baseline tenant");
+    assert!(
+        current_baseline_tenant_exists,
+        "fresh migration bootstrap must use the current database baseline data"
+    );
 
     let legacy_schema_exists: bool =
         sqlx::query_scalar("SELECT to_regnamespace('system') IS NOT NULL")

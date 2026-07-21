@@ -6,10 +6,23 @@ This file is the handoff guide for AI coding agents working in this repository. 
 
 - Backend: Rust workspace, gateway entrypoint at `services/gateway`.
 - Frontend: Vben Admin app at `apps/web`, main app package `@vben/web-antd`.
-- Database migrations: `sql/postgresql`, executed automatically by the Rust gateway on startup.
+- Database migrations: `sql/postgresql`, executed automatically by the Rust gateway on startup. `0001_initial.sql` is the consolidated schema and baseline data.
+- Bootstrap reference: `sql/bootstrap/current.sql` is a reference-only `pg_dump` snapshot and is never loaded by the application. The migration chain is sufficient to initialize a new server without `current.sql`.
 - Local infrastructure: PostgreSQL, Redis, NATS, and MinIO via `script/docker/docker-compose.yml`.
 
-Do not mount `sql/postgresql` into PostgreSQL init scripts. The gateway owns migrations through SQLx, and PostgreSQL should start as an empty database.
+Do not mount `sql/postgresql` into PostgreSQL init scripts. The gateway owns database initialization through SQLx, and PostgreSQL should start as an empty database.
+
+## Database Change Workflow
+
+Whenever a database schema or baseline-data change is made:
+
+1. Add a new numbered migration under `sql/postgresql`; never edit a migration that has already been released or applied.
+2. Make the migration idempotent so both upgraded databases and empty-database bootstrap are supported.
+3. Run `bash script/test-database-migrations.sh` to prove an empty PostgreSQL instance reaches the latest schema and baseline data without importing `current.sql`.
+4. After applying all migrations to a clean reference database, export a fresh `sql/bootstrap/current.sql` with `pg_dump` for review and comparison. The gateway must remain fully functional when this snapshot is absent.
+5. Update the expected migration count and relevant baseline assertions in `crates/framework/database/tests/migrations.rs`.
+
+The migration history was intentionally reset to the consolidated `0001_initial.sql`; existing databases must be recreated once. After this reset is released, do not rewrite `0001` or any subsequently applied migration.
 
 ## Local Development Startup
 
