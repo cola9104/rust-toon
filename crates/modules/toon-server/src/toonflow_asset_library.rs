@@ -10,7 +10,7 @@ use crate::{ToonState, shared::require};
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetLibraryRequest {
-    pub project_id: Option<i64>,
+    pub project_id: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,7 +55,7 @@ pub async fn list(
            FROM toonflow.assets a
            JOIN toonflow.projects p ON p.id = a.project_id
            LEFT JOIN toonflow.images i ON i.id = a.image_id
-           WHERE a.parent_asset_id IS NULL
+           WHERE a.project_id = $1 AND a.parent_asset_id IS NULL
            ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)
@@ -72,14 +72,15 @@ pub async fn link(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:update")?;
     let asset_exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1 AND parent_asset_id IS NULL)",
+        "SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1 AND project_id=$2 AND parent_asset_id IS NULL)",
     )
     .bind(request.asset_id)
+    .bind(request.project_id)
     .fetch_one(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to validate asset"))?;
     if !asset_exists {
-        return Err(AppError::not_found("asset not found"));
+        return Err(AppError::not_found("当前项目中不存在该资产"));
     }
     sqlx::query(
         r#"INSERT INTO toonflow.project_assets(project_id, asset_id, linked_at)
@@ -108,14 +109,8 @@ pub async fn unlink(
             .fetch_optional(&state.pool)
             .await
             .map_err(|_| AppError::internal("failed to validate asset ownership"))?;
-    if owner_project_id == Some(request.project_id) {
-        return Err(AppError::bad_request("来源项目不能取消引用自己的资产"));
+    if owner_project_id != Some(request.project_id) {
+        return Err(AppError::not_found("当前项目中不存在该资产"));
     }
-    sqlx::query("DELETE FROM toonflow.project_assets WHERE project_id=$1 AND asset_id=$2")
-        .bind(request.project_id)
-        .bind(request.asset_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to unlink asset"))?;
-    Ok(Json(ApiResponse::with_message((), "已取消资产引用")))
+    Err(AppError::bad_request("项目自有资产不能取消关联"))
 }

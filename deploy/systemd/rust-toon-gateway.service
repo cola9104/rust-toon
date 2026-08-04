@@ -1,0 +1,23 @@
+[Unit]
+Description=Rust Toon Gateway
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rust-toon
+Group=rust-toon
+WorkingDirectory=/opt/rust-toon
+EnvironmentFile=/etc/rust-toon/gateway.env
+ExecStart=/opt/rust-toon/target/release/rust-toon-gateway
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=-/opt/rust-toon/storage
+
+[Install]
+WantedBy=multi-user.target

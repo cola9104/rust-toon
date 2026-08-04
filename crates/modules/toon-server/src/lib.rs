@@ -28,6 +28,7 @@ mod toonflow_storyboard_panel_validation;
 mod toonflow_storyboard_table_validation;
 mod toonflow_video;
 mod toonflow_video_export;
+mod toonflow_workflow;
 mod toonflow_ws;
 
 use axum::{
@@ -681,6 +682,42 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/toonflow/production/saveFlowData",
             post(toonflow::save_flow_data),
+        )
+        .route(
+            "/toonflow/production/validateWorkflow",
+            post(toonflow_workflow::validate),
+        )
+        .route(
+            "/toonflow/production/workflowRuns",
+            get(toonflow_workflow::list_runs).post(toonflow_workflow::create_run),
+        )
+        .route(
+            "/toonflow/production/workflowRuns/state",
+            post(toonflow_workflow::run_state),
+        )
+        .route(
+            "/toonflow/production/workflowRuns/cancel",
+            post(toonflow_workflow::cancel_run),
+        )
+        .route(
+            "/toonflow/production/workflowNodeRuns/start",
+            post(toonflow_workflow::start_node),
+        )
+        .route(
+            "/toonflow/production/workflowNodeRuns/state",
+            post(toonflow_workflow::node_state),
+        )
+        .route(
+            "/toonflow/production/workflowNodeRuns/latest",
+            get(toonflow_workflow::latest_node_run),
+        )
+        .route(
+            "/toonflow/production/workflowNodeRuns/cancel",
+            post(toonflow_workflow::cancel_node),
+        )
+        .route(
+            "/toonflow/production/workflowNodeRuns/retry",
+            post(toonflow_workflow::retry_node),
         )
         .route(
             "/toonflow/production/getStoryboardData",

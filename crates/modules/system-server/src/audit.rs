@@ -119,7 +119,7 @@ async fn list_audit_logs(
 ) -> Result<Json<ApiResponse<Vec<AuditLogSummary>>>, AppError> {
     let permission = Permission::new("system:operate-log:query")
         .map_err(|_| AppError::internal("invalid policy"))?;
-    if !user.can(&permission) {
+    if !user.role_codes.iter().any(|role| role == "super_admin") && !user.can(&permission) {
         return Err(AppError::forbidden("permission denied"));
     }
 

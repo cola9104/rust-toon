@@ -1461,8 +1461,9 @@ pub(crate) async fn execute_inner(
                 .and_then(Value::as_array)
                 .map(|ids| ids.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
                 .unwrap_or_default();
-            crate::toonflow_storyboard_asset_validation::reject_base_role_asset_ids(
+            crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
                 &state.pool,
+                request.project_id,
                 &associated_asset_ids,
             )
             .await?;

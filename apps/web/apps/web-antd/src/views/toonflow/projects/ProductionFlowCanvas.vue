@@ -1,14 +1,32 @@
 <script lang="ts" setup>
-import type { Edge, Node } from '@vue-flow/core';
-import type { ToonflowApi } from '#/api/toonflow';
+import type { Connection, Edge, Node } from '@vue-flow/core';
+import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
+import type { ProductionWorkflowDefinition } from './production-workflow';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
+import { MiniMap } from '@vue-flow/minimap';
 import { Handle, Position, VueFlow } from '@vue-flow/core';
-import { Button, Empty, Input, Modal, Tag } from 'ant-design-vue';
+import {
+  Button,
+  Descriptions,
+  Drawer,
+  Empty,
+  Form,
+  Input,
+  InputNumber,
+  message,
+  Modal,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Typography,
+} from 'ant-design-vue';
 
+import { validateWorkflow } from '#/api/toonflow';
 import { MarkdownView } from '#/components/markdown-view';
 
 import '@vue-flow/core/dist/style.css';
@@ -17,23 +35,39 @@ import '@vue-flow/controls/dist/style.css';
 
 import ProductionAssetStrip from './ProductionAssetStrip.vue';
 import { normalizeProductionDocument } from './production-flow-document';
+import {
+  defaultProductionWorkflow,
+  normalizeProductionWorkflow,
+  workflowHasCycle,
+  workflowPath,
+  workflowNodeMeta,
+  workflowNodeViewType,
+} from './production-workflow';
 import StoryboardPanel from './StoryboardPanel.vue';
 import VideoWorkbenchPanel from './VideoWorkbenchPanel.vue';
 
 const props = defineProps<{
   assets: ToonflowApi.Asset[];
   storyboardBusy?: boolean;
+  storyboardProgressCurrent?: number;
+  storyboardProgressTotal?: number;
+  storyboardRunState?: string;
   flowText: string;
+  imageModel?: number;
+  imageQuality?: string;
   script?: ToonflowApi.Script;
   storyboards: ToonflowApi.Storyboard[];
   videoMode?: string;
   videoModel?: number;
   videoRatio?: string;
   videoTracks: any[];
+  workflowNodeRuns?: Record<string, WorkflowNodeRun>;
 }>();
 
 const emit = defineEmits<{
   batchDeleteStoryboards: [ids: number[]];
+  cancelStoryboards: [];
+  cancelNode: [nodeId: string];
   cancelTrackVideo: [video: any];
   deleteTrackVideo: [video: any];
   editAsset: [asset: ToonflowApi.Asset];
@@ -46,8 +80,13 @@ const emit = defineEmits<{
   generateTrackVideo: [track: any];
   generateVideoPrompt: [track: any];
   openVideoTrack: [trackId: number];
+  retryStoryboards: [];
+  retryNode: [nodeId: string];
   retryTrackVideo: [video: any, track: any];
+  runNode: [nodeId: string, config: Record<string, unknown>];
+  runSequence: [nodeIds: string[]];
   savePositions: [positions: Record<string, { x: number; y: number }>];
+  saveWorkflow: [workflow: ProductionWorkflowDefinition];
   saveVideoPrompt: [track: any];
   selectTrackVideo: [track: any, video: any];
   updateFlowSection: [key: 'scriptPlan' | 'storyboardTable', value: string];
@@ -59,6 +98,8 @@ const flowInstance = ref<any>();
 const spacePressed = ref(false);
 const editorOpen = ref(false);
 const workbenchOpen = ref(false);
+const selectedNodeId = ref<string>();
+const nodeConfigDraft = ref<Record<string, any>>({});
 const editorKey = ref<'scriptPlan' | 'storyboardTable'>('scriptPlan');
 const editorValue = ref('');
 const flowData = computed<Record<string, any>>(() => {
@@ -88,28 +129,212 @@ const workbenchCover = computed(() => {
   }
   return '';
 });
-const defaultPositions = {
-  script: { x: 0, y: 0 },
-  scriptPlan: { x: 1000, y: 0 },
-  storyboardTable: { x: 2000, y: 0 },
-  storyboard: { x: 3000, y: 0 },
-  workbench: { x: 4000, y: 0 },
-};
 const savedPositions = computed(() =>
   flowData.value.canvas?.layoutVersion === 7 ? flowData.value.canvas.positions || {} : {},
 );
-const nodes = computed<Node[]>(() => [
-  ...Object.entries(defaultPositions).map(([id, position]) => ({
-    id, type: id, dragHandle: '.dragHandle', position: savedPositions.value[id] || position, data: {},
-  })),
-]);
+const workflow = computed(() => normalizeProductionWorkflow(flowData.value.workflow));
+const selectedWorkflowNode = computed(() =>
+  workflow.value.nodes.find((node) => node.id === selectedNodeId.value),
+);
+const selectedNodeMeta = computed(() =>
+  workflowNodeMeta(selectedWorkflowNode.value?.type ?? ''),
+);
 
-const edges: Edge[] = [
-  { id: 'script-plan', source: 'script', target: 'scriptPlan', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
-  { id: 'plan-table', source: 'scriptPlan', target: 'storyboardTable', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
-  { id: 'table-panel', source: 'storyboardTable', target: 'storyboard', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
-  { id: 'panel-workbench', source: 'storyboard', target: 'workbench', animated: false, style: { stroke: '#000', strokeWidth: 4 } },
-];
+function runtimeState(nodeId: string) {
+  const nodeRun = props.workflowNodeRuns?.[nodeId];
+  if (nodeRun) {
+    if (nodeRun.state === 'running') {
+      const progress = nodeRun.progressTotal > 1
+        ? ` ${nodeRun.progressCurrent}/${nodeRun.progressTotal}`
+        : '';
+      return { color: 'processing', label: `运行中${progress}`, state: 'running' };
+    }
+    if (nodeRun.state === 'failed') return { color: 'red', label: '失败', state: 'failed' };
+    if (nodeRun.state === 'cancelled') return { color: 'orange', label: '已取消', state: 'cancelled' };
+    if (nodeRun.state === 'success') return { color: 'green', label: '已完成', state: 'success' };
+  }
+  if (nodeId === 'script') {
+    return props.script
+      ? { color: 'green', label: '已就绪', state: 'success' }
+      : { color: 'default', label: '等待输入', state: 'pending' };
+  }
+  if (nodeId === 'scriptPlan') {
+    return directorPlan.value
+      ? { color: 'green', label: '已完成', state: 'success' }
+      : { color: 'default', label: '等待运行', state: 'pending' };
+  }
+  if (nodeId === 'storyboardTable') {
+    return storyboardPlan.value
+      ? { color: 'green', label: '已完成', state: 'success' }
+      : { color: 'default', label: '等待运行', state: 'pending' };
+  }
+  if (nodeId === 'storyboard') {
+    const state = props.storyboardRunState;
+    if (state === 'running') return { color: 'processing', label: '运行中', state };
+    if (state === 'failed') return { color: 'red', label: '失败', state };
+    if (state === 'cancelled') return { color: 'orange', label: '已取消', state };
+    if (state === 'success') return { color: 'green', label: '已完成', state };
+    return props.storyboards.length > 0
+      ? { color: 'blue', label: `${props.storyboards.length} 个分镜`, state: 'ready' }
+      : { color: 'default', label: '等待输入', state: 'pending' };
+  }
+  if (nodeId === 'workbench') {
+    const videoCount = props.videoTracks.reduce(
+      (total, track) => total + (track.videoList ?? track.video_list ?? []).length,
+      0,
+    );
+    return videoCount > 0
+      ? { color: 'green', label: `${videoCount} 个视频`, state: 'success' }
+      : { color: 'default', label: '等待输入', state: 'pending' };
+  }
+  return { color: 'default', label: '未运行', state: 'pending' };
+}
+const nodes = computed<Node[]>(() =>
+  workflow.value.nodes.map((node) => ({
+    id: node.id,
+    type: workflowNodeViewType(node.type),
+    dragHandle: '.dragHandle',
+    position: savedPositions.value[node.id] || node.position,
+    data: {
+      config: node.config,
+      meta: workflowNodeMeta(node.type),
+      runtime: runtimeState(node.id),
+      workflowType: node.type,
+    },
+  })),
+);
+const edges = computed<Edge[]>(() =>
+  workflow.value.edges.map((edge) => ({
+    ...edge,
+    animated: false,
+    style: { stroke: '#64748b', strokeWidth: 3 },
+  })),
+);
+
+function selectNode(event: { node: Node }) {
+  selectedNodeId.value = event.node.id;
+  const node = workflow.value.nodes.find((item) => item.id === event.node.id);
+  nodeConfigDraft.value = {
+    ...(node?.config ?? {}),
+    ...(node?.type === 'storyboard.image'
+      ? {
+          compulsory: Boolean(node.config?.compulsory),
+          concurrentCount: Number(node.config?.concurrentCount ?? 5),
+        }
+      : {}),
+    ...(node?.type === 'director.plan'
+      ? { prompt: String(node.config?.prompt ?? '读取当前剧本与资产，生成完整导演规划并写入工作区。') }
+      : {}),
+    ...(node?.type === 'storyboard.plan'
+      ? { prompt: String(node.config?.prompt ?? '读取剧本、资产和导演规划，生成完整分镜表并写入工作区。') }
+      : {}),
+    ...(node?.type === 'video.generate'
+      ? {
+          audio: Boolean(node.config?.audio),
+          concurrentCount: Number(node.config?.concurrentCount ?? 2),
+          resolution: String(node.config?.resolution ?? '1080p'),
+        }
+      : {}),
+  };
+}
+
+function saveWorkflow(definition: ProductionWorkflowDefinition) {
+  emit('saveWorkflow', definition);
+}
+
+function saveNodeConfig(showMessage = true) {
+  const selected = selectedWorkflowNode.value;
+  if (!selected) return;
+  const definition = {
+    ...workflow.value,
+    nodes: workflow.value.nodes.map((node) =>
+      node.id === selected.id ? { ...node, config: { ...nodeConfigDraft.value } } : node,
+    ),
+  };
+  saveWorkflow(definition);
+  if (showMessage) message.success('节点配置已保存');
+}
+
+function runSelectedNode() {
+  const selected = selectedWorkflowNode.value;
+  if (!selected || !selectedNodeMeta.value.executable) return;
+  saveNodeConfig(false);
+  emit('runNode', selected.id, { ...nodeConfigDraft.value });
+}
+
+function runSelectedPath(direction: 'downstream' | 'upstream') {
+  const selected = selectedWorkflowNode.value;
+  if (!selected) return;
+  saveNodeConfig(false);
+  emit('runSequence', workflowPath(workflow.value, selected.id, direction));
+}
+
+function connectNodes(connection: Connection) {
+  const source = connection.source;
+  const target = connection.target;
+  if (!source || !target || source === target) {
+    message.warning('不能把节点连接到自身');
+    return;
+  }
+  if (workflow.value.edges.some((edge) => edge.source === source && edge.target === target)) {
+    message.info('这两个节点已经连接');
+    return;
+  }
+  if (workflow.value.edges.some((edge) => edge.target === target)) {
+    message.warning('一个输入端口只能连接一个上游节点，请先删除原连线');
+    return;
+  }
+  const definition: ProductionWorkflowDefinition = {
+    ...workflow.value,
+    edges: [
+      ...workflow.value.edges,
+      { id: `${source}-${target}-${Date.now()}`, source, target },
+    ],
+  };
+  if (workflowHasCycle(definition)) {
+    message.error('该连线会形成循环依赖');
+    return;
+  }
+  saveWorkflow(definition);
+}
+
+function deleteEdges(deleted: Edge[]) {
+  const deletedIds = new Set(deleted.map((edge) => edge.id));
+  saveWorkflow({
+    ...workflow.value,
+    edges: workflow.value.edges.filter((edge) => !deletedIds.has(edge.id)),
+  });
+}
+
+function arrangeNodes() {
+  const defaults = defaultProductionWorkflow();
+  const defaultPositions = new Map(defaults.nodes.map((node) => [node.id, node.position]));
+  const definition = {
+    ...workflow.value,
+    nodes: workflow.value.nodes.map((node, index) => ({
+      ...node,
+      position: defaultPositions.get(node.id) ?? { x: index * 1000, y: 0 },
+    })),
+  };
+  saveWorkflow(definition);
+  emit(
+    'savePositions',
+    Object.fromEntries(definition.nodes.map((node) => [node.id, node.position])),
+  );
+  window.setTimeout(() => flowInstance.value?.fitView?.({ duration: 350, padding: 0.08 }), 50);
+}
+
+async function validateCurrentWorkflow() {
+  try {
+    const result = await validateWorkflow(workflow.value as unknown as Record<string, any>);
+    const labels = result.executionOrder.map((id) =>
+      workflowNodeMeta(workflow.value.nodes.find((node) => node.id === id)?.type ?? '').label,
+    );
+    message.success(`工作流有效：${labels.join(' → ')}`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '工作流校验失败');
+  }
+}
 
 function openEditor(key: 'scriptPlan' | 'storyboardTable') {
   editorKey.value = key;
@@ -122,7 +347,7 @@ function saveEditor() {
 }
 function saveNodePositions(event: any) {
   const positions: Record<string, { x: number; y: number }> = {
-    ...defaultPositions,
+    ...Object.fromEntries(workflow.value.nodes.map((node) => [node.id, node.position])),
     ...savedPositions.value,
   };
   for (const node of flowInstance.value?.getNodes?.() || []) {
@@ -168,30 +393,64 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="production-flow-shell" :class="{ 'space-panning': spacePressed }">
+    <div class="workflow-toolbar">
+      <Space :size="6">
+        <Typography.Text strong>节点工作流</Typography.Text>
+        <Tag>{{ workflow.nodes.length }} 节点</Tag>
+        <Tag>{{ workflow.edges.length }} 连线</Tag>
+        <Button size="small" @click="flowInstance?.fitView?.({ duration: 350, padding: 0.08 })">
+          适应画布
+        </Button>
+        <Button size="small" @click="arrangeNodes">整理布局</Button>
+        <Button size="small" type="primary" ghost @click="validateCurrentWorkflow">校验工作流</Button>
+      </Space>
+      <Typography.Text type="secondary">拖动端口连接节点 · 选中连线后按 Delete 删除 · 任务提交后由后端持续运行</Typography.Text>
+    </div>
     <VueFlow
       :nodes="nodes"
       :edges="edges"
       :min-zoom="0.35"
       :max-zoom="1.4"
-      :default-viewport="{ x: 20, y: 20, zoom: 0.68 }"
+      :default-viewport="{ x: 20, y: 82, zoom: 0.68 }"
       :pan-on-scroll="true"
       :zoom-on-scroll="false"
       :nodes-draggable="!spacePressed"
       :pan-on-drag="spacePressed ? [0] : true"
-      :nodes-connectable="false"
+      :nodes-connectable="true"
+      :edges-updatable="false"
+      :delete-key-code="['Backspace', 'Delete']"
       class="production-flow"
+      @connect="connectNodes"
+      @edges-delete="deleteEdges"
       @init="flowInstance = $event"
+      @node-click="selectNode"
       @node-drag-stop="saveNodePositions"
     >
       <Background :gap="18" :size="1" pattern-color="#cbd5e1" />
       <Controls position="bottom-left" />
+      <MiniMap pannable zoomable position="bottom-right" />
 
-      <template #node-script>
+      <template #node-default="{ data }">
+        <section class="flow-stage-node flow-unknown-node">
+          <Handle id="input" type="target" :position="Position.Left" />
+          <span class="port-label port-label-input">{{ data.meta.input }}</span>
+          <Handle id="output" type="source" :position="Position.Right" />
+          <span class="port-label port-label-output">{{ data.meta.output }}</span>
+          <header class="stage-header dragHandle">
+            <div>自定义节点</div>
+            <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
+          </header>
+          <div class="stage-waiting">当前前端版本尚未注册此节点视图</div>
+        </section>
+      </template>
+
+      <template #node-script="{ data }">
         <section class="flow-stage-node stage-script">
-          <Handle type="source" :position="Position.Right" />
+          <Handle id="output" type="source" :position="Position.Right" />
+          <span class="port-label port-label-output">{{ data.meta.output }}</span>
           <header class="stage-header dragHandle">
             <div><span class="stage-index">1</span> 剧本与衍生资产</div>
-            <Tag :color="script ? 'green' : 'default'">{{ script ? '已就绪' : '等待选择' }}</Tag>
+            <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
           <div v-if="script" class="script-body">
             <h3>{{ script.name }}</h3>
@@ -210,13 +469,18 @@ onBeforeUnmount(() => {
         </section>
       </template>
 
-      <template #node-scriptPlan>
+      <template #node-scriptPlan="{ data }">
         <section class="flow-stage-node stage-text stage-director" :class="{ waiting: !directorPlan }">
-          <Handle type="target" :position="Position.Left" />
-          <Handle type="source" :position="Position.Right" />
+          <Handle id="input" type="target" :position="Position.Left" />
+          <span class="port-label port-label-input">{{ data.meta.input }}</span>
+          <Handle id="output" type="source" :position="Position.Right" />
+          <span class="port-label port-label-output">{{ data.meta.output }}</span>
           <header class="stage-header dragHandle">
             <div>导演规划</div>
-            <Button size="small" type="link" @click="openEditor('scriptPlan')">编辑</Button>
+            <Space>
+              <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
+              <Button size="small" type="link" @click.stop="openEditor('scriptPlan')">编辑</Button>
+            </Space>
           </header>
           <div v-if="directorPlan" class="director-content">
             <MarkdownView :content="directorPlan" />
@@ -225,13 +489,18 @@ onBeforeUnmount(() => {
         </section>
       </template>
 
-      <template #node-storyboardTable>
+      <template #node-storyboardTable="{ data }">
         <section class="flow-stage-node stage-table" :class="{ waiting: !storyboardPlan }">
-          <Handle type="target" :position="Position.Left" />
-          <Handle type="source" :position="Position.Right" />
+          <Handle id="input" type="target" :position="Position.Left" />
+          <span class="port-label port-label-input">{{ data.meta.input }}</span>
+          <Handle id="output" type="source" :position="Position.Right" />
+          <span class="port-label port-label-output">{{ data.meta.output }}</span>
           <header class="stage-header dragHandle">
             <div>分镜表</div>
-            <Button size="small" type="link" @click="openEditor('storyboardTable')">编辑</Button>
+            <Space>
+              <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
+              <Button size="small" type="link" @click.stop="openEditor('storyboardTable')">编辑</Button>
+            </Space>
           </header>
           <div v-if="storyboardPlan" class="storyboard-table-content">
             <MarkdownView :content="storyboardPlan" />
@@ -240,17 +509,24 @@ onBeforeUnmount(() => {
         </section>
       </template>
 
-      <template #node-storyboard>
-        <section class="flow-stage-node stage-storyboard" :class="{ waiting: !storyboards.length }">
-          <Handle type="target" :position="Position.Left" />
-          <Handle type="source" :position="Position.Right" />
+      <template #node-storyboard="{ data }">
+        <section class="flow-stage-node stage-storyboard" :class="[{ waiting: !storyboards.length }, `runtime-${data.runtime.state}`]">
+          <Handle id="input" type="target" :position="Position.Left" />
+          <span class="port-label port-label-input">{{ data.meta.input }}</span>
+          <Handle id="output" type="source" :position="Position.Right" />
+          <span class="port-label port-label-output">{{ data.meta.output }}</span>
           <header class="stage-header dragHandle">
             <div>分镜面板</div>
+            <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
           <StoryboardPanel
             :busy="storyboardBusy"
+            :progress-current="storyboardProgressCurrent"
+            :progress-total="storyboardProgressTotal"
+            :run-state="storyboardRunState"
             :storyboards="storyboards"
             @batch-delete="emit('batchDeleteStoryboards', $event)"
+            @cancel="emit('cancelStoryboards')"
             @edit="emit('editStoryboard', $event)"
             @edit-image="emit('editStoryboardImage', $event)"
             @export-images="emit('exportStoryboardImages', $event)"
@@ -259,23 +535,148 @@ onBeforeUnmount(() => {
             @open-track="emit('openVideoTrack', $event)"
             @remove="emit('removeStoryboard', $event)"
             @reorder="emit('reorderStoryboards', $event)"
+            @retry="emit('retryStoryboards')"
           />
         </section>
       </template>
 
-      <template #node-workbench>
-        <section class="flow-stage-node stage-workbench" @click.stop="workbenchOpen = true">
-          <Handle type="target" :position="Position.Left" />
+      <template #node-workbench="{ data }">
+        <section class="flow-stage-node stage-workbench">
+          <Handle id="input" type="target" :position="Position.Left" />
+          <span class="port-label port-label-input">{{ data.meta.input }}</span>
           <header class="stage-header dragHandle">
             <div>视频工作台</div>
+            <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
-          <div class="workbench-preview">
+          <div class="workbench-preview" @click.stop="workbenchOpen = true">
             <video v-if="workbenchCover" :src="workbenchCover" muted preload="metadata" />
             <div class="workbench-play" aria-hidden="true"><span /></div>
           </div>
         </section>
       </template>
     </VueFlow>
+    <Drawer
+      :open="Boolean(selectedWorkflowNode)"
+      :title="selectedNodeMeta.label"
+      placement="right"
+      :width="390"
+      @close="selectedNodeId = undefined"
+    >
+      <div v-if="selectedWorkflowNode" class="node-config-panel">
+        <Typography.Paragraph type="secondary">
+          {{ selectedNodeMeta.description }}
+        </Typography.Paragraph>
+        <Descriptions bordered size="small" :column="1">
+          <Descriptions.Item label="节点 ID">{{ selectedWorkflowNode.id }}</Descriptions.Item>
+          <Descriptions.Item label="节点类型">{{ selectedWorkflowNode.type }}</Descriptions.Item>
+          <Descriptions.Item label="运行状态">
+            <Tag :color="runtimeState(selectedWorkflowNode.id).color">
+              {{ runtimeState(selectedWorkflowNode.id).label }}
+            </Tag>
+          </Descriptions.Item>
+          <Descriptions.Item
+            v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.progressTotal"
+            label="执行进度"
+          >
+            {{ workflowNodeRuns[selectedWorkflowNode.id]!.progressCurrent }} /
+            {{ workflowNodeRuns[selectedWorkflowNode.id]!.progressTotal }}
+          </Descriptions.Item>
+          <Descriptions.Item
+            v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.attempt"
+            label="执行次数"
+          >
+            {{ workflowNodeRuns[selectedWorkflowNode.id]!.attempt }}
+          </Descriptions.Item>
+        </Descriptions>
+        <Typography.Paragraph
+          v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.errorReason"
+          class="node-run-error"
+          type="danger"
+        >
+          {{ workflowNodeRuns[selectedWorkflowNode.id]!.errorReason }}
+        </Typography.Paragraph>
+        <details v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.output" class="node-run-output">
+          <summary>查看节点输出</summary>
+          <pre>{{ JSON.stringify(workflowNodeRuns[selectedWorkflowNode.id]!.output, null, 2) }}</pre>
+        </details>
+
+        <Form v-if="selectedWorkflowNode.type === 'storyboard.image'" class="node-config-form" layout="vertical">
+          <Form.Item label="并发生成数量">
+            <InputNumber v-model:value="nodeConfigDraft.concurrentCount" :min="1" :max="10" style="width: 100%" />
+          </Form.Item>
+          <Form.Item label="强制重新生成">
+            <Switch v-model:checked="nodeConfigDraft.compulsory" />
+          </Form.Item>
+          <Descriptions bordered size="small" :column="1">
+            <Descriptions.Item label="图片模型">{{ imageModel || '跟随项目配置' }}</Descriptions.Item>
+            <Descriptions.Item label="图片质量">{{ imageQuality || '2K' }}</Descriptions.Item>
+            <Descriptions.Item label="画面比例">{{ videoRatio || '16:9' }}</Descriptions.Item>
+          </Descriptions>
+        </Form>
+
+        <Form
+          v-else-if="['director.plan', 'storyboard.plan'].includes(selectedWorkflowNode.type)"
+          class="node-config-form"
+          layout="vertical"
+        >
+          <Form.Item label="节点执行指令">
+            <Input.TextArea v-model:value="nodeConfigDraft.prompt" :rows="6" />
+          </Form.Item>
+          <Typography.Text
+            v-if="selectedWorkflowNode.type === 'storyboard.plan'"
+            type="secondary"
+          >
+            执行分为两步：生成并复审分镜表，然后自动写入分镜面板。重跑成功后会替换旧面板；失败或取消会保留旧版本。
+          </Typography.Text>
+        </Form>
+
+        <Form v-else-if="selectedWorkflowNode.type === 'video.generate'" class="node-config-form" layout="vertical">
+          <Form.Item label="并发生成数量">
+            <InputNumber v-model:value="nodeConfigDraft.concurrentCount" :min="1" :max="10" style="width: 100%" />
+          </Form.Item>
+          <Form.Item label="分辨率">
+            <Select
+              v-model:value="nodeConfigDraft.resolution"
+              :options="[
+                { label: '720p', value: '720p' },
+                { label: '1080p', value: '1080p' },
+              ]"
+            />
+          </Form.Item>
+          <Form.Item label="生成音频">
+            <Switch v-model:checked="nodeConfigDraft.audio" />
+          </Form.Item>
+          <Descriptions bordered size="small" :column="1">
+            <Descriptions.Item label="视频模型">{{ videoModel || '跟随项目配置' }}</Descriptions.Item>
+            <Descriptions.Item label="生成模式">{{ videoMode || 'startEndRequired' }}</Descriptions.Item>
+            <Descriptions.Item label="视频比例">{{ videoRatio || '16:9' }}</Descriptions.Item>
+          </Descriptions>
+        </Form>
+
+        <div class="node-config-actions">
+          <Button @click="saveNodeConfig()">保存配置</Button>
+          <Button @click="runSelectedPath('upstream')">运行到此</Button>
+          <Button @click="runSelectedPath('downstream')">从此继续</Button>
+          <Button
+            v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.state === 'running'"
+            danger
+            @click="emit('cancelNode', selectedWorkflowNode.id)"
+          >取消</Button>
+          <Button
+            v-if="['cancelled', 'failed'].includes(workflowNodeRuns?.[selectedWorkflowNode.id]?.state || '')"
+            @click="emit('retryNode', selectedWorkflowNode.id)"
+          >重试</Button>
+          <Button
+            type="primary"
+            :disabled="!selectedNodeMeta.executable || workflowNodeRuns?.[selectedWorkflowNode.id]?.state === 'running'"
+            :loading="workflowNodeRuns?.[selectedWorkflowNode.id]?.state === 'running'"
+            @click="runSelectedNode"
+          >
+            {{ selectedNodeMeta.executable ? '运行此节点' : '运行器待接入' }}
+          </Button>
+        </div>
+      </div>
+    </Drawer>
     <Modal
       v-model:open="workbenchOpen"
       :closable="false"
@@ -328,16 +729,79 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
 }
+.workflow-toolbar {
+  position: absolute;
+  z-index: 6;
+  top: 12px;
+  right: 12px;
+  left: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--ant-color-bg-container) 92%, transparent);
+  box-shadow: 0 6px 20px rgb(15 23 42 / 8%);
+  backdrop-filter: blur(8px);
+}
 .production-flow-shell.space-panning,
 .production-flow-shell.space-panning * { cursor: grab !important; }
 
 .flow-stage-node {
+  position: relative;
   width: 520px;
   overflow: hidden;
   border: 1px solid var(--ant-color-border-secondary);
   border-radius: 12px;
   background: var(--ant-color-bg-container);
   box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+}
+
+:deep(.vue-flow__node.selected .flow-stage-node) {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ant-color-primary) 25%, transparent),
+    0 12px 30px rgb(15 23 42 / 12%);
+}
+
+.flow-stage-node.runtime-running {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--ant-color-primary) 18%, transparent);
+}
+
+.port-label {
+  position: absolute;
+  z-index: 2;
+  top: 48px;
+  max-width: 130px;
+  overflow: hidden;
+  color: var(--ant-color-text-tertiary);
+  font-size: 10px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.port-label-input { left: 10px; }
+.port-label-output { right: 10px; text-align: right; }
+
+.node-config-form { margin-top: 20px; }
+.node-run-error { margin-top: 14px; }
+.node-run-output {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--ant-color-fill-quaternary);
+}
+.node-run-output summary { cursor: pointer; }
+.node-run-output pre { max-height: 240px; margin-top: 8px; padding: 0; overflow: auto; }
+.node-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
 }
 
 .stage-header {
@@ -696,10 +1160,23 @@ pre {
 }
 
 :deep(.vue-flow__handle) {
-  width: 10px;
-  height: 10px;
-  border: 2px solid #fff;
+  width: 14px;
+  height: 14px;
+  border: 3px solid #fff;
   background: var(--ant-color-primary);
+  box-shadow: 0 0 0 1px var(--ant-color-primary);
+}
+
+:deep(.vue-flow__edge.selected .vue-flow__edge-path) {
+  stroke: var(--ant-color-error);
+  stroke-width: 4;
+}
+
+:deep(.vue-flow__minimap) {
+  overflow: hidden;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-container);
 }
 </style>
 

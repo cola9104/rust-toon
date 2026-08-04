@@ -33,10 +33,8 @@ import {
   getAssetLibrary,
   getProject,
   getProjects,
-  linkProjectAsset,
   polishAssetPrompt,
   saveAsset,
-  unlinkProjectAsset,
   uploadMaterial,
 } from '#/api/toonflow';
 
@@ -79,7 +77,7 @@ const filteredAssets = computed(() =>
     if (!isAssetInCategory(asset.type, activeCategory.value)) return false;
     const keyword = assetSearch.value.trim().toLocaleLowerCase();
     if (!keyword) return true;
-    return [asset.name, asset.description, asset.prompt, asset.sourceProjectName]
+    return [asset.name, asset.description, asset.prompt]
       .some((value) => value?.toLocaleLowerCase().includes(keyword));
   }),
 );
@@ -309,18 +307,6 @@ async function createDubbing() {
   await loadAssets();
 }
 
-async function toggleProjectLink(asset: ToonflowApi.LibraryAsset) {
-  if (!selectedProjectId.value) return;
-  if (asset.linkedToProject) {
-    await unlinkProjectAsset(selectedProjectId.value, asset.id);
-    message.success('已取消引用');
-  } else {
-    await linkProjectAsset(selectedProjectId.value, asset.id);
-    message.success('资产已引用到当前项目');
-  }
-  await loadAssets();
-}
-
 onMounted(async () => {
   projects.value = await getProjects();
   const queryProjectId = Number(route.query.projectId);
@@ -348,7 +334,7 @@ watch(() => route.query.projectId, (value) => {
       <template #title>
         <Space>
           <Typography.Text strong>资产库</Typography.Text>
-          <Tag>{{ assets.length }} 项公共资产</Tag>
+          <Tag>{{ assets.length }} 项项目资产</Tag>
         </Space>
       </template>
       <template #extra>
@@ -373,7 +359,7 @@ watch(() => route.query.projectId, (value) => {
       </template>
 
       <Typography.Paragraph class="asset-library-tip" type="secondary">
-        所有项目共享同一资产库。选择项目后可引用已有资产；剧本与分镜只使用当前项目已引用的资产。
+        资产按项目隔离；选择项目后，只显示并使用该项目创建的资产。
       </Typography.Paragraph>
 
       <Empty v-if="!selectedProjectId" description="请先选择项目" />
@@ -395,7 +381,7 @@ watch(() => route.query.projectId, (value) => {
           <Input.Search
             v-model:value="assetSearch"
             allow-clear
-            placeholder="搜索名称、描述或来源项目"
+            placeholder="搜索名称或描述"
             style="max-width: 360px"
           />
           <Typography.Text type="secondary">
@@ -441,49 +427,32 @@ watch(() => route.query.projectId, (value) => {
                 <span class="asset-prompt-text">{{ item.prompt }}</span>
               </div>
               <div class="asset-meta">
-                <Typography.Text
-                  :content="`来源：${item.sourceProjectName || '当前项目'}`"
-                  ellipsis
-                  type="secondary"
-                />
-                <Tag :color="item.linkedToProject ? 'green' : 'default'">
-                  {{ item.linkedToProject ? '已引用' : '未引用' }}
-                </Tag>
+                <Typography.Text type="secondary">当前项目资产</Typography.Text>
               </div>
               <div class="asset-actions">
                 <Space wrap :size="4">
+                  <Button type="link" @click="openAsset(item)">编辑</Button>
                   <Button
-                    v-if="item.projectId !== selectedProjectId"
-                    :danger="item.linkedToProject"
+                    v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
+                    :loading="polishingAssetIds.has(item.id)"
                     type="link"
-                    @click="toggleProjectLink(item)"
+                    @click="polishAsset(item)"
                   >
-                    {{ item.linkedToProject ? '取消引用' : '引用到项目' }}
+                    {{ polishingAssetIds.has(item.id) ? '润色中' : 'AI 润色' }}
                   </Button>
-                  <template v-if="item.projectId === selectedProjectId">
-                    <Button type="link" @click="openAsset(item)">编辑</Button>
-                    <Button
-                      v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
-                      :loading="polishingAssetIds.has(item.id)"
-                      type="link"
-                      @click="polishAsset(item)"
-                    >
-                      {{ polishingAssetIds.has(item.id) ? '润色中' : 'AI 润色' }}
-                    </Button>
-                    <Button
-                      :loading="generatingAssetIds.has(item.id)"
-                      type="link"
-                      @click="generateAssetPicture(item)"
-                    >
-                      {{ generatingAssetIds.has(item.id) ? '生成中' : '生成图片' }}
-                    </Button>
-                    <Button v-if="item.type === 'role'" type="link" @click="matchAssetVoice(item)">
-                      匹配音色
-                    </Button>
-                    <Button v-if="item.type === 'role'" type="link" @click="openDubbing(item)">
-                      生成配音
-                    </Button>
-                  </template>
+                  <Button
+                    :loading="generatingAssetIds.has(item.id)"
+                    type="link"
+                    @click="generateAssetPicture(item)"
+                  >
+                    {{ generatingAssetIds.has(item.id) ? '生成中' : '生成图片' }}
+                  </Button>
+                  <Button v-if="item.type === 'role'" type="link" @click="matchAssetVoice(item)">
+                    匹配音色
+                  </Button>
+                  <Button v-if="item.type === 'role'" type="link" @click="openDubbing(item)">
+                    生成配音
+                  </Button>
                 </Space>
               </div>
             </Card>

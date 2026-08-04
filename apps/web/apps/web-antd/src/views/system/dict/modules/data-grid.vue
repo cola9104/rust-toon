@@ -100,6 +100,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
     schema: useDataGridFormSchema(),
   },
   gridOptions: {
+    id: 'system-dict-data-grid',
     columns: useDataGridColumns(),
     height: 'auto',
     keepSource: true,

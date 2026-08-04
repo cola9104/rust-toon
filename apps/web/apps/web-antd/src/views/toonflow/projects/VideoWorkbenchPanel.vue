@@ -86,7 +86,7 @@ function generation(track: any) {
   track.generation ??= {
     audio: false,
     duration: track.duration || 5,
-    mode: props.videoMode || 'text',
+    mode: props.videoMode || 'startEndRequired',
     model: props.videoModel,
     resolution: '1080p',
   };

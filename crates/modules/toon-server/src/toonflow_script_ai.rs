@@ -90,11 +90,7 @@ async fn extract_group(
         .await
         .map_err(|error| error.to_string())?;
     let existing = sqlx::query_as::<_, (String, String, String)>(
-        r#"SELECT a.name,a.type,a.description FROM toonflow.assets a
-           WHERE a.project_id=$1 OR EXISTS(
-             SELECT 1 FROM toonflow.project_assets pa
-             WHERE pa.project_id=$1 AND pa.asset_id=a.id
-           )"#,
+        "SELECT a.name,a.type,a.description FROM toonflow.assets a WHERE a.project_id=$1",
     )
     .bind(project_id)
     .fetch_all(pool)
@@ -169,13 +165,7 @@ async fn extract_group(
     }
     for reference in result.existing_asset_refs {
         let asset_id: Option<i64> = sqlx::query_scalar(
-            r#"SELECT a.id FROM toonflow.assets a
-               WHERE a.name=$2 AND a.type=$3 AND (
-                 a.project_id=$1 OR EXISTS(
-                   SELECT 1 FROM toonflow.project_assets pa
-                   WHERE pa.project_id=$1 AND pa.asset_id=a.id
-                 )
-               ) ORDER BY CASE WHEN a.project_id=$1 THEN 0 ELSE 1 END LIMIT 1"#,
+            "SELECT a.id FROM toonflow.assets a WHERE a.project_id=$1 AND a.name=$2 AND a.type=$3 LIMIT 1",
         )
         .bind(project_id)
         .bind(reference.name.trim())

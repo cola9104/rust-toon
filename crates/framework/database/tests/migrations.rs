@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 11);
 
     let storyboard_asset_order_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(
@@ -29,6 +29,51 @@ async fn applies_all_migrations_to_empty_postgres() {
     .expect("inspect storyboard asset ordering column");
     assert!(storyboard_asset_order_exists);
 
+    for column in ["progress_current", "progress_total", "retry_of_id"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='toonflow'
+                 AND table_name='workflow_node_runs'
+                 AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect workflow node run column");
+        assert!(exists, "expected workflow node run column {column}");
+    }
+
+    let project_defaults: (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT
+           (SELECT column_default FROM information_schema.columns
+            WHERE table_schema='toonflow' AND table_name='projects' AND column_name='video_ratio'),
+           (SELECT column_default FROM information_schema.columns
+            WHERE table_schema='toonflow' AND table_name='projects' AND column_name='mode')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect project video defaults");
+    assert_eq!(project_defaults.0.as_deref(), Some("'16:9'::text"));
+    assert_eq!(
+        project_defaults.1.as_deref(),
+        Some("'startEndRequired'::text")
+    );
+
+    let asset_isolation_trigger: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM information_schema.triggers
+           WHERE event_object_schema='toonflow'
+             AND event_object_table='project_assets'
+             AND trigger_name='project_assets_enforce_ownership'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect project asset isolation trigger");
+    assert!(asset_isolation_trigger);
+
     for table in [
         "ai.model_configs",
         "ai.chat_roles",
@@ -37,6 +82,9 @@ async fn applies_all_migrations_to_empty_postgres() {
         "ai.music",
         "toonflow.projects",
         "toonflow.project_assets",
+        "toonflow.workflow_definitions",
+        "toonflow.workflow_runs",
+        "toonflow.workflow_node_runs",
         "system_users",
         "system_role",
         "system_menu",
@@ -60,6 +108,28 @@ async fn applies_all_migrations_to_empty_postgres() {
             .await
             .expect("inspect expected table");
         assert!(exists, "expected table {table}");
+    }
+    for sequence in [
+        "system_dict_data_seq",
+        "system_login_log_seq",
+        "system_mail_log_seq",
+        "system_notify_message_seq",
+        "system_oauth2_access_token_seq",
+        "system_oauth2_refresh_token_seq",
+        "system_operate_log_seq",
+        "system_sms_log_seq",
+        "system_tenant_package_seq",
+        "system_tenant_seq",
+        "system_user_post_seq",
+        "system_user_role_seq",
+        "system_users_seq",
+    ] {
+        let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+            .bind(sequence)
+            .fetch_one(&pool)
+            .await
+            .expect("inspect expected sequence");
+        assert!(exists, "expected sequence {sequence}");
     }
     for removed in ["toonflow.vendor_configs", "toonflow.model_prompts"] {
         let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
@@ -96,6 +166,83 @@ async fn applies_all_migrations_to_empty_postgres() {
         duplicate_route_names, 0,
         "active route menus must not generate duplicate frontend route names"
     );
+
+    let restored_menu_catalog: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM system_menu WHERE deleted = 0")
+            .fetch_one(&pool)
+            .await
+            .expect("read restored menu catalog");
+    assert!(
+        restored_menu_catalog >= 300,
+        "fresh bootstrap must include the complete backend menu and permission catalog"
+    );
+
+    let restored_navigation_roots: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM system_menu
+         WHERE id IN (1, 2, 1185, 2758) AND parent_id = 0
+           AND type = 1 AND status = 0 AND deleted = 0",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read restored navigation roots");
+    assert_eq!(
+        restored_navigation_roots, 4,
+        "system, infrastructure, workflow, and AI navigation roots must be available"
+    );
+
+    let orphaned_active_menus: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM system_menu child
+         LEFT JOIN system_menu parent
+           ON parent.id = child.parent_id AND parent.deleted = 0
+         WHERE child.deleted = 0 AND child.parent_id <> 0 AND parent.id IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read orphaned active menus");
+    assert_eq!(
+        orphaned_active_menus, 0,
+        "active menus must not disappear because their parent is missing"
+    );
+
+    for (table, column) in [
+        ("system_dept", "tenant_id"),
+        ("system_post", "tenant_id"),
+        ("system_role", "tenant_id"),
+        ("system_role", "data_scope_dept_ids"),
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='public' AND table_name=$1 AND column_name=$2
+             )",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect restored management column");
+        assert!(exists, "expected management column {table}.{column}");
+    }
+
+    let department_leader_type: String = sqlx::query_scalar(
+        "SELECT udt_name FROM information_schema.columns
+         WHERE table_schema='public' AND table_name='system_dept'
+           AND column_name='leader_user_id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect department leader identifier type");
+    assert_eq!(department_leader_type, "int8");
+
+    let infra_config_sequence_is_synchronized: bool = sqlx::query_scalar(
+        "SELECT last_value >= COALESCE((SELECT max(id) FROM infra_config), 1)
+         FROM infra_config_seq",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect infrastructure configuration sequence");
+    assert!(infra_config_sequence_is_synchronized);
 
     let active_menu_links: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM system_menu
@@ -141,6 +288,50 @@ async fn applies_all_migrations_to_empty_postgres() {
     assert!(
         current_baseline_tenant_exists,
         "fresh migration bootstrap must use the current database baseline data"
+    );
+
+    let organization_baseline: (i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT count(*) FROM system_dept WHERE deleted = 0),
+            (SELECT count(*) FROM system_post WHERE deleted = 0)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read organization baseline");
+    assert!(organization_baseline.0 >= 10, "departments must be seeded");
+    assert!(organization_baseline.1 >= 4, "posts must be seeded");
+
+    let administrator_department_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+            SELECT 1
+            FROM system_users users
+            JOIN system_dept dept ON dept.id = users.dept_id AND dept.deleted = 0
+            WHERE users.username = 'admin' AND users.deleted = 0
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect administrator department");
+    assert!(administrator_department_exists);
+
+    let dictionary_baseline: (i64, i64, i64) = sqlx::query_as(
+        "SELECT
+            (SELECT count(*) FROM system_dict_type WHERE deleted = 0),
+            (SELECT count(DISTINCT dict_type) FROM system_dict_data WHERE deleted = 0),
+            (SELECT count(*) FROM system_dict_data data
+             WHERE data.deleted = 0
+               AND NOT EXISTS (
+                   SELECT 1 FROM system_dict_type type
+                   WHERE type.type = data.dict_type AND type.deleted = 0
+               ))",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read dictionary baseline");
+    assert!(dictionary_baseline.0 >= dictionary_baseline.1);
+    assert_eq!(
+        dictionary_baseline.2, 0,
+        "every dictionary must have a type"
     );
 
     let legacy_schema_exists: bool =

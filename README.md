@@ -20,6 +20,14 @@ Rust Toon 是 Rust 后端与 Vben Admin 5 前端组成的动漫生产及通用 A
 
 ## 五分钟本地启动
 
+也可以直接执行：
+
+```bash
+bash script/start-local.sh all
+```
+
+`infra` 仅启动基础设施，`backend` 启动基础设施并在前台运行网关，`all` 同时运行网关和前端。
+
 ### 1. 启动基础设施
 
 ```bash
@@ -84,4 +92,14 @@ pnpm --dir apps/web --filter @vben/web-antd run build
 - [技术架构](docs/technical-solution.md)
 - [配置与模型接入](docs/configuration.md)
 - [启动、部署与运维](docs/deployment.md)
+
+## 数据库备份
+
+```bash
+DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon' \
+BACKUP_DIR="$PWD/backups/postgresql" \
+bash script/database/backup-postgres.sh
+```
+
+备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#数据库备份与恢复)。
 - [功能范围与验收口径](docs/parity-roadmap.md)

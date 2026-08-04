@@ -1,15 +1,36 @@
 use rust_toon_framework_web::AppError;
 
-pub async fn reject_base_role_asset_ids(
+pub async fn validate_storyboard_asset_ids(
     pool: &sqlx::PgPool,
+    project_id: i64,
     asset_ids: &[i64],
 ) -> Result<(), AppError> {
     if asset_ids.is_empty() {
         return Ok(());
     }
-    let names: Vec<String> = sqlx::query_scalar(
-        "SELECT name FROM toonflow.assets WHERE id=ANY($1) AND type='role' AND parent_asset_id IS NULL ORDER BY name",
+    let contains_foreign_or_missing: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM unnest($2::bigint[]) requested(id)
+             WHERE NOT EXISTS(
+               SELECT 1 FROM toonflow.assets a
+               WHERE a.id=requested.id AND a.project_id=$1
+             )
+           )"#,
     )
+    .bind(project_id)
+    .bind(asset_ids)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate storyboard assets"))?;
+    if contains_foreign_or_missing {
+        return Err(AppError::bad_request(
+            "分镜只能关联当前项目中的资产，请重新读取当前项目资产列表",
+        ));
+    }
+    let names: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM toonflow.assets WHERE project_id=$1 AND id=ANY($2) AND type='role' AND parent_asset_id IS NULL ORDER BY name",
+    )
+    .bind(project_id)
     .bind(asset_ids)
     .fetch_all(pool)
     .await

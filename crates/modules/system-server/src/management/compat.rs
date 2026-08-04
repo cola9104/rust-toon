@@ -30,6 +30,18 @@ pub struct QueryParams {
     page_no: Option<i64>,
     #[serde(default, rename = "pageSize")]
     page_size: Option<i64>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default, rename = "type")]
+    resource_type: Option<String>,
+    #[serde(default)]
+    status: Option<i16>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    value: Option<String>,
+    #[serde(default, rename = "dictType")]
+    dict_type: Option<String>,
 }
 
 pub fn routes() -> axum::Router<SystemState> {
@@ -1395,6 +1407,85 @@ async fn core_page(
     let page_no = params.page_no.unwrap_or(1).max(1);
     let page_size = params.page_size.unwrap_or(10).clamp(1, 200);
     let offset = (page_no - 1) * page_size;
+    if kind == "dict_type" {
+        let name = params.name.unwrap_or_default();
+        let resource_type = params.resource_type.unwrap_or_default();
+        let total = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM system_dict_type
+             WHERE deleted=0
+               AND ($1='' OR name ILIKE '%' || $1 || '%')
+               AND ($2='' OR type ILIKE '%' || $2 || '%')
+               AND ($3::smallint IS NULL OR status=$3)",
+        )
+        .bind(&name)
+        .bind(&resource_type)
+        .bind(params.status)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to count dictionary types"))?;
+        let rows = sqlx::query_scalar::<_, Value>(
+            "SELECT jsonb_build_object('id', id, 'name', name, 'type', type,
+                    'status', status, 'remark', remark, 'createTime', create_time)
+             FROM system_dict_type
+             WHERE deleted=0
+               AND ($1='' OR name ILIKE '%' || $1 || '%')
+               AND ($2='' OR type ILIKE '%' || $2 || '%')
+               AND ($3::smallint IS NULL OR status=$3)
+             ORDER BY id DESC LIMIT $4 OFFSET $5",
+        )
+        .bind(name)
+        .bind(resource_type)
+        .bind(params.status)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to list dictionary types"))?;
+        return Ok(Json(ApiResponse::new(Page { list: rows, total })));
+    }
+    if kind == "dict_data" {
+        let label = params.label.unwrap_or_default();
+        let value = params.value.unwrap_or_default();
+        let dict_type = params.dict_type.unwrap_or_default();
+        let total = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM system_dict_data
+             WHERE deleted=0
+               AND ($1='' OR label ILIKE '%' || $1 || '%')
+               AND ($2='' OR value ILIKE '%' || $2 || '%')
+               AND ($3='' OR dict_type=$3)
+               AND ($4::smallint IS NULL OR status=$4)",
+        )
+        .bind(&label)
+        .bind(&value)
+        .bind(&dict_type)
+        .bind(params.status)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to count dictionary data"))?;
+        let rows = sqlx::query_scalar::<_, Value>(
+            "SELECT jsonb_build_object('id', id, 'sort', sort, 'label', label,
+                    'value', value, 'dictType', dict_type, 'status', status,
+                    'colorType', color_type, 'cssClass', css_class,
+                    'remark', remark, 'createTime', create_time)
+             FROM system_dict_data
+             WHERE deleted=0
+               AND ($1='' OR label ILIKE '%' || $1 || '%')
+               AND ($2='' OR value ILIKE '%' || $2 || '%')
+               AND ($3='' OR dict_type=$3)
+               AND ($4::smallint IS NULL OR status=$4)
+             ORDER BY sort, id LIMIT $5 OFFSET $6",
+        )
+        .bind(label)
+        .bind(value)
+        .bind(dict_type)
+        .bind(params.status)
+        .bind(page_size)
+        .bind(offset)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to list dictionary data"))?;
+        return Ok(Json(ApiResponse::new(Page { list: rows, total })));
+    }
     let total = sqlx::query_scalar::<_, i64>(core_count_sql(kind)?)
         .fetch_one(pool)
         .await
@@ -1460,12 +1551,13 @@ async fn core_create(
         .fetch_one(pool)
         .await,
         "dept" => sqlx::query_scalar::<_, i64>(
-            "INSERT INTO system_dept (id, name, parent_id, sort, phone, email, status)
-             VALUES (nextval('system_dept_seq'),$1,$2,$3,$4,$5,$6) RETURNING id",
+            "INSERT INTO system_dept (id, name, parent_id, sort, leader_user_id, phone, email, status)
+             VALUES (nextval('system_dept_seq'),$1,$2,$3,$4,$5,$6,$7) RETURNING id",
         )
         .bind(str_field(&payload, "name"))
         .bind(i64_field(&payload, "parentId", 0))
         .bind(i32_field(&payload, "sort", 0))
+        .bind(opt_i64_field(&payload, "leaderUserId"))
         .bind(opt_str_field(&payload, "phone"))
         .bind(opt_str_field(&payload, "email"))
         .bind(i16_field(&payload, "status", 0))
@@ -1563,8 +1655,8 @@ async fn core_update(
         .bind(bool_field(&payload, "alwaysShow", true))
         .execute(pool)
         .await,
-        "dept" => sqlx::query("UPDATE system_dept SET name=$2, parent_id=$3, sort=$4, phone=$5, email=$6, status=$7, update_time=now() WHERE id=$1 AND deleted=0")
-            .bind(id).bind(str_field(&payload, "name")).bind(i64_field(&payload, "parentId", 0)).bind(i32_field(&payload, "sort", 0)).bind(opt_str_field(&payload, "phone")).bind(opt_str_field(&payload, "email")).bind(i16_field(&payload, "status", 0)).execute(pool).await,
+        "dept" => sqlx::query("UPDATE system_dept SET name=$2, parent_id=$3, sort=$4, leader_user_id=$5, phone=$6, email=$7, status=$8, update_time=now() WHERE id=$1 AND deleted=0")
+            .bind(id).bind(str_field(&payload, "name")).bind(i64_field(&payload, "parentId", 0)).bind(i32_field(&payload, "sort", 0)).bind(opt_i64_field(&payload, "leaderUserId")).bind(opt_str_field(&payload, "phone")).bind(opt_str_field(&payload, "email")).bind(i16_field(&payload, "status", 0)).execute(pool).await,
         "post" => sqlx::query("UPDATE system_post SET code=$2, name=$3, sort=$4, status=$5, remark=$6, update_time=now() WHERE id=$1 AND deleted=0")
             .bind(id).bind(str_field(&payload, "code")).bind(str_field(&payload, "name")).bind(i32_field(&payload, "sort", 0)).bind(i16_field(&payload, "status", 0)).bind(opt_str_field(&payload, "remark")).execute(pool).await,
         "dict_type" => sqlx::query("UPDATE system_dict_type SET name=$2, type=$3, status=$4, remark=$5, update_time=now() WHERE id=$1 AND deleted=0")
@@ -1590,6 +1682,18 @@ async fn core_delete(
     params: HashMap<String, String>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     let id = parse_i64_param(&params, "id")?;
+    if kind == "dept" {
+        let has_children: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM system_dept WHERE parent_id=$1 AND deleted=0)",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to inspect child departments"))?;
+        if has_children {
+            return Err(AppError::bad_request("请先删除下级部门"));
+        }
+    }
     sqlx::query(core_delete_sql(kind)?)
         .bind(id)
         .execute(pool)
@@ -1717,15 +1821,45 @@ async fn oauth2_authorize_post() -> Json<ApiResponse<String>> {
 }
 
 async fn area_tree() -> Json<ApiResponse<Vec<Value>>> {
-    Json(ApiResponse::new(vec![json!({
-        "id": "0",
-        "name": "中国",
-        "code": "CN",
-        "parentId": null,
-        "sort": 0,
-        "status": 0,
-        "children": []
-    })]))
+    #[derive(Clone)]
+    struct AreaRow {
+        id: i64,
+        name: String,
+    }
+
+    fn children_of(parent_id: i64, rows: &HashMap<i64, Vec<AreaRow>>) -> Vec<Value> {
+        rows.get(&parent_id)
+            .into_iter()
+            .flatten()
+            .map(|area| {
+                let children = children_of(area.id, rows);
+                let mut value = json!({ "id": area.id, "name": area.name });
+                if !children.is_empty() {
+                    value["children"] = Value::Array(children);
+                }
+                value
+            })
+            .collect()
+    }
+
+    let mut rows: HashMap<i64, Vec<AreaRow>> = HashMap::new();
+    for line in include_str!("../area.csv").lines().skip(1) {
+        let mut fields = line.splitn(4, ',');
+        let (Some(id), Some(name), Some(_area_type), Some(parent_id)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let (Ok(id), Ok(parent_id)) = (id.parse(), parent_id.parse()) else {
+            continue;
+        };
+        rows.entry(parent_id).or_default().push(AreaRow {
+            id,
+            name: name.to_owned(),
+        });
+    }
+    // Match Yudao's contract: return China's direct children, not the China root.
+    Json(ApiResponse::new(children_of(1, &rows)))
 }
 
 async fn area_by_ip() -> Json<ApiResponse<String>> {

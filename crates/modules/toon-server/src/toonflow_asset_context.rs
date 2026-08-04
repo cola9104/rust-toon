@@ -64,11 +64,14 @@ pub async fn load_script_context(
            FROM toonflow.assets a
            JOIN toonflow.projects p ON p.id=a.project_id
            LEFT JOIN toonflow.images i ON i.id=a.image_id
-           WHERE a.id IN (SELECT asset_id FROM linked_assets)
-              OR a.parent_asset_id IN (SELECT asset_id FROM linked_assets)
+           WHERE a.project_id=$2 AND (
+             a.id IN (SELECT asset_id FROM linked_assets)
+             OR a.parent_asset_id IN (SELECT asset_id FROM linked_assets)
+           )
            ORDER BY a.parent_asset_id NULLS FIRST, a.type, a.name, a.id"#,
     )
     .bind(script_id)
+    .bind(project_id)
     .fetch_all(pool)
     .await?;
     let appearance_rows = sqlx::query_as::<_, CharacterAppearance>(
@@ -131,6 +134,7 @@ pub async fn load_track_asset_references(
            JOIN toonflow.assets a ON a.id=ast.asset_id
            JOIN toonflow.images i ON i.id=a.image_id
            WHERE s.track_id=$1 AND s.project_id=$2 AND s.script_id=$3
+             AND a.project_id=$2
              AND i.file_path IS NOT NULL AND i.file_path <> ''
            ORDER BY i.file_path"#,
     )
@@ -155,6 +159,7 @@ pub async fn load_storyboard_asset_references(
            JOIN toonflow.assets a ON a.id=ast.asset_id
            JOIN toonflow.images i ON i.id=a.image_id
            WHERE ast.storyboard_id=$1 AND s.project_id=$2 AND s.script_id=$3
+             AND a.project_id=$2
              AND i.file_path IS NOT NULL AND i.file_path <> ''
            ORDER BY ast.sort_order, ast.asset_id"#,
     )

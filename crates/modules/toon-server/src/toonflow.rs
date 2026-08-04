@@ -22,6 +22,22 @@ fn next_id(offset: i64) -> i64 {
     now_ms() + offset
 }
 
+fn project_video_ratio(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "16:9"
+    } else {
+        value
+    }
+}
+
+fn project_video_mode(value: &str) -> &str {
+    if value.trim().is_empty() {
+        "startEndRequired"
+    } else {
+        value
+    }
+}
+
 async fn ensure_project(pool: &PgPool, project_id: i64) -> Result<(), AppError> {
     let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM toonflow.projects WHERE id = $1")
         .bind(project_id)
@@ -144,8 +160,8 @@ pub async fn create_project(
     .bind(request.r#type)
     .bind(request.art_style)
     .bind(request.director_manual)
-    .bind(request.mode)
-    .bind(request.video_ratio)
+    .bind(project_video_mode(&request.mode))
+    .bind(project_video_ratio(&request.video_ratio))
     .bind(current_user_id(&user)?)
     .bind(time)
     .execute(&state.pool)
@@ -184,8 +200,8 @@ pub async fn update_project(
     .bind(request.r#type)
     .bind(request.art_style)
     .bind(request.director_manual)
-    .bind(request.mode)
-    .bind(request.video_ratio)
+    .bind(project_video_mode(&request.mode))
+    .bind(project_video_ratio(&request.video_ratio))
     .bind(now_ms())
     .execute(&state.pool)
     .await
@@ -736,11 +752,7 @@ pub async fn list_assets(
                   a.audio_bind_state, a.prompt_error_reason
            FROM toonflow.assets a
            LEFT JOIN toonflow.images i ON i.id = a.image_id
-           WHERE EXISTS (
-             SELECT 1 FROM toonflow.project_assets pa
-             WHERE pa.asset_id = a.id AND pa.project_id = $1
-           )
-             AND a.parent_asset_id IS NULL
+           WHERE a.project_id = $1 AND a.parent_asset_id IS NULL
            ORDER BY a.id DESC"#,
     )
     .bind(request.project_id)
@@ -864,6 +876,11 @@ pub async fn get_flow_data(
     if let Some((mut data,)) = flow {
         data["script"] = json!(script);
         data["assets"] = assets;
+        if data.get("workflow").is_none() {
+            data["workflow"] =
+                serde_json::to_value(crate::toonflow_workflow::default_production_workflow())
+                    .map_err(|_| AppError::internal("failed to build workflow definition"))?;
+        }
         return Ok(Json(ApiResponse::new(data)));
     }
     Ok(Json(ApiResponse::new(json!({
@@ -872,7 +889,8 @@ pub async fn get_flow_data(
         "assets": assets,
         "storyboardTable": "",
         "storyboard": [],
-        "workbench": { "videoList": [] }
+        "workbench": { "videoList": [] },
+        "workflow": crate::toonflow_workflow::default_production_workflow()
     }))))
 }
 
@@ -883,6 +901,18 @@ pub async fn save_flow_data(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:update")?;
     let time = now_ms();
+    let workflow = crate::toonflow_workflow::workflow_from_data(&request.data)?;
+    crate::toonflow_workflow::persist_definition(
+        &state.pool,
+        request.project_id,
+        request.episodes_id,
+        &workflow,
+        time,
+    )
+    .await?;
+    let mut data = request.data;
+    data["workflow"] = serde_json::to_value(workflow)
+        .map_err(|_| AppError::internal("failed to serialize workflow definition"))?;
     sqlx::query(
         r#"INSERT INTO toonflow.agent_work_data
            (project_id, episodes_id, key, data, create_time, update_time)
@@ -892,7 +922,7 @@ pub async fn save_flow_data(
     )
     .bind(request.project_id)
     .bind(request.episodes_id)
-    .bind(request.data)
+    .bind(data)
     .bind(time)
     .execute(&state.pool)
     .await
@@ -1011,8 +1041,9 @@ pub async fn add_storyboard(
     let project_id = request
         .project_id
         .ok_or_else(|| AppError::bad_request("projectId is required"))?;
-    crate::toonflow_storyboard_asset_validation::reject_base_role_asset_ids(
+    crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
         &state.pool,
+        project_id,
         &request.associate_assets_ids,
     )
     .await?;
@@ -1131,8 +1162,9 @@ pub async fn batch_add_storyboards(
         .iter()
         .flat_map(|item| item.associate_assets_ids.iter().copied())
         .collect::<Vec<_>>();
-    crate::toonflow_storyboard_asset_validation::reject_base_role_asset_ids(
+    crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
         &state.pool,
+        request.project_id,
         &associated_asset_ids,
     )
     .await?;
@@ -1241,11 +1273,6 @@ pub async fn edit_storyboard_info(
     Json(request): Json<EditStoryboardInfoRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:update")?;
-    crate::toonflow_storyboard_asset_validation::reject_base_role_asset_ids(
-        &state.pool,
-        &request.associate_assets_ids,
-    )
-    .await?;
     let mut tx = state
         .pool
         .begin()
@@ -1261,6 +1288,12 @@ pub async fn edit_storyboard_info(
     let Some((project_id, script_id, old_track_id, old_track)) = current else {
         return Err(AppError::not_found("storyboard not found"));
     };
+    crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
+        &state.pool,
+        project_id,
+        &request.associate_assets_ids,
+    )
+    .await?;
     let track = request.track.as_deref().unwrap_or("main").trim();
     let track = if track.is_empty() { "main" } else { track };
     let target_track_id: Option<i64> = sqlx::query_scalar(

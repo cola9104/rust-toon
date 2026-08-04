@@ -5,6 +5,7 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
+use tokio::task::JoinSet;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -296,6 +297,200 @@ fn references_for_mode(upload_data: Value, asset_references: Vec<String>, mode: 
         ]);
     }
     json!(frames.into_iter().take(1).collect::<Vec<_>>())
+}
+
+#[derive(Clone, Debug, Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WorkflowVideoInput {
+    #[serde(default)]
+    pub track_ids: Vec<i64>,
+    #[serde(default = "workflow_video_concurrency")]
+    pub concurrent_count: usize,
+    #[serde(default = "workflow_video_resolution")]
+    pub resolution: String,
+    #[serde(default)]
+    pub audio: bool,
+    #[serde(default)]
+    pub video_ids: Vec<i64>,
+}
+
+fn workflow_video_concurrency() -> usize {
+    2
+}
+
+fn workflow_video_resolution() -> String {
+    "1080p".into()
+}
+
+#[derive(Clone)]
+pub(crate) struct WorkflowVideoJob {
+    id: i64,
+    track_id: i64,
+    prompt: String,
+    duration: i32,
+    model: String,
+    mode: String,
+    ratio: String,
+    resolution: String,
+    audio: bool,
+    references: Value,
+}
+
+#[derive(Default)]
+pub(crate) struct WorkflowVideoSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub video_ids: Vec<i64>,
+}
+
+pub(crate) async fn prepare_workflow_video_generation(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    input: &mut WorkflowVideoInput,
+) -> Result<Vec<WorkflowVideoJob>, AppError> {
+    let settings: Option<(Option<i64>, String, String)> =
+        sqlx::query_as("SELECT video_model,mode,video_ratio FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load project video settings"))?;
+    let (model, mode, ratio) = settings
+        .and_then(|(model, mode, ratio)| model.map(|model| (model.to_string(), mode, ratio)))
+        .ok_or_else(|| AppError::bad_request("请先配置当前项目的视频模型"))?;
+    let mut tracks = sqlx::query_as::<_, (i64, Option<String>, Option<i32>)>(
+        "SELECT id,prompt,duration FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id",
+    )
+    .bind(project_id)
+    .bind(script_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load workflow video tracks"))?;
+    if !input.track_ids.is_empty() {
+        tracks.retain(|track| input.track_ids.contains(&track.0));
+    }
+    if tracks.is_empty() {
+        return Err(AppError::bad_request("当前没有可生成的视频轨道"));
+    }
+    input.track_ids = tracks.iter().map(|track| track.0).collect();
+    let mut jobs = Vec::with_capacity(tracks.len());
+    let base_id = chrono::Utc::now().timestamp_micros();
+    for (index, (track_id, prompt, duration)) in tracks.into_iter().enumerate() {
+        let frames: Vec<String> = sqlx::query_scalar(
+            "SELECT file_path FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND track_id=$3 AND file_path IS NOT NULL AND file_path<>'' ORDER BY index,id",
+        )
+        .bind(project_id)
+        .bind(script_id)
+        .bind(track_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to load workflow video frames"))?;
+        let asset_references = crate::toonflow_asset_context::load_track_asset_references(
+            pool, project_id, script_id, track_id,
+        )
+        .await
+        .map_err(|_| AppError::internal("failed to load video asset references"))?;
+        let references = references_for_mode(json!(frames), asset_references, &json!(mode));
+        let id = base_id + index as i64;
+        sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time) VALUES($1,'生成中',$2,$3,$4,$5)")
+            .bind(id)
+            .bind(script_id)
+            .bind(project_id)
+            .bind(track_id)
+            .bind(chrono::Utc::now().timestamp_millis())
+            .execute(pool)
+            .await
+            .map_err(|_| AppError::internal("failed to create workflow video"))?;
+        jobs.push(WorkflowVideoJob {
+            id,
+            track_id,
+            prompt: prompt.unwrap_or_default(),
+            duration: duration.unwrap_or(5),
+            model: model.clone(),
+            mode: mode.clone(),
+            ratio: if ratio.trim().is_empty() {
+                "16:9".into()
+            } else {
+                ratio.clone()
+            },
+            resolution: input.resolution.clone(),
+            audio: input.audio,
+            references,
+        });
+    }
+    input.video_ids = jobs.iter().map(|job| job.id).collect();
+    Ok(jobs)
+}
+
+pub(crate) async fn run_workflow_video_generation(
+    pool: sqlx::PgPool,
+    project_id: i64,
+    jobs: Vec<WorkflowVideoJob>,
+    concurrent_count: usize,
+    node_run_id: i64,
+) -> WorkflowVideoSummary {
+    let mut summary = WorkflowVideoSummary {
+        total: jobs.len(),
+        video_ids: jobs.iter().map(|job| job.id).collect(),
+        ..Default::default()
+    };
+    let concurrency = concurrent_count.clamp(1, 10);
+    let mut pending = jobs.into_iter();
+    let mut running = JoinSet::new();
+    loop {
+        while running.len() < concurrency {
+            let Some(job) = pending.next() else { break };
+            let pool = pool.clone();
+            running.spawn(async move {
+                let prompt = if job.prompt.trim().is_empty() {
+                    match create_prompt(&pool, job.track_id, project_id, &job.model, &job.mode).await {
+                        Ok(prompt) => prompt,
+                        Err(reason) => {
+                            let _ = sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason=$2 WHERE id=$1")
+                                .bind(job.id).bind(reason).execute(&pool).await;
+                            return false;
+                        }
+                    }
+                } else {
+                    job.prompt.clone()
+                };
+                let payload = json!({
+                    "prompt": prompt,
+                    "mode": job.mode,
+                    "resolution": job.resolution,
+                    "duration": job.duration,
+                    "audio": job.audio,
+                    "aspect_ratio": job.ratio,
+                    "references": job.references,
+                });
+                match ai_client::video(&pool, &job.model, payload).await {
+                    Ok(url) => {
+                        let _ = sqlx::query("UPDATE toonflow.videos SET file_path=$2,state='生成成功',error_reason=NULL WHERE id=$1 AND state='生成中'")
+                            .bind(job.id).bind(url).execute(&pool).await;
+                        true
+                    }
+                    Err(reason) => {
+                        let _ = sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason=$2 WHERE id=$1 AND state='生成中'")
+                            .bind(job.id).bind(reason).execute(&pool).await;
+                        false
+                    }
+                }
+            });
+        }
+        let Some(result) = running.join_next().await else {
+            break;
+        };
+        if result.unwrap_or(false) {
+            summary.succeeded += 1;
+        } else {
+            summary.failed += 1;
+        }
+        let completed = summary.succeeded + summary.failed;
+        let _ = sqlx::query("UPDATE toonflow.workflow_node_runs SET progress_current=$2 WHERE id=$1 AND state='running'")
+            .bind(node_run_id).bind(completed as i32).execute(&pool).await;
+    }
+    summary
 }
 
 pub async fn generate_video(

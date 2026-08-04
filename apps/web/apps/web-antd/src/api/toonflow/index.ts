@@ -241,18 +241,10 @@ export function getAssets(projectId: number) {
   });
 }
 
-export function getAssetLibrary(projectId?: number) {
+export function getAssetLibrary(projectId: number) {
   return requestClient.post<ToonflowApi.LibraryAsset[]>('/toonflow/assets/library', {
     projectId,
   });
-}
-
-export function linkProjectAsset(projectId: number, assetId: number) {
-  return requestClient.post('/toonflow/assets/link', { projectId, assetId });
-}
-
-export function unlinkProjectAsset(projectId: number, assetId: number) {
-  return requestClient.post('/toonflow/assets/unlink', { projectId, assetId });
 }
 
 export function saveAsset(data: Partial<ToonflowApi.Asset> & { name: string; projectId: number }) {
@@ -271,6 +263,142 @@ export function saveFlowData(projectId: number, episodesId: number, data: Record
     projectId,
     episodesId,
     data,
+  });
+}
+
+export function validateWorkflow(workflow: Record<string, any>) {
+  return requestClient.post<{ executionOrder: string[]; valid: boolean }>(
+    '/toonflow/production/validateWorkflow',
+    { workflow },
+  );
+}
+
+export function createWorkflowRun(data: {
+  autoStart?: boolean;
+  input?: Record<string, any>;
+  projectId: number;
+  scriptId: number;
+  triggerType?: string;
+}) {
+  return requestClient.post<{
+    definitionVersion: number;
+    id: number;
+    nodeCount: number;
+    state: string;
+  }>('/toonflow/production/workflowRuns', data);
+}
+
+export interface WorkflowRunDetail {
+  createTime: number;
+  definitionVersion: number;
+  errorReason?: string;
+  finishTime?: number;
+  id: number;
+  input: Record<string, any>;
+  nodes: WorkflowNodeRun[];
+  output?: Record<string, any>;
+  startTime?: number;
+  state: string;
+  triggerType: string;
+}
+
+export function getWorkflowRun(id: number) {
+  return requestClient.post<WorkflowRunDetail>(
+    '/toonflow/production/workflowRuns/state',
+    { id },
+  );
+}
+
+export function cancelWorkflowRun(id: number) {
+  return requestClient.post<{ id: number; state: string }>(
+    '/toonflow/production/workflowRuns/cancel',
+    { id },
+  );
+}
+
+export interface WorkflowNodeRun {
+  attempt: number;
+  createTime: number;
+  errorReason?: string;
+  finishTime?: number;
+  id: number;
+  input: Record<string, any>;
+  nodeId: string;
+  nodeType: string;
+  output?: Record<string, any>;
+  progressCurrent: number;
+  progressTotal: number;
+  retryOfId?: number;
+  startTime?: number;
+  state: string;
+  workflowRunId: number;
+}
+
+export function startWorkflowNode(data: {
+  input: Record<string, any>;
+  nodeId: string;
+  workflowRunId: number;
+}) {
+  return requestClient.post<{
+    id: number;
+    nodeId: string;
+    progressCurrent: number;
+    progressTotal: number;
+    state: string;
+    workflowRunId: number;
+  }>('/toonflow/production/workflowNodeRuns/start', data);
+}
+
+export function getWorkflowNodeRun(id: number) {
+  return requestClient.post<WorkflowNodeRun>(
+    '/toonflow/production/workflowNodeRuns/state',
+    { id },
+  );
+}
+
+export function getLatestWorkflowNodeRun(
+  projectId: number,
+  scriptId: number,
+  nodeId: string,
+) {
+  return requestClient.get<null | WorkflowNodeRun>(
+    '/toonflow/production/workflowNodeRuns/latest',
+    { params: { nodeId, projectId, scriptId } },
+  );
+}
+
+export function cancelWorkflowNodeRun(id: number) {
+  return requestClient.post<{ id: number; state: string }>(
+    '/toonflow/production/workflowNodeRuns/cancel',
+    { id },
+  );
+}
+
+export function retryWorkflowNodeRun(id: number) {
+  return requestClient.post<{
+    id: number;
+    nodeId: string;
+    progressCurrent: number;
+    progressTotal: number;
+    state: string;
+    workflowRunId: number;
+  }>('/toonflow/production/workflowNodeRuns/retry', { id });
+}
+
+export function getWorkflowRuns(projectId: number, scriptId: number) {
+  return requestClient.get<
+    Array<{
+      createTime: number;
+      definitionVersion: number;
+      errorReason?: string;
+      finishTime?: number;
+      id: number;
+      startTime?: number;
+      state: string;
+      triggerType: string;
+    }>
+  >('/toonflow/production/workflowRuns', {
+    params: { projectId, scriptId },
   });
 }
 

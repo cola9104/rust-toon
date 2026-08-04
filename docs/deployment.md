@@ -4,6 +4,16 @@ AI 编码助手接手项目时应先阅读仓库根目录的 [AI 启动交接指
 
 ## 本地开发方案
 
+推荐使用仓库启动脚本：
+
+```bash
+bash script/start-local.sh infra    # 仅 PostgreSQL、Redis、NATS、MinIO
+bash script/start-local.sh backend  # 基础设施 + 前台网关
+bash script/start-local.sh all      # 基础设施 + 网关 + 前端
+```
+
+脚本只为本地开发提供默认密码。生产环境不得使用其中的默认密钥。
+
 1. 执行 `docker compose -f script/docker/docker-compose.yml up -d`。
 2. 按 [配置文档](configuration.md) 导出数据库、JWT 和管理员环境变量。
 3. 执行 `cargo run -p rust-toon-gateway`（首次启动自动初始化数据库并执行全部迁移）。
@@ -38,7 +48,18 @@ cargo build --release -p rust-toon-gateway
 7. 管理员创建后，从环境文件移除 `BOOTSTRAP_ADMIN_PASSWORD`。
 8. 使用 systemd、Docker 或 Kubernetes 托管网关进程。
 
-systemd 示例：
+仓库已提供可直接安装的 systemd 单元：
+
+```bash
+sudo install -d -m 0750 -o rust-toon -g rust-toon /etc/rust-toon
+sudo install -m 0644 deploy/systemd/rust-toon-gateway.service /etc/systemd/system/
+sudo install -m 0640 deploy/env/gateway.env.example /etc/rust-toon/gateway.env
+sudo editor /etc/rust-toon/gateway.env
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-toon-gateway
+```
+
+等价的核心配置为：
 
 ```ini
 [Unit]
@@ -107,6 +128,72 @@ location /api/ {
 - 已在生产执行的迁移不得修改；后续结构变化应新增更高版本迁移。
 - 本次迁移历史已合并为新的 `0001`，保留旧 `_sqlx_migrations` 记录的数据库需要清空后重建。
 - 正式升级前必须备份数据库，并先在备份副本验证升级。
+
+## 数据库备份与恢复
+
+### 手动备份
+
+服务器需要安装与 PostgreSQL 服务端主版本兼容的 `pg_dump`、`pg_restore` 和 `sha256sum`。
+
+```bash
+set -a
+. /etc/rust-toon/backup.env
+set +a
+/opt/rust-toon/script/database/backup-postgres.sh
+```
+
+备份脚本具有以下行为：
+
+- 使用 PostgreSQL custom format，支持并行恢复和对象级检查；
+- 先写入 `.partial` 文件，`pg_restore --list` 成功后才原子改名；
+- 为每个 dump 生成 `.sha256` 校验文件；
+- 默认保留 14 天，可通过 `BACKUP_RETENTION_DAYS` 调整；
+- 不备份运行中的 PostgreSQL 数据目录，不依赖 Docker volume 路径。
+
+### 自动备份
+
+```bash
+sudo install -d -m 0700 -o rust-toon -g rust-toon /var/backups/rust-toon/postgresql
+sudo install -m 0640 deploy/env/backup.env.example /etc/rust-toon/backup.env
+sudo editor /etc/rust-toon/backup.env
+sudo install -m 0644 deploy/systemd/rust-toon-postgres-backup.service /etc/systemd/system/
+sudo install -m 0644 deploy/systemd/rust-toon-postgres-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-toon-postgres-backup.timer
+sudo systemctl start rust-toon-postgres-backup.service
+sudo systemctl status rust-toon-postgres-backup.service
+sudo systemctl list-timers rust-toon-postgres-backup.timer
+```
+
+timer 默认每天 03:15 执行，并有最多 15 分钟随机延迟。至少把一份备份同步到服务器之外的对象存储，并对异地副本配置独立保留策略。
+
+### 恢复与演练
+
+恢复会清理目标数据库中的同名对象，必须显式传入 `--confirm`。恢复前停止网关，避免恢复期间产生新写入：
+
+```bash
+sudo systemctl stop rust-toon-gateway
+set -a
+. /etc/rust-toon/backup.env
+set +a
+/opt/rust-toon/script/database/restore-postgres.sh \
+  --backup /var/backups/rust-toon/postgresql/rust-toon-YYYYMMDDTHHMMSSZ.dump \
+  --confirm
+sudo systemctl start rust-toon-gateway
+curl -fsS http://127.0.0.1:8080/health
+```
+
+推荐每月至少在临时数据库执行一次恢复演练，检查 `_sqlx_migrations`、管理员登录、项目数量和资产记录。`sql/bootstrap/current.sql` 是开发比对快照，不是生产备份，不能替代上述 dump。
+
+数据库只保存 MinIO 对象键和元数据，图片、音频、视频等文件本体位于 MinIO。完整灾备必须同时备份 MinIO bucket（例如用 `mc mirror` 同步到异地对象存储），并确保数据库与对象备份的时间窗口一致。
+
+### 升级顺序
+
+1. 创建并校验数据库备份，同时完成 MinIO 增量同步。
+2. 在备份副本上恢复并运行新版本网关，验证迁移。
+3. 停止生产网关，执行最后一次备份。
+4. 部署新二进制并启动；网关在监听端口前自动执行 SQLx 迁移。
+5. 验证 `/health`、登录、项目和任务状态后再恢复外部流量。
 
 ## 首次管理员
 

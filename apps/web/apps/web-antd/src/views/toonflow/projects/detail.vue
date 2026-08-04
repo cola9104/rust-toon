@@ -1,5 +1,6 @@
 <script lang="ts" setup>
-import type { ToonflowApi } from '#/api/toonflow';
+import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
+import type { ProductionWorkflowDefinition } from './production-workflow';
 
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -37,7 +38,10 @@ import {
   batchDeleteStoryboards,
   batchGenerateVideoPrompts,
   batchGenerateVideos,
+  cancelWorkflowRun,
+  cancelWorkflowNodeRun,
   clearAgentMemory,
+  createWorkflowRun,
   deleteNovel,
   deleteScripts,
   deleteTrackVideo,
@@ -49,8 +53,8 @@ import {
   getAssets,
   getFlowData,
   getImageFlow,
+  getLatestWorkflowNodeRun,
   generateFlowImage,
-  generateStoryboardImages,
   generateTrackVideo,
   generateVideoPrompt,
   previewStoryboardImages,
@@ -64,16 +68,20 @@ import {
   getScripts,
   getStoryboards,
   getVideoWorkbench,
+  getWorkflowNodeRun,
+  getWorkflowRun,
   removeStoryboard,
   reorderStoryboards,
   reorderVideoTracks,
   retryTrackVideo,
+  retryWorkflowNodeRun,
   bindTrackStoryboards,
   cancelTrackVideo,
   saveFlowData,
   saveImageFlow,
   saveScriptAgentPlan,
   selectTrackVideo,
+  startWorkflowNode,
   updateNovel,
   updateScript,
   updateStoryboardUrl,
@@ -85,6 +93,7 @@ import { parseNovelText } from './novel-import';
 import AgentChat from './AgentChat.vue';
 import ImageFlowEditor from './ImageFlowEditor.vue';
 import ProductionFlowCanvas from './ProductionFlowCanvas.vue';
+import { normalizeProductionWorkflow } from './production-workflow';
 import { assetFileUrl } from '../assets/asset-types';
 import '../shared/page-card.css';
 
@@ -107,7 +116,7 @@ const videoMode = computed(() =>
     project.value?.mode ?? '',
   )
     ? project.value!.mode
-    : 'text',
+    : 'startEndRequired',
 );
 const statistics = reactive<ToonflowApi.ProjectStatistics>({ roleCount: 0, scriptCount: 0, videoCount: 0, storyboardCount: 0 });
 const novels = ref<ToonflowApi.NovelChapter[]>([]);
@@ -407,6 +416,34 @@ async function loadFlow() {
   storyboards.value = await getStoryboards(projectId.value, selectedScriptId.value);
   const workbench = await getVideoWorkbench(projectId.value, selectedScriptId.value);
   videoTracks.value = workbench.trackList ?? [];
+  const workflow = normalizeProductionWorkflow(flow.workflow);
+  const latestRuns = await Promise.all(
+    workflow.nodes.map((node) =>
+      getLatestWorkflowNodeRun(projectId.value, selectedScriptId.value!, node.id),
+    ),
+  );
+  for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
+  latestRuns.forEach((run, index) => {
+    if (run) workflowNodeRuns[workflow.nodes[index]!.id] = run;
+  });
+  const runningWorkflowNode = latestRuns.find((run) => run?.state === 'running');
+  if (runningWorkflowNode) {
+    scheduleWorkflowRunPolling(runningWorkflowNode.workflowRunId);
+  }
+  const latestNodeRun = workflowNodeRuns.storyboard;
+  if (latestNodeRun) {
+    storyboardNodeRunState.value = latestNodeRun.state;
+    storyboardProgressCurrent.value = latestNodeRun.progressCurrent;
+    storyboardProgressTotal.value = latestNodeRun.progressTotal;
+    if (latestNodeRun.state === 'running') {
+      const changedRun = activeStoryboardNodeRunId.value !== latestNodeRun.id;
+      activeStoryboardNodeRunId.value = latestNodeRun.id;
+      storyboardBusy.value = true;
+      if (changedRun) scheduleStoryboardPolling();
+    } else if (['cancelled', 'failed'].includes(latestNodeRun.state)) {
+      lastStoryboardNodeRunId.value = latestNodeRun.id;
+    }
+  }
 }
 
 let productionAssetRefreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -705,6 +742,22 @@ function persistFlowObject(data: Record<string, any>) {
 function saveProductionCanvasPositions(positions: Record<string, { x: number; y: number }>) {
   const data = flowObject();
   data.canvas = { ...(data.canvas || {}), layoutVersion: 7, positions };
+  const workflow = normalizeProductionWorkflow(data.workflow);
+  workflow.nodes = workflow.nodes.map((node) => ({
+    ...node,
+    position: positions[node.id] ?? node.position,
+  }));
+  data.workflow = workflow;
+  persistFlowObject(data);
+}
+function saveProductionWorkflow(workflow: ProductionWorkflowDefinition) {
+  const data = flowObject();
+  data.workflow = workflow;
+  data.canvas = {
+    ...(data.canvas || {}),
+    layoutVersion: 7,
+    positions: Object.fromEntries(workflow.nodes.map((node) => [node.id, node.position])),
+  };
   persistFlowObject(data);
 }
 function updateProductionFlowSection(key: 'scriptPlan' | 'storyboardTable', value: string) {
@@ -1143,6 +1196,12 @@ async function deleteStoryboard(row: any) {
 }
 
 const storyboardBusy = ref(false);
+const activeStoryboardNodeRunId = ref<number>();
+const lastStoryboardNodeRunId = ref<number>();
+const storyboardNodeRunState = ref('');
+const storyboardProgressCurrent = ref(0);
+const storyboardProgressTotal = ref(0);
+const workflowNodeRuns = reactive<Record<string, WorkflowNodeRun>>({});
 let storyboardPollTimer: ReturnType<typeof setTimeout> | undefined;
 let storyboardPollAttempts = 0;
 
@@ -1153,39 +1212,269 @@ function scheduleStoryboardPolling() {
     const generatingIds = storyboards.value
       .filter((item) => item.state === '生成中')
       .map((item) => item.id);
-    if (generatingIds.length === 0 || storyboardPollAttempts >= 90) {
+    if (
+      generatingIds.length === 0 &&
+      !activeStoryboardNodeRunId.value
+    ) {
       storyboardBusy.value = false;
       return;
     }
+    if (storyboardPollAttempts >= 90) {
+      storyboardBusy.value = false;
+      message.warning('分镜生成仍在后台运行，请稍后刷新查看');
+      return;
+    }
     try {
-      const completed = await pollStoryboardImages(generatingIds);
-      const updates = new Map(completed.map((item) => [item.id, item]));
-      storyboards.value = storyboards.value.map((item) =>
-        updates.has(item.id) ? { ...item, ...updates.get(item.id) } : item,
-      );
+      if (generatingIds.length > 0) {
+        const completed = await pollStoryboardImages(generatingIds);
+        const updates = new Map(completed.map((item) => [item.id, item]));
+        storyboards.value = storyboards.value.map((item) =>
+          updates.has(item.id) ? { ...item, ...updates.get(item.id) } : item,
+        );
+      }
+      if (activeStoryboardNodeRunId.value) {
+        const nodeRun = await getWorkflowNodeRun(activeStoryboardNodeRunId.value);
+        workflowNodeRuns.storyboard = nodeRun;
+        storyboardNodeRunState.value = nodeRun.state;
+        storyboardProgressCurrent.value = nodeRun.progressCurrent;
+        storyboardProgressTotal.value = nodeRun.progressTotal;
+        if (['cancelled', 'failed', 'success'].includes(nodeRun.state)) {
+          lastStoryboardNodeRunId.value = nodeRun.id;
+          activeStoryboardNodeRunId.value = undefined;
+          storyboardBusy.value = false;
+          if (nodeRun.state === 'failed') {
+            message.error(nodeRun.errorReason || '部分分镜图片生成失败，可点击重试失败项');
+          } else if (nodeRun.state === 'success') {
+            message.success('分镜图片生成完成');
+          }
+        }
+      }
     } finally {
       storyboardPollAttempts += 1;
-      storyboardPollTimer = setTimeout(refresh, 2000);
+      if (storyboardBusy.value || activeStoryboardNodeRunId.value) {
+        storyboardPollTimer = setTimeout(refresh, 2000);
+      }
     }
   };
   storyboardPollTimer = setTimeout(refresh, 1200);
 }
 
-async function generateStoryboards(ids: number[], compulsory = false) {
+async function generateStoryboards(ids: number[], compulsory = false, concurrentCount = 5) {
   if (!selectedScriptId.value || ids.length === 0) return message.warning('请先选择需要生成的分镜');
   storyboardBusy.value = true;
   try {
-    await generateStoryboardImages({
-      storyboardIds: ids,
+    const flow = flowObject();
+    await saveFlowData(projectId.value, selectedScriptId.value, flow);
+    const workflowRun = await createWorkflowRun({
       projectId: projectId.value,
       scriptId: selectedScriptId.value,
-      concurrentCount: 5,
-      compulsory,
+      triggerType: 'manual',
+      input: { requestedNodeId: 'storyboard' },
     });
+    const nodeRun = await startWorkflowNode({
+      workflowRunId: workflowRun.id,
+      nodeId: 'storyboard',
+      input: {
+        storyboardIds: ids,
+        concurrentCount: Math.max(1, Math.min(10, concurrentCount)),
+        compulsory,
+      },
+    });
+    activeStoryboardNodeRunId.value = nodeRun.id;
+    lastStoryboardNodeRunId.value = nodeRun.id;
+    storyboardNodeRunState.value = nodeRun.state;
+    storyboardProgressCurrent.value = nodeRun.progressCurrent;
+    storyboardProgressTotal.value = nodeRun.progressTotal;
+    workflowNodeRuns.storyboard = await getWorkflowNodeRun(nodeRun.id);
     storyboards.value = storyboards.value.map((item) =>
       ids.includes(item.id) ? { ...item, reason: undefined, state: '生成中' } : item,
     );
-    message.success(`已提交 ${ids.length} 个分镜生成任务`);
+    message.success(`已提交 ${nodeRun.progressTotal} 个分镜生成任务`);
+    scheduleStoryboardPolling();
+  } catch (error) {
+    storyboardBusy.value = false;
+    throw error;
+  }
+}
+
+const workflowSequenceBusy = ref(false);
+let workflowRunPollTimer: ReturnType<typeof setTimeout> | undefined;
+let observedWorkflowRunId: number | undefined;
+
+function applyWorkflowRunNodes(nodes: WorkflowNodeRun[]) {
+  for (const nodeRun of nodes) {
+    workflowNodeRuns[nodeRun.nodeId] = nodeRun;
+  }
+  const storyboardRun = nodes.find((node) => node.nodeId === 'storyboard');
+  if (storyboardRun) {
+    storyboardNodeRunState.value = storyboardRun.state;
+    storyboardProgressCurrent.value = storyboardRun.progressCurrent;
+    storyboardProgressTotal.value = storyboardRun.progressTotal;
+    storyboardBusy.value = storyboardRun.state === 'running';
+    if (storyboardRun.state === 'running') {
+      activeStoryboardNodeRunId.value = storyboardRun.id;
+    } else {
+      activeStoryboardNodeRunId.value = undefined;
+    }
+  }
+}
+
+function scheduleWorkflowRunPolling(workflowRunId: number) {
+  if (observedWorkflowRunId === workflowRunId && workflowRunPollTimer) return;
+  if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
+  observedWorkflowRunId = workflowRunId;
+  const refresh = async () => {
+    try {
+      const run = await getWorkflowRun(workflowRunId);
+      applyWorkflowRunNodes(run.nodes);
+      if (['success', 'failed', 'cancelled'].includes(run.state)) {
+        workflowRunPollTimer = undefined;
+        observedWorkflowRunId = undefined;
+        workflowSequenceBusy.value = false;
+        await loadFlow();
+        return;
+      }
+    } catch {
+      // A transient request failure must not stop the backend workflow.
+    }
+    workflowRunPollTimer = setTimeout(refresh, 1500);
+  };
+  workflowRunPollTimer = setTimeout(refresh, 500);
+}
+
+async function waitForWorkflowNode(nodeId: string, nodeRunId: number) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
+    const nodeRun = await getWorkflowNodeRun(nodeRunId);
+    workflowNodeRuns[nodeId] = nodeRun;
+    if (['cancelled', 'failed', 'success'].includes(nodeRun.state)) return nodeRun;
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+  }
+  throw new Error('节点运行超时，任务可能仍在后台执行');
+}
+
+async function waitForWorkflowRun(workflowRunId: number) {
+  for (let attempt = 0; attempt < 1200; attempt += 1) {
+    const run = await getWorkflowRun(workflowRunId);
+    applyWorkflowRunNodes(run.nodes);
+    if (['success', 'failed', 'cancelled'].includes(run.state)) return run;
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+  }
+  throw new Error('前端等待超时，工作流仍会在后端继续运行');
+}
+
+async function runProductionWorkflowSequence(
+  nodeIds: string[],
+  overrides: Record<string, Record<string, unknown>> = {},
+) {
+  if (!selectedScriptId.value || nodeIds.length === 0 || workflowSequenceBusy.value) return;
+  workflowSequenceBusy.value = true;
+  try {
+    const data = flowObject();
+    const workflow = normalizeProductionWorkflow(data.workflow);
+    const selectedIds = nodeIds.filter((id) => workflow.nodes.some((node) => node.id === id));
+    await saveFlowData(projectId.value, selectedScriptId.value, data);
+    const nodeInputs = Object.fromEntries(
+      selectedIds.map((nodeId) => {
+        const node = workflow.nodes.find((item) => item.id === nodeId)!;
+        return [nodeId, { ...node.config, ...(overrides[nodeId] ?? {}) }];
+      }),
+    );
+    const workflowRun = await createWorkflowRun({
+      autoStart: true,
+      projectId: projectId.value,
+      scriptId: selectedScriptId.value,
+      triggerType: selectedIds.length > 1 ? 'server-sequence' : 'server-node',
+      input: { nodeInputs, requestedNodeIds: selectedIds },
+    });
+    scheduleWorkflowRunPolling(workflowRun.id);
+    const finished = await waitForWorkflowRun(workflowRun.id);
+    if (workflowRunPollTimer) {
+      clearTimeout(workflowRunPollTimer);
+      workflowRunPollTimer = undefined;
+    }
+    observedWorkflowRunId = undefined;
+    if (finished.state === 'cancelled') {
+      message.info('工作流已取消');
+      await loadFlow();
+      return;
+    }
+    if (finished.state !== 'success') {
+      throw new Error(finished.errorReason || '工作流执行失败');
+    }
+    await loadFlow();
+    message.success(selectedIds.length > 1 ? '工作流序列执行完成' : '节点执行完成');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '工作流执行失败');
+  } finally {
+    workflowSequenceBusy.value = false;
+  }
+}
+
+async function runProductionWorkflowNode(
+  nodeId: string,
+  config: Record<string, unknown>,
+) {
+  await runProductionWorkflowSequence([nodeId], { [nodeId]: config });
+}
+
+async function cancelProductionWorkflowNode(nodeId: string) {
+  const nodeRun = workflowNodeRuns[nodeId];
+  if (!nodeRun || nodeRun.state !== 'running') return;
+  await cancelWorkflowRun(nodeRun.workflowRunId);
+  const run = await getWorkflowRun(nodeRun.workflowRunId);
+  applyWorkflowRunNodes(run.nodes);
+  if (nodeId === 'storyboard') {
+    activeStoryboardNodeRunId.value = undefined;
+    storyboardBusy.value = false;
+  }
+  message.success('工作流已取消');
+}
+
+async function retryProductionWorkflowNode(nodeId: string) {
+  const source = workflowNodeRuns[nodeId];
+  if (!source || !['cancelled', 'failed'].includes(source.state)) return;
+  const started = await retryWorkflowNodeRun(source.id);
+  workflowNodeRuns[nodeId] = await getWorkflowNodeRun(started.id);
+  const finished = await waitForWorkflowNode(nodeId, started.id);
+  await loadFlow();
+  if (finished.state === 'success') message.success('节点重试成功');
+  else message.error(finished.errorReason || '节点重试失败');
+}
+
+async function cancelStoryboardWorkflow() {
+  if (!activeStoryboardNodeRunId.value) return;
+  await cancelWorkflowNodeRun(activeStoryboardNodeRunId.value);
+  if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
+  storyboards.value = storyboards.value.map((item) =>
+    item.state === '生成中'
+      ? { ...item, reason: '用户取消生成', state: '已取消' }
+      : item,
+  );
+  lastStoryboardNodeRunId.value = activeStoryboardNodeRunId.value;
+  activeStoryboardNodeRunId.value = undefined;
+  storyboardNodeRunState.value = 'cancelled';
+  workflowNodeRuns.storyboard = await getWorkflowNodeRun(lastStoryboardNodeRunId.value);
+  storyboardBusy.value = false;
+  message.success('已取消分镜图片生成');
+}
+
+async function retryStoryboardWorkflow() {
+  if (!lastStoryboardNodeRunId.value) return;
+  storyboardBusy.value = true;
+  try {
+    const nodeRun = await retryWorkflowNodeRun(lastStoryboardNodeRunId.value);
+    activeStoryboardNodeRunId.value = nodeRun.id;
+    lastStoryboardNodeRunId.value = nodeRun.id;
+    storyboardNodeRunState.value = nodeRun.state;
+    storyboardProgressCurrent.value = nodeRun.progressCurrent;
+    storyboardProgressTotal.value = nodeRun.progressTotal;
+    workflowNodeRuns.storyboard = await getWorkflowNodeRun(nodeRun.id);
+    storyboards.value = storyboards.value.map((item) =>
+      ['已取消', '生成失败'].includes(item.state || '')
+        ? { ...item, reason: undefined, state: '生成中' }
+        : item,
+    );
+    message.success(`正在重试 ${nodeRun.progressTotal} 个失败分镜`);
     scheduleStoryboardPolling();
   } catch (error) {
     storyboardBusy.value = false;
@@ -1310,6 +1599,9 @@ async function retryVideo(video:any,track:any){if(!project.value?.videoModel)ret
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
 watch(selectedScriptId, () => {
+  if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
+  workflowRunPollTimer = undefined;
+  observedWorkflowRunId = undefined;
   if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
   productionAgentSyncTimer = undefined;
   productionAgentActivity.value = '等待指令';
@@ -1325,6 +1617,7 @@ watch(activeTab, (tab) => {
 
 onMounted(loadAll);
 onBeforeUnmount(() => {
+  if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
   if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
   if (videoPollTimer) clearTimeout(videoPollTimer);
@@ -1344,7 +1637,7 @@ watch(projectId, () => loadAll());
         <Space>
           <Button @click="router.back()">返回</Button>
           <Typography.Text strong>{{ project?.name || '项目详情' }}</Typography.Text>
-          <Tag>{{ project?.videoRatio || '9:16' }}</Tag>
+          <Tag>{{ project?.videoRatio || '16:9' }}</Tag>
         </Space>
       </template>
       <template #extra>
@@ -1471,7 +1764,7 @@ watch(projectId, () => loadAll());
                 <Button @click="loadFlow">刷新制作数据</Button>
                 <Button type="primary" @click="saveFlowText">保存分镜工作区</Button>
                 <Button @click="openStoryboard()">新增分镜</Button>
-                <Button type="primary" @click="generateAllStoryboardImages">批量生成分镜图</Button>
+                <Button type="primary" :disabled="storyboardBusy" @click="generateAllStoryboardImages">批量生成分镜图</Button>
                 <Button @click="previewAllStoryboardImages">合成预览</Button>
                 <Button v-if="productionAgentCollapsed" @click="productionAgentCollapsed = false">展开 Agent</Button>
               </Space>
@@ -1479,14 +1772,22 @@ watch(projectId, () => loadAll());
                 ref="productionFlowCanvasRef"
                 :assets="productionAssets"
                 :flow-text="flowText"
+                :image-model="project?.imageModel"
+                :image-quality="imageQuality"
                 :script="selectedScript"
                 :storyboard-busy="storyboardBusy"
+                :storyboard-progress-current="storyboardProgressCurrent"
+                :storyboard-progress-total="storyboardProgressTotal"
+                :storyboard-run-state="storyboardNodeRunState"
                 :storyboards="storyboards"
                 :video-mode="videoMode"
                 :video-model="project?.videoModel"
                 :video-ratio="project?.videoRatio"
                 :video-tracks="videoTracks"
+                :workflow-node-runs="workflowNodeRuns"
+                @cancel-node="cancelProductionWorkflowNode"
                 @cancel-track-video="cancelVideo"
+                @cancel-storyboards="cancelStoryboardWorkflow"
                 @delete-track-video="removeVideo"
                 @batch-delete-storyboards="batchDeleteSelectedStoryboards"
                 @edit-asset="openAssetImageFlow"
@@ -1500,9 +1801,14 @@ watch(projectId, () => loadAll());
                 @insert-storyboard-after="beginInsertStoryboard"
                 @open-video-track="openVideoTrack"
                 @retry-track-video="retryVideo"
+                @retry-storyboards="retryStoryboardWorkflow"
+                @retry-node="retryProductionWorkflowNode"
+                @run-node="runProductionWorkflowNode"
+                @run-sequence="runProductionWorkflowSequence"
                 @remove-storyboard="deleteStoryboard"
                 @reorder-storyboards="saveStoryboardOrder"
                 @save-positions="saveProductionCanvasPositions"
+                @save-workflow="saveProductionWorkflow"
                 @save-video-prompt="saveTrackPrompt"
                 @select-track-video="chooseVideo"
                 @update-flow-section="updateProductionFlowSection"

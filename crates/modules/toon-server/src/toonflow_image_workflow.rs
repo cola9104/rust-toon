@@ -7,6 +7,7 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio::task::JoinSet;
 
 async fn normalize_image_references(references: Vec<String>) -> Result<Vec<String>, String> {
     let mut normalized = Vec::with_capacity(references.len());
@@ -217,14 +218,26 @@ pub struct StoryboardGenerate {
     compulsory: Option<bool>,
 }
 
-pub async fn schedule_storyboard_generation(
+#[derive(Clone)]
+pub(crate) struct StoryboardImageJob {
+    id: i64,
+    prompt: String,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct StoryboardGenerationSummary {
+    pub total: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+}
+
+pub(crate) async fn prepare_storyboard_generation(
     pool: &sqlx::PgPool,
     project_id: i64,
     script_id: i64,
     storyboard_ids: &[i64],
-    concurrent_count: usize,
     compulsory: bool,
-) -> Result<Vec<Value>, AppError> {
+) -> Result<(Vec<Value>, Vec<StoryboardImageJob>), AppError> {
     if storyboard_ids.is_empty() {
         return Err(AppError::bad_request("storyboardIds不能为空"));
     }
@@ -237,91 +250,188 @@ pub async fn schedule_storyboard_generation(
     if rows.is_empty() {
         return Err(AppError::not_found("未查到分镜数据"));
     }
-    let ids = rows
+    let jobs = rows
         .iter()
         .filter(|row| compulsory || row.2 != 0)
-        .map(|row| row.0)
+        .map(|row| StoryboardImageJob {
+            id: row.0,
+            prompt: row.1.clone(),
+        })
         .collect::<Vec<_>>();
+    let ids = jobs.iter().map(|job| job.id).collect::<Vec<_>>();
     sqlx::query("UPDATE toonflow.storyboards SET state='生成中',reason=NULL WHERE id=ANY($1)")
         .bind(&ids)
         .execute(pool)
         .await
         .map_err(|_| AppError::internal("failed to start storyboards"))?;
     let response=rows.iter().map(|row|json!({"id":row.0,"prompt":row.1,"state":if ids.contains(&row.0){"生成中"}else{"未生成"},"shouldGenerateImage":row.2})).collect();
+    Ok((response, jobs))
+}
+
+async fn generate_storyboard_job(
+    pool: sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    model: String,
+    quality: String,
+    ratio: String,
+    job: StoryboardImageJob,
+) -> bool {
+    let reference_paths = crate::toonflow_asset_context::load_storyboard_asset_references(
+        &pool, project_id, script_id, job.id,
+    )
+    .await
+    .unwrap_or_default();
+    let references = match normalize_image_references(reference_paths).await {
+        Ok(references) => references,
+        Err(reason) => {
+            let reason = format!("分镜参考资产读取失败：{reason}");
+            let _ = sqlx::query(
+                "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+            )
+            .bind(job.id)
+            .bind(reason)
+            .execute(&pool)
+            .await;
+            return false;
+        }
+    };
+    if let Err(reason) = validate_storyboard_prompt(&job.prompt, references.len()) {
+        let _ =
+            sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1")
+                .bind(job.id)
+                .bind(reason)
+                .execute(&pool)
+                .await;
+        return false;
+    }
+    match ai_client::image_with_references(
+        &pool,
+        &model,
+        &job.prompt,
+        &storyboard_image_size(&quality, &ratio),
+        references,
+    )
+    .await
+    {
+        Ok(url) => {
+            let _=sqlx::query("UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL WHERE id=$1").bind(job.id).bind(url).execute(&pool).await;
+            true
+        }
+        Err(reason) => {
+            let _ = sqlx::query(
+                "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+            )
+            .bind(job.id)
+            .bind(reason)
+            .execute(&pool)
+            .await;
+            false
+        }
+    }
+}
+
+pub(crate) async fn run_storyboard_generation(
+    pool: sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    jobs: Vec<StoryboardImageJob>,
+    concurrent_count: usize,
+    workflow_node_run_id: Option<i64>,
+) -> StoryboardGenerationSummary {
+    let mut summary = StoryboardGenerationSummary {
+        total: jobs.len(),
+        ..Default::default()
+    };
+    let setting: Option<(Option<i64>, String, String)> = sqlx::query_as(
+        "SELECT image_model,image_quality,video_ratio FROM toonflow.projects WHERE id=$1",
+    )
+    .bind(project_id)
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten();
+    let Some((Some(model), quality, ratio)) = setting else {
+        let ids = jobs.iter().map(|job| job.id).collect::<Vec<_>>();
+        let _ = sqlx::query(
+            "UPDATE toonflow.storyboards SET state='生成失败',reason='项目未配置图片模型'
+             WHERE id=ANY($1)",
+        )
+        .bind(&ids)
+        .execute(&pool)
+        .await;
+        summary.failed = summary.total;
+        if let Some(node_run_id) = workflow_node_run_id {
+            let _ = sqlx::query(
+                "UPDATE toonflow.workflow_node_runs SET progress_current=$2 WHERE id=$1",
+            )
+            .bind(node_run_id)
+            .bind(summary.total as i32)
+            .execute(&pool)
+            .await;
+        }
+        return summary;
+    };
+    let concurrency = concurrent_count.clamp(1, 10);
+    let mut jobs = jobs.into_iter();
+    let mut running = JoinSet::new();
+    for _ in 0..concurrency {
+        let Some(job) = jobs.next() else { break };
+        running.spawn(generate_storyboard_job(
+            pool.clone(),
+            project_id,
+            script_id,
+            model.to_string(),
+            quality.clone(),
+            ratio.clone(),
+            job,
+        ));
+    }
+    while let Some(result) = running.join_next().await {
+        match result {
+            Ok(true) => summary.succeeded += 1,
+            Ok(false) | Err(_) => summary.failed += 1,
+        }
+        if let Some(node_run_id) = workflow_node_run_id {
+            let _ = sqlx::query(
+                "UPDATE toonflow.workflow_node_runs
+                 SET progress_current=LEAST(progress_current+1,progress_total) WHERE id=$1",
+            )
+            .bind(node_run_id)
+            .execute(&pool)
+            .await;
+        }
+        if let Some(job) = jobs.next() {
+            running.spawn(generate_storyboard_job(
+                pool.clone(),
+                project_id,
+                script_id,
+                model.to_string(),
+                quality.clone(),
+                ratio.clone(),
+                job,
+            ));
+        }
+    }
+    summary
+}
+
+pub async fn schedule_storyboard_generation(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    storyboard_ids: &[i64],
+    concurrent_count: usize,
+    compulsory: bool,
+) -> Result<Vec<Value>, AppError> {
+    let (response, jobs) =
+        prepare_storyboard_generation(pool, project_id, script_id, storyboard_ids, compulsory)
+            .await?;
     let pool = pool.clone();
     tokio::spawn(async move {
-        let setting: Option<(Option<i64>, String, String)> = sqlx::query_as(
-            "SELECT image_model,image_quality,video_ratio FROM toonflow.projects WHERE id=$1",
-        )
-        .bind(project_id)
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten();
-        let Some((Some(model), quality, ratio)) = setting else {
-            return;
-        };
-        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_count.clamp(1, 10)));
-        for (id, prompt, should) in rows {
-            if !compulsory && should == 0 {
-                continue;
-            }
-            let permit = sem.clone().acquire_owned().await;
-            let pool = pool.clone();
-            let model = model.to_string();
-            let quality = quality.clone();
-            let ratio = ratio.clone();
-            tokio::spawn(async move {
-                if permit.is_ok() {
-                    let reference_paths =
-                        crate::toonflow_asset_context::load_storyboard_asset_references(
-                            &pool, project_id, script_id, id,
-                        )
-                        .await
-                        .unwrap_or_default();
-                    let references = match normalize_image_references(reference_paths).await {
-                        Ok(references) => references,
-                        Err(reason) => {
-                            let reason = format!("分镜参考资产读取失败：{reason}");
-                            let _ = sqlx::query(
-                                "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
-                            )
-                            .bind(id)
-                            .bind(reason)
-                            .execute(&pool)
-                            .await;
-                            return;
-                        }
-                    };
-                    if let Err(reason) = validate_storyboard_prompt(&prompt, references.len()) {
-                        let _ = sqlx::query(
-                            "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
-                        )
-                        .bind(id)
-                        .bind(reason)
-                        .execute(&pool)
-                        .await;
-                        return;
-                    }
-                    match ai_client::image_with_references(
-                        &pool,
-                        &model,
-                        &prompt,
-                        &storyboard_image_size(&quality, &ratio),
-                        references,
-                    )
-                    .await
-                    {
-                        Ok(url) => {
-                            let _=sqlx::query("UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL WHERE id=$1").bind(id).bind(url).execute(&pool).await;
-                        }
-                        Err(reason) => {
-                            let _=sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1").bind(id).bind(reason).execute(&pool).await;
-                        }
-                    }
-                }
-            });
-        }
+        let _ =
+            run_storyboard_generation(pool, project_id, script_id, jobs, concurrent_count, None)
+                .await;
     });
     Ok(response)
 }

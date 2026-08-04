@@ -95,6 +95,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
     schema: useTypeGridFormSchema(),
   },
   gridOptions: {
+    id: 'system-dict-type-grid',
     columns: useTypeGridColumns(),
     height: 'auto',
     keepSource: true,

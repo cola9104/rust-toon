@@ -3,6 +3,9 @@ use rust_toon_framework_web::AppError;
 use uuid::Uuid;
 
 pub fn require(user: &CurrentUser, code: &str) -> Result<(), AppError> {
+    if user.role_codes.iter().any(|role| role == "super_admin") {
+        return Ok(());
+    }
     let permission = Permission::new(code).map_err(|_| AppError::internal("invalid policy"))?;
     if user.can(&permission) {
         Ok(())

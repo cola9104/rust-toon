@@ -69,8 +69,8 @@ const form = reactive<ToonflowApi.SaveProject>({
   type: '短剧',
   artStyle: '',
   directorManual: '',
-  mode: 'text',
-  videoRatio: '9:16',
+  mode: 'startEndRequired',
+  videoRatio: '16:9',
 });
 
 const columns = [
@@ -96,8 +96,8 @@ function resetForm() {
     type: '短剧',
     artStyle: '',
     directorManual: '',
-    mode: 'text',
-    videoRatio: '9:16',
+    mode: 'startEndRequired',
+    videoRatio: '16:9',
   });
 }
 
@@ -137,8 +137,9 @@ function openEdit(project: any) {
     form.imageQuality = '2K';
   }
   if (!videoModeOptions.some((option) => option.value === form.mode)) {
-    form.mode = 'text';
+    form.mode = 'startEndRequired';
   }
+  if (!form.videoRatio) form.videoRatio = '16:9';
   modalOpen.value = true;
 }
 
