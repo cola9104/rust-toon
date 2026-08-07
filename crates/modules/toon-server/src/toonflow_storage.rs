@@ -167,9 +167,7 @@ async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
 }
 
 pub async fn image_data_url(file_path: &str) -> Result<String, String> {
-    let key = file_path
-        .strip_prefix("/toonflow/assets/files/")
-        .ok_or_else(|| "不支持的资产图片路径".to_string())?;
+    let key = asset_image_key(file_path).ok_or_else(|| "不支持的资产图片路径".to_string())?;
     let (stored_content_type, bytes) = read_image(key).await?;
     let content_type = image_content_type(&bytes).ok_or_else(|| {
         format!(
@@ -180,6 +178,17 @@ pub async fn image_data_url(file_path: &str) -> Result<String, String> {
         "data:{content_type};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+pub(crate) fn is_asset_image_path(file_path: &str) -> bool {
+    asset_image_key(file_path).is_some()
+}
+
+fn asset_image_key(file_path: &str) -> Option<&str> {
+    file_path
+        .strip_prefix("/toonflow/assets/files/")
+        .or_else(|| file_path.strip_prefix("/api/toonflow/assets/files/"))
+        .filter(|key| !key.is_empty())
 }
 
 fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
@@ -223,6 +232,23 @@ mod tests {
         assert_eq!(image_content_type(b"GIF89arest"), Some("image/gif"));
         assert_eq!(image_content_type(b"RIFF1234WEBPrest"), Some("image/webp"));
         assert_eq!(image_content_type(b"not-an-image"), None);
+    }
+
+    #[test]
+    fn accepts_asset_paths_with_or_without_api_gateway_prefix() {
+        let key = "toonflow/assets/1/reference.jpg";
+        assert_eq!(
+            asset_image_key(&format!("/toonflow/assets/files/{key}")),
+            Some(key)
+        );
+        assert_eq!(
+            asset_image_key(&format!("/api/toonflow/assets/files/{key}")),
+            Some(key)
+        );
+        assert!(is_asset_image_path(&format!(
+            "/api/toonflow/assets/files/{key}"
+        )));
+        assert_eq!(asset_image_key("/api/toonflow/assets/files/"), None);
     }
 
     #[tokio::test]

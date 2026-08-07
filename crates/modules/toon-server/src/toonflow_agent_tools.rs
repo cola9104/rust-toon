@@ -10,6 +10,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const STORYBOARD_TABLE_AGENT_TOOLS: &[&str] = &["get_flowData", "set_flowData"];
+
 /// Parse event JSON array into readable text
 fn format_events(events_json: &str) -> String {
     if let Ok(arr) = serde_json::from_str::<Vec<Value>>(events_json) {
@@ -27,6 +29,84 @@ fn format_events(events_json: &str) -> String {
     }
 }
 
+#[cfg(test)]
+mod memory_tool_tests {
+    use super::{STORYBOARD_TABLE_AGENT_TOOLS, ToolRequest, memory_isolation_key};
+    use serde_json::json;
+
+    fn request(agent_type: &str, script_id: Option<i64>) -> ToolRequest {
+        ToolRequest {
+            agent_type: agent_type.to_string(),
+            project_id: 101,
+            script_id,
+            tool_name: "deepRetrieve".to_string(),
+            arguments: json!({"keyword":"进度"}),
+            emitter: None,
+        }
+    }
+
+    #[test]
+    fn deep_retrieve_uses_the_same_memory_isolation_as_agent_chat() {
+        assert_eq!(
+            memory_isolation_key(&request("scriptAgent", None)),
+            "scriptAgent:101:project"
+        );
+        assert_eq!(
+            memory_isolation_key(&request("productionAgent", Some(202))),
+            "productionAgent:101:202"
+        );
+        assert_eq!(
+            memory_isolation_key(&request("productionAgent", None)),
+            "productionAgent:101:none"
+        );
+    }
+
+    #[test]
+    fn storyboard_table_agent_can_read_and_persist_its_document() {
+        assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"get_flowData"));
+        assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"set_flowData"));
+    }
+}
+
+#[cfg(test)]
+mod episode_scope_tests {
+    use super::{
+        episode_limit, episode_references, explicit_episode_limit, script_episode_number,
+        validate_generated_script,
+    };
+
+    #[test]
+    fn parses_single_and_ranged_episode_references() {
+        assert_eq!(
+            episode_references("第1集、第4-6集、原著第10章"),
+            vec![1, 4, 6]
+        );
+        assert_eq!(explicit_episode_limit("生成1-3集"), Some(3));
+        assert_eq!(explicit_episode_limit("请编写第1/5集剧本"), Some(5));
+    }
+
+    #[test]
+    fn current_request_can_narrow_the_workspace_scope() {
+        let strategy = "#### 第1集\n#### 第2集\n#### 第3集\n#### 第4集\n#### 第5集";
+        assert_eq!(episode_limit(strategy, "本次只生成1-3集"), Some(3));
+        assert_eq!(episode_limit(strategy, "本次生成1-5集"), Some(5));
+    }
+
+    #[test]
+    fn rejects_placeholder_or_truncated_scripts() {
+        assert!(validate_generated_script("（根据第1集生成结果补充）").is_err());
+        assert!(validate_generated_script("稍后补充完整剧本").is_err());
+        assert!(validate_generated_script(&"完整剧本正文".repeat(40)).is_ok());
+    }
+
+    #[test]
+    fn parses_episode_number_from_script_names() {
+        assert_eq!(script_episode_number("作品 EP01：开端"), Some(1));
+        assert_eq!(script_episode_number("作品 第12集"), Some(12));
+        assert_eq!(script_episode_number("作品正文"), None);
+    }
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -40,6 +120,156 @@ fn tagged(text: &str, tag: &str) -> Option<String> {
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
     Some(text[start..end].trim().to_string())
+}
+
+fn episode_references(text: &str) -> Vec<u32> {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut references = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] != '第' {
+            index += 1;
+            continue;
+        }
+        let mut cursor = index + 1;
+        let first = cursor;
+        while cursor < chars.len() && chars[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if first == cursor {
+            index += 1;
+            continue;
+        }
+        let start = chars[first..cursor]
+            .iter()
+            .collect::<String>()
+            .parse::<u32>()
+            .ok();
+        let mut end = None;
+        if cursor < chars.len() && matches!(chars[cursor], '-' | '–' | '—' | '至' | '到') {
+            cursor += 1;
+            let second = cursor;
+            while cursor < chars.len() && chars[cursor].is_ascii_digit() {
+                cursor += 1;
+            }
+            if second < cursor {
+                end = chars[second..cursor]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .ok();
+            }
+        }
+        if cursor < chars.len() && chars[cursor] == '集' {
+            if let Some(start) = start {
+                references.push(start);
+            }
+            if let Some(end) = end {
+                references.push(end);
+            }
+            index = cursor + 1;
+        } else {
+            index += 1;
+        }
+    }
+    references
+}
+
+fn explicit_episode_limit(text: &str) -> Option<u32> {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut limits = episode_references(text);
+    let mut index = 0;
+    while index < chars.len() {
+        if !chars[index].is_ascii_digit() {
+            index += 1;
+            continue;
+        }
+        let first = index;
+        while index < chars.len() && chars[index].is_ascii_digit() {
+            index += 1;
+        }
+        let first_number = chars[first..index]
+            .iter()
+            .collect::<String>()
+            .parse::<u32>()
+            .ok();
+        let mut last_number = first_number;
+        if index < chars.len() && matches!(chars[index], '-' | '/' | '–' | '—' | '至' | '到')
+        {
+            index += 1;
+            if index < chars.len() && chars[index] == '第' {
+                index += 1;
+            }
+            let second = index;
+            while index < chars.len() && chars[index].is_ascii_digit() {
+                index += 1;
+            }
+            if second < index {
+                last_number = chars[second..index]
+                    .iter()
+                    .collect::<String>()
+                    .parse::<u32>()
+                    .ok();
+            }
+        }
+        if index < chars.len() && chars[index] == '集' {
+            if let Some(limit) = last_number {
+                limits.push(limit);
+            }
+        }
+    }
+    limits.into_iter().max()
+}
+
+fn episode_limit(strategy: &str, prompt: &str) -> Option<u32> {
+    let strategy_limit = explicit_episode_limit(strategy);
+    let request_limit = explicit_episode_limit(prompt);
+    match (strategy_limit, request_limit) {
+        (Some(strategy), Some(request)) => Some(strategy.min(request)),
+        (Some(strategy), None) => Some(strategy),
+        (None, Some(request)) => Some(request),
+        (None, None) => None,
+    }
+}
+
+fn script_episode_number(name: &str) -> Option<u32> {
+    if let Some(episode) = episode_references(name).into_iter().next() {
+        return Some(episode);
+    }
+    let lower = name.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+    for index in 0..bytes.len().saturating_sub(1) {
+        if bytes[index] != b'e' || bytes[index + 1] != b'p' {
+            continue;
+        }
+        let mut cursor = index + 2;
+        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'-' | b'_' | b'#') {
+            cursor += 1;
+        }
+        let start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+            cursor += 1;
+        }
+        if start < cursor {
+            return lower[start..cursor].parse().ok();
+        }
+    }
+    None
+}
+
+fn validate_generated_script(content: &str) -> Result<(), String> {
+    const PLACEHOLDER_MARKERS: [&str; 5] = ["生成结果补充", "稍后补充", "待补充", "TODO", "TBD"];
+    let character_count = content.chars().count();
+    if character_count < 200 {
+        return Err(format!("正文只有 {character_count} 字，少于最低 200 字"));
+    }
+    if let Some(marker) = PLACEHOLDER_MARKERS
+        .iter()
+        .find(|marker| content.contains(**marker))
+    {
+        return Err(format!("正文包含占位内容“{marker}”"));
+    }
+    Ok(())
 }
 
 async fn role_names_without_appearances(
@@ -234,6 +464,66 @@ pub(crate) struct ToolRequest {
     pub(crate) arguments: Value,
     #[serde(skip, default)]
     pub(crate) emitter: Option<WsEmitter>,
+}
+
+fn memory_isolation_key(request: &ToolRequest) -> String {
+    if request.agent_type == "productionAgent" {
+        format!(
+            "productionAgent:{}:{}",
+            request.project_id,
+            request
+                .script_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        )
+    } else {
+        format!("scriptAgent:{}:project", request.project_id)
+    }
+}
+
+async fn rollback_new_storyboard_rows(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    existing_ids: &[i64],
+) -> Result<(), AppError> {
+    let new_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND NOT(id=ANY($3))",
+    )
+    .bind(project_id)
+    .bind(script_id)
+    .bind(existing_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to find partial storyboard rows"))?;
+    if new_ids.is_empty() {
+        return Ok(());
+    }
+    let track_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT DISTINCT track_id FROM toonflow.storyboards WHERE id=ANY($1) AND track_id IS NOT NULL",
+    )
+    .bind(&new_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to find partial storyboard tracks"))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin storyboard rollback"))?;
+    sqlx::query("DELETE FROM toonflow.storyboards WHERE id=ANY($1)")
+        .bind(&new_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to remove partial storyboard rows"))?;
+    sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=ANY($1) AND NOT EXISTS (SELECT 1 FROM toonflow.storyboards s WHERE s.track_id=toonflow.video_tracks.id)")
+        .bind(&track_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to remove partial storyboard tracks"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit storyboard rollback"))?;
+    Ok(())
 }
 
 pub async fn execute(
@@ -433,15 +723,14 @@ pub(crate) async fn execute_inner(
         return Ok(json!({"path":path,"content":content}));
     }
     match (request.agent_type.as_str(), request.tool_name.as_str()) {
-        ("scriptAgent", "deepRetrieve") => {
+        ("scriptAgent" | "productionAgent", "deepRetrieve") => {
             let keyword = request
                 .arguments
                 .get("keyword")
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let agent_type = &request.agent_type;
-            // Build isolation key from project ID (matches WebSocket isolation pattern)
-            let isolation_key = format!("{agent_type}:{}:project", request.project_id);
+            let isolation_key = memory_isolation_key(request);
             let mems = toonflow_agent_runtime::relevant_memories(
                 &state.pool,
                 agent_type,
@@ -531,6 +820,13 @@ pub(crate) async fn execute_inner(
                 .map_err(|_| AppError::internal("failed to begin script save"))?;
             let timestamp = now_ms();
             let mut saved = Vec::with_capacity(scripts.len());
+            let mut existing = sqlx::query_as::<_, (i64, String)>(
+                "SELECT id,name FROM toonflow.scripts WHERE project_id=$1 ORDER BY create_time DESC,id DESC",
+            )
+            .bind(request.project_id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to load existing scripts"))?;
             for (index, script) in scripts.iter().enumerate() {
                 let name = script
                     .get("name")
@@ -545,16 +841,39 @@ pub(crate) async fn execute_inner(
                 if name.is_empty() || content.is_empty() {
                     return Err(AppError::bad_request("剧本名称和内容不能为空"));
                 }
-                let id = timestamp * 1000 + index as i64;
-                sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time) VALUES($1,$2,$3,$4,$5)")
-                    .bind(id)
-                    .bind(name)
-                    .bind(content)
-                    .bind(request.project_id)
-                    .bind(timestamp)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|_| AppError::internal("failed to save generated script"))?;
+                if let Err(reason) = validate_generated_script(content) {
+                    return Err(AppError::bad_request(format!(
+                        "剧本《{name}》未完整生成：{reason}。请重新调用剧本子 Agent 生成完整正文后再保存"
+                    )));
+                }
+                let episode = script_episode_number(name);
+                let matching = existing.iter().position(|(_, existing_name)| {
+                    episode.is_some() && script_episode_number(existing_name) == episode
+                });
+                let id = if let Some(position) = matching {
+                    let (id, _) = existing.remove(position);
+                    sqlx::query("UPDATE toonflow.scripts SET name=$2,content=$3,extract_state=NULL,error_reason=NULL WHERE id=$1 AND project_id=$4")
+                        .bind(id)
+                        .bind(name)
+                        .bind(content)
+                        .bind(request.project_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| AppError::internal("failed to replace generated script"))?;
+                    id
+                } else {
+                    let id = timestamp * 1000 + index as i64;
+                    sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time) VALUES($1,$2,$3,$4,$5)")
+                        .bind(id)
+                        .bind(name)
+                        .bind(content)
+                        .bind(request.project_id)
+                        .bind(timestamp)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| AppError::internal("failed to save generated script"))?;
+                    id
+                };
                 saved.push(json!({"id":id,"name":name}));
             }
             tx.commit()
@@ -585,6 +904,23 @@ pub(crate) async fn execute_inner(
                 .get("prompt")
                 .and_then(Value::as_str)
                 .ok_or_else(|| AppError::bad_request("缺少 prompt"))?;
+            let supervision_episode_limit = if agent_key == "scriptAgent:supervisionAgent" {
+                let workspace: Option<Value> = sqlx::query_scalar(
+                    "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
+                )
+                .bind(request.project_id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|_| AppError::internal("failed to load script supervision scope"))?;
+                let strategy = workspace
+                    .as_ref()
+                    .and_then(|data| data.get("adaptationStrategy"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                episode_limit(strategy, prompt)
+            } else {
+                None
+            };
             let system = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key)
                 .await
                 .map_err(AppError::bad_request)?;
@@ -611,8 +947,14 @@ pub(crate) async fn execute_inner(
             .await
             .map_err(|_| AppError::bad_request("无法加载项目信息"))?
             .unwrap_or_default();
+            let supervision_scope = supervision_episode_limit
+                .map(|limit| format!(
+                    "\n\n## 剧集范围硬约束\n当前改编只包含第1-{limit}集。审核报告只能引用第1-{limit}集；严禁引用、推测或规划第{}集及以后。必须明确区分“原著第X章”与“短剧第X集”，不得将章号改写为集号。",
+                    limit + 1
+                ))
+                .unwrap_or_default();
             let full_system = format!(
-                "{system}\n\n## 当前项目\n{project_hint}\n\n你是 Toonflow 的{label}子 Agent。请使用工具读取所需数据，然后完成任务并输出要求的 XML 格式内容。"
+                "{system}\n\n## 当前项目\n{project_hint}\n\n你是 Toonflow 的{label}子 Agent。请使用工具读取所需数据，然后完成任务并输出要求的 XML 格式内容。{supervision_scope}"
             );
 
             // Sub-agent read-only tool definitions
@@ -629,10 +971,11 @@ pub(crate) async fn execute_inner(
                 json!({"role":"user","content":prompt}),
             ];
             let mut output = String::new();
-            for _round in 0..8 {
-                let raw = ai_client::text_tools(
+            for _round in 0..24 {
+                let raw = ai_client::project_text_tools(
                     &state.pool,
                     agent_key,
+                    request.project_id,
                     messages.clone(),
                     sub_tools.clone(),
                 )
@@ -648,14 +991,32 @@ pub(crate) async fn execute_inner(
                     .cloned()
                     .unwrap_or_default();
                 if calls.is_empty() {
-                    output = message
+                    let candidate = message
                         .get("content")
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    if output.is_empty() {
+                    if candidate.is_empty() {
                         return Err(AppError::bad_request("子 Agent 未返回有效内容"));
                     }
+                    if let Some(limit) = supervision_episode_limit {
+                        let invalid = explicit_episode_limit(&candidate)
+                            .filter(|episode| *episode > limit)
+                            .into_iter()
+                            .collect::<Vec<_>>();
+                        if !invalid.is_empty() {
+                            messages.push(message);
+                            messages.push(json!({
+                                "role":"user",
+                                "content":format!(
+                                    "上一版审核报告越界引用了第{}集。当前只允许第1-{limit}集。请立即重写完整报告，删除所有超范围集数，并将原著章号明确写为“原著第X章”。不得解释错误。",
+                                    invalid.iter().map(u32::to_string).collect::<Vec<_>>().join("、")
+                                )
+                            }));
+                            continue;
+                        }
+                    }
+                    output = candidate;
                     break;
                 }
                 messages.push(message);
@@ -944,7 +1305,7 @@ pub(crate) async fn execute_inner(
                     "productionAgent:storyboardGenAgent",
                     "分镜图生成",
                     None,
-                    &["get_flowData", "generate_storyboard"],
+                    &["get_flowData", "update_storyboard", "generate_storyboard"],
                 ),
                 "run_sub_agent_image_edit" => (
                     "productionAgent:storyboardGenAgent",
@@ -956,13 +1317,18 @@ pub(crate) async fn execute_inner(
                     "productionAgent:storyboardPanelAgent",
                     "分镜面板",
                     None,
-                    &["get_flowData", "add_flowData_storyboard", "use_skill"],
+                    &[
+                        "get_flowData",
+                        "add_flowData_storyboard",
+                        "update_storyboard",
+                        "use_skill",
+                    ],
                 ),
                 "run_sub_agent_storyboard_table" => (
                     "productionAgent:storyboardTableAgent",
                     "分镜表",
                     Some(("storyboardTable", "storyboardTable")),
-                    &["get_flowData"],
+                    STORYBOARD_TABLE_AGENT_TOOLS,
                 ),
                 "run_sub_agent_supervision" => (
                     "productionAgent:supervisionAgent",
@@ -1048,8 +1414,34 @@ pub(crate) async fn execute_inner(
                     ));
                 }
                 let first_frame = mode != "text";
+                let derived_role_aliases: std::collections::HashMap<i64, Vec<String>> =
+                    sqlx::query_as::<_, (i64, String)>(
+                        r#"SELECT child.id, parent.name
+                           FROM toonflow.assets child
+                           JOIN toonflow.assets parent ON parent.id=child.parent_asset_id
+                           JOIN toonflow.script_assets linked ON linked.asset_id=child.id
+                           WHERE child.project_id=$1 AND linked.script_id=$2
+                             AND child.type='role' AND parent.type='role'"#,
+                    )
+                    .bind(request.project_id)
+                    .bind(script_id)
+                    .fetch_all(&state.pool)
+                    .await
+                    .map_err(|_| AppError::internal("failed to load derived role aliases"))?
+                    .into_iter()
+                    .fold(
+                        std::collections::HashMap::new(),
+                        |mut aliases, (id, name)| {
+                            aliases.entry(id).or_default().push(name);
+                            aliases
+                        },
+                    );
                 let expected =
-                    crate::toonflow_storyboard_panel_validation::expected_items(table, first_frame);
+                    crate::toonflow_storyboard_panel_validation::expected_items_with_aliases(
+                        table,
+                        first_frame,
+                        &derived_role_aliases,
+                    );
                 if expected.is_empty() {
                     return Err(AppError::bad_request(
                         "分镜面板写入前置检查失败：分镜表中没有可识别的写入单位",
@@ -1113,7 +1505,7 @@ pub(crate) async fn execute_inner(
                 String::new()
             };
             let generation_gate = if agent_key == "productionAgent:storyboardTableAgent" {
-                "\n\n## Toonflow 分镜规划强制执行顺序（不得跳步）\n1. 首轮只调用 get_flowData，依次读取 script、assets、scriptPlan；三项必须全部实际读取，禁止依靠记忆补写。\n2. 先在回复中输出简短的逐场结构化草案：逐条台词按4字/秒估时、划分不超过15秒的片段、写明相邻片段的桥梁元素、标出长台词拆镜点并核对全员视觉落点。\n3. 草案完成后一次性输出且只输出一个完整 <storyboardTable>...</storyboardTable>；标签内部必须是技能模板规定的 Markdown，禁止 JSON、XML 子标签和代码围栏。\n4. 每一行镜头必须能直接生成一张构图明确的静态关键帧：只允许一个时间点、一个机位、一个连续动作状态。禁止蒙太奇、快切、多景别、定格画面、用箭头串联多个动作或在同一行跨时间。\n5. 画面描述只写主体、动作状态和明确空间关系，禁止抽象比喻；运镜只写在运镜列。每个片段镜头时长合计不得超过15秒，超出必须拆段并写清承接。\n6. 画面描述、运镜、音效不得出现光影色调词；画面描述不得重复服装、发型、五官、肤色等资产固有外观。\n7. 每镜含台词最低时长按：台词字数÷4 + 每处标点停顿0.4秒 + 1秒安全余量，最终向上取整；台词必须与剧本逐字一致。\n8. 画面中出现且 assets 已存在的角色、场景、物件，必须全部列入当前片段引用资产名称和ID；未在某行画面出现的人物不得绑定到该行首帧。\n9. 人物在当前场次存在 scenes 匹配的衍生形象时，必须引用该衍生资产的名称和ID，禁止继续引用基础人物。例如医院重伤场景中的王闲必须绑定“重伤绷带”衍生形象。输出前逐镜自检，任一项不满足不得输出。"
+                "\n\n## Toonflow 分镜规划强制执行顺序（不得跳步）\n1. 首轮只调用 get_flowData，依次读取 script、assets、scriptPlan；三项必须全部实际读取，禁止依靠记忆补写。\n2. 先在回复中输出简短的逐场结构化草案：逐条台词按4字/秒估时、划分不超过15秒的片段、写明相邻片段的桥梁元素、标出长台词拆镜点并核对全员视觉落点。\n3. 草案完成后保存完整 storyboardTable；标签内部必须是技能模板规定的 Markdown，禁止 JSON、XML 子标签和代码围栏。\n4. 每一行镜头必须能直接生成一张构图明确的静态关键帧：只允许一个时间点、一个机位、一个连续动作状态。禁止蒙太奇、快切、多景别、定格画面、用箭头串联多个动作或在同一行跨时间。\n5. 逐场维护“在场角色状态”：记录每个人物的入场、位置、姿态、朝向、持有物和离场。相邻镜头仍在同一空间且没有明确离场、转场、特写、反打或画外依据时，上一镜在场人物必须继续写入画面描述并绑定对应衍生资产；不得因本镜没有台词或主动作而让人物凭空消失。\n6. 画面描述必须写出本镜所有出镜人物的姓名、姿态、位置、朝向及相互空间关系；即使某人没有主动作，只要同框也必须描述。例如病床对话中必须持续写明患者躺在病床上、陪伴者坐在床边。\n7. 画面描述、运镜、音效不得出现光影色调词；画面描述不得重复服装、发型、五官、肤色等资产固有外观。\n8. 每镜含台词最低时长按：台词字数÷4 + 每处标点停顿0.4秒 + 1秒安全余量，最终向上取整；台词必须与剧本逐字一致。\n9. 只有本镜实际出现在画面中的人物、场景和物件才能绑定；每个已绑定资产都必须在该镜画面描述中明确出现，禁止把片段级资产整组复制到每一镜。\n10. 人物在当前场次存在 scenes 匹配的衍生形象时，必须引用该衍生资产的名称和ID，禁止继续引用基础人物。输出前逐镜自检，任一项不满足不得输出。"
             } else {
                 ""
             };
@@ -1134,7 +1526,7 @@ pub(crate) async fn execute_inner(
                         Some(
                             crate::toonflow_storyboard_panel_validation::PromptFormat::Seedream,
                         ) => {
-                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Seedream 模式A：分镜表每一行独立写入；prompt 使用中文【画面】【风格】结构，按关联资产顺序声明 @图N，并在【画面】正文用 @图N 替换对应资产名称；shouldGenerateImage 传 true。禁止输出 JSON，禁止自行切换模式。"
+                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Seedream 模式A：分镜表每一行独立写入；prompt 使用中文【画面】【风格】结构，按关联资产顺序声明 @图N，并在【画面】正文用 @图N 替换对应资产名称；prompt 只写可视画面，禁止写入台词、对白、音效或要求画面内字幕；shouldGenerateImage 传 true。禁止输出 JSON，禁止自行切换模式。"
                         }
                         Some(
                             crate::toonflow_storyboard_panel_validation::PromptFormat::Nanobanana,
@@ -1149,6 +1541,11 @@ pub(crate) async fn execute_inner(
             } else {
                 ""
             };
+            let storyboard_generation_gate = if agent_key == "productionAgent:storyboardGenAgent" {
+                "\n\n## 分镜图生成强制流程\n1. 必须先调用 get_flowData 读取 storyboard 的最新分镜、状态、失败原因和资产绑定。\n2. 如果失败原因是已绑定 @图N 但提示词未描述，必须逐条核对本镜真实可见对象，调用 update_storyboard 同时修正 prompt 和 associateAssetsIds；不可把本镜不出镜的人物强行写进提示词。\n3. 修复后才能调用 generate_storyboard；只提交委派范围或用户明确选中的 ID，禁止自动扩大为全部分镜。\n4. concurrentCount 默认使用 2，避免图片模型限流。"
+            } else {
+                ""
+            };
             let role_binding_gate = if matches!(
                 agent_key,
                 "productionAgent:storyboardTableAgent" | "productionAgent:storyboardPanelAgent"
@@ -1158,9 +1555,9 @@ pub(crate) async fn execute_inner(
                 ""
             };
             let sub_system = format!(
-                "{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务并实际调用要求的工具，不得只用文字声称完成。{generation_gate}{document_format_gate}{storyboard_panel_mode_gate}{role_binding_gate}{project_hint}"
+                "{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务并实际调用要求的工具，不得只用文字声称完成。{generation_gate}{document_format_gate}{storyboard_panel_mode_gate}{storyboard_generation_gate}{role_binding_gate}{project_hint}"
             );
-            let mut output = Box::pin(toonflow_agents::run_scoped_production_agent(
+            let run_result = Box::pin(toonflow_agents::run_scoped_production_agent(
                 state,
                 agent_key,
                 &sub_system,
@@ -1169,7 +1566,24 @@ pub(crate) async fn execute_inner(
                 request.script_id,
                 allowed_tools,
             ))
-            .await?;
+            .await;
+            let mut output = match run_result {
+                Ok(output) => output,
+                Err(error) => {
+                    if let (Some((_, _, _, existing_ids)), Some(script_id)) =
+                        (&storyboard_panel_validation, request.script_id)
+                    {
+                        rollback_new_storyboard_rows(
+                            &state.pool,
+                            request.project_id,
+                            script_id,
+                            existing_ids,
+                        )
+                        .await?;
+                    }
+                    return Err(error);
+                }
+            };
             if let Some((first_frame, prompt_format, expected, existing_ids)) =
                 &storyboard_panel_validation
             {
@@ -1183,11 +1597,19 @@ pub(crate) async fn execute_inner(
                 .await
                 .map_err(|_| AppError::internal("failed to validate storyboard panel rows"))?;
                 let new_rows = rows
-                    .into_iter()
+                    .iter()
+                    .cloned()
                     .filter(|row| !existing_ids.contains(&row.0))
                     .collect::<Vec<_>>();
-                let mut actual = Vec::with_capacity(new_rows.len());
-                for (id, prompt, track, duration, should_generate_image, video_desc) in &new_rows {
+                let validation_rows = if new_rows.is_empty() {
+                    &rows
+                } else {
+                    &new_rows
+                };
+                let mut actual = Vec::with_capacity(validation_rows.len());
+                for (id, prompt, track, duration, should_generate_image, video_desc) in
+                    validation_rows
+                {
                     let asset_ids: Vec<i64> = sqlx::query_scalar(
                         "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id",
                     )
@@ -1342,9 +1764,28 @@ pub(crate) async fn execute_inner(
                 .map_err(|_| AppError::internal("failed to load storyboard validation assets"))?;
                 let names = crate::toonflow_storyboard_table_validation::asset_names(&assets);
                 for repair_round in 0..=2 {
-                    let content = tagged(&output, "storyboardTable").ok_or_else(|| {
-                        AppError::bad_request("分镜表 Agent 未输出完整 storyboardTable 标签")
-                    })?;
+                    let stored: Option<Value> = sqlx::query_scalar(
+                        "SELECT data->'storyboardTable' FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'",
+                    )
+                    .bind(request.project_id)
+                    .bind(script_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(|_| AppError::internal("failed to load saved storyboard table"))?
+                    .flatten();
+                    let stored_content =
+                        stored.as_ref().and_then(Value::as_str).and_then(|value| {
+                            tagged(value, "storyboardTable").or_else(|| {
+                                (!value.trim().is_empty()).then(|| value.trim().to_string())
+                            })
+                        });
+                    let content = tagged(&output, "storyboardTable")
+                        .or(stored_content)
+                        .ok_or_else(|| {
+                            AppError::bad_request(
+                                "分镜表 Agent 既未保存 storyboardTable，也未输出完整标签",
+                            )
+                        })?;
                     let issues =
                         crate::toonflow_storyboard_table_validation::validate(&content, &names);
                     if issues.is_empty() {
@@ -1461,6 +1902,16 @@ pub(crate) async fn execute_inner(
                 .and_then(Value::as_array)
                 .map(|ids| ids.iter().filter_map(Value::as_i64).collect::<Vec<_>>())
                 .unwrap_or_default();
+            let prompt = request
+                .arguments
+                .get("prompt")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            crate::toonflow_image_workflow::validate_storyboard_prompt(
+                prompt,
+                associated_asset_ids.len(),
+            )
+            .map_err(AppError::bad_request)?;
             crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
                 &state.pool,
                 request.project_id,
@@ -1475,7 +1926,7 @@ pub(crate) async fn execute_inner(
                 .await
                 .map_err(|_| AppError::internal("failed to add storyboard"))?;
             sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration)VALUES($1,$2,$3,'未生成',$4)").bind(track_id).bind(request.project_id).bind(script_id).bind(duration as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add storyboard track"))?;
-            sqlx::query("INSERT INTO toonflow.storyboards(id,script_id,prompt,duration,state,track_id,track,video_desc,should_generate_image,project_id,index,create_time)VALUES($1,$2,$3,$4,'未生成',$5,$6,$7,$8,$9,$10,$11)").bind(id).bind(script_id).bind(request.arguments.get("prompt").and_then(Value::as_str).unwrap_or_default()).bind(duration.to_string()).bind(track_id).bind(request.arguments.get("track").and_then(Value::as_str).unwrap_or("main")).bind(request.arguments.get("videoDesc").and_then(Value::as_str).unwrap_or_default()).bind(if should{1}else{0}).bind(request.project_id).bind(index).bind(now_ms()).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add storyboard"))?;
+            sqlx::query("INSERT INTO toonflow.storyboards(id,script_id,prompt,duration,state,track_id,track,video_desc,should_generate_image,project_id,index,create_time)VALUES($1,$2,$3,$4,'未生成',$5,$6,$7,$8,$9,$10,$11)").bind(id).bind(script_id).bind(prompt).bind(duration.to_string()).bind(track_id).bind(request.arguments.get("track").and_then(Value::as_str).unwrap_or("main")).bind(request.arguments.get("videoDesc").and_then(Value::as_str).unwrap_or_default()).bind(if should{1}else{0}).bind(request.project_id).bind(index).bind(now_ms()).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add storyboard"))?;
             if !associated_asset_ids.is_empty() {
                 for (sort_order, asset_id) in associated_asset_ids.into_iter().enumerate() {
                     sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order)VALUES($1,$2,$3) ON CONFLICT(storyboard_id,asset_id) DO UPDATE SET sort_order=excluded.sort_order").bind(id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
@@ -1492,10 +1943,62 @@ pub(crate) async fn execute_inner(
                 .get("id")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AppError::bad_request("缺少 id"))?;
-            let result=sqlx::query("UPDATE toonflow.storyboards SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),duration=coalesce($5,duration),track=coalesce($6,track),should_generate_image=coalesce($7,should_generate_image) WHERE id=$1 AND project_id=$2").bind(id).bind(request.project_id).bind(request.arguments.get("prompt").and_then(Value::as_str)).bind(request.arguments.get("videoDesc").and_then(Value::as_str)).bind(request.arguments.get("duration").and_then(Value::as_i64).map(|v|v.to_string())).bind(request.arguments.get("track").and_then(Value::as_str)).bind(request.arguments.get("shouldGenerateImage").and_then(Value::as_bool).map(|v|if v{1}else{0})).execute(&state.pool).await.map_err(|_|AppError::internal("failed to update storyboard"))?;
+            let current_prompt: Option<String> = sqlx::query_scalar(
+                "SELECT prompt FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
+            )
+            .bind(id)
+            .bind(request.project_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load storyboard"))?;
+            let current_prompt =
+                current_prompt.ok_or_else(|| AppError::not_found("storyboard not found"))?;
+            let prompt = request.arguments.get("prompt").and_then(Value::as_str);
+            let associated_asset_ids = request
+                .arguments
+                .get("associateAssetsIds")
+                .and_then(Value::as_array)
+                .map(|ids| ids.iter().filter_map(Value::as_i64).collect::<Vec<_>>());
+            if prompt.is_some() || associated_asset_ids.is_some() {
+                let asset_ids = if let Some(ids) = associated_asset_ids.as_ref() {
+                    crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
+                        &state.pool,
+                        request.project_id,
+                        ids,
+                    )
+                    .await?;
+                    ids.clone()
+                } else {
+                    sqlx::query_scalar("SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id").bind(id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load storyboard assets"))?
+                };
+                crate::toonflow_image_workflow::validate_storyboard_prompt(
+                    prompt.unwrap_or(&current_prompt),
+                    asset_ids.len(),
+                )
+                .map_err(AppError::bad_request)?;
+            }
+            let mut tx = state
+                .pool
+                .begin()
+                .await
+                .map_err(|_| AppError::internal("failed to begin storyboard update"))?;
+            let result=sqlx::query("UPDATE toonflow.storyboards SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),duration=coalesce($5,duration),track=coalesce($6,track),should_generate_image=coalesce($7,should_generate_image) WHERE id=$1 AND project_id=$2").bind(id).bind(request.project_id).bind(prompt).bind(request.arguments.get("videoDesc").and_then(Value::as_str)).bind(request.arguments.get("duration").and_then(Value::as_i64).map(|v|v.to_string())).bind(request.arguments.get("track").and_then(Value::as_str)).bind(request.arguments.get("shouldGenerateImage").and_then(Value::as_bool).map(|v|if v{1}else{0})).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to update storyboard"))?;
             if result.rows_affected() == 0 {
                 return Err(AppError::not_found("storyboard not found"));
             }
+            if let Some(asset_ids) = associated_asset_ids {
+                sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE storyboard_id=$1")
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to reset storyboard assets"))?;
+                for (sort_order, asset_id) in asset_ids.into_iter().enumerate() {
+                    sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order)VALUES($1,$2,$3)").bind(id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
+                }
+            }
+            tx.commit()
+                .await
+                .map_err(|_| AppError::internal("failed to commit storyboard update"))?;
             Ok(json!(true))
         }
         ("productionAgent", "generate_storyboard") => {
@@ -1520,7 +2023,7 @@ pub(crate) async fn execute_inner(
                     .arguments
                     .get("concurrentCount")
                     .and_then(Value::as_u64)
-                    .unwrap_or(5) as usize,
+                    .unwrap_or(2) as usize,
                 false,
             )
             .await?;

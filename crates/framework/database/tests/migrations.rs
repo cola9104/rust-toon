@@ -14,7 +14,28 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 11);
+    assert_eq!(applied, 17);
+
+    let appearance_age_stage_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='toonflow' AND table_name='character_appearances' AND column_name='age_stage')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect character appearance age stage column");
+    assert!(appearance_age_stage_exists);
+
+    let project_chat_model_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema='toonflow'
+             AND table_name='projects'
+             AND column_name='chat_model'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect project chat model column");
+    assert!(project_chat_model_exists);
 
     let storyboard_asset_order_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(

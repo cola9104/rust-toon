@@ -97,9 +97,10 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
 - 多条平行事件线时，选对主角影响最大的，其余简要带过
 - 对话密集章节，关注对话推动了什么结果，而非复述对话内容
 - 每3000字提取3-5个事件，短章节至少2个"#.to_string());
-    match ai_client::text(
+    match ai_client::project_text(
         pool,
         "universalAi",
+        project_id,
         &system,
         &format!("章节：{title}\n\n{content}"),
     )

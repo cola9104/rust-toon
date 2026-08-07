@@ -1,5 +1,9 @@
 use crate::{
-    ToonState, ai_client, shared::require, toonflow_asset_description, toonflow_prompt_store,
+    ToonState, ai_client,
+    shared::require,
+    toonflow_asset_description,
+    toonflow_character_identity::{normalize_age_stage, normalize_role_name},
+    toonflow_prompt_store,
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -40,6 +44,8 @@ struct ExtractedAppearance {
     #[serde(default)]
     description: String,
     script_id: i64,
+    #[serde(default)]
+    age_stage: String,
 }
 
 #[derive(Deserialize)]
@@ -51,6 +57,40 @@ struct ExtractedResult {
     existing_asset_refs: Vec<ExtractedAsset>,
     #[serde(default)]
     appearances: Vec<ExtractedAppearance>,
+}
+
+fn normalized_asset_type(name: &str, description: &str, extracted_type: &str) -> String {
+    const WEARABLE_MARKERS: &[&str] = &[
+        "帽", "服", "衣", "裤", "裙", "鞋", "靴", "眼镜", "口罩", "手套", "围巾", "领带", "耳环",
+        "耳饰", "项链", "手链", "腕表", "护甲", "披风",
+    ];
+    if extracted_type == "tool"
+        && WEARABLE_MARKERS
+            .iter()
+            .any(|marker| name.contains(marker) || description.contains(marker))
+    {
+        "costume".to_string()
+    } else {
+        extracted_type.to_string()
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::normalized_asset_type;
+
+    #[test]
+    fn wearable_items_are_costumes_not_tools() {
+        assert_eq!(
+            normalized_asset_type("黑色鸭舌帽", "棉质", "tool"),
+            "costume"
+        );
+        assert_eq!(
+            normalized_asset_type("深紫技师服", "服务制服", "tool"),
+            "costume"
+        );
+        assert_eq!(normalized_asset_type("水果刀", "削苹果", "tool"), "tool");
+    }
 }
 
 fn parse_result(output: &str) -> Result<ExtractedResult, String> {
@@ -65,6 +105,61 @@ fn parse_result(output: &str) -> Result<ExtractedResult, String> {
         let end = trimmed.rfind('}').ok_or("AI 未返回完整 JSON 对象")?;
         serde_json::from_str(&trimmed[start..=end]).map_err(|error| error.to_string())
     })
+}
+
+async fn reconnect_legacy_derivatives(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    project_id: i64,
+    script_ids: &[i64],
+) -> Result<(), String> {
+    sqlx::query(
+        r#"WITH unmatched_appearances AS (
+               SELECT ca.id AS appearance_id, ca.script_id, ca.role_asset_id,
+                      row_number() OVER (
+                          PARTITION BY ca.script_id, ca.role_asset_id ORDER BY ca.id
+                      ) AS position,
+                      count(*) OVER (
+                          PARTITION BY ca.script_id, ca.role_asset_id
+                      ) AS item_count
+               FROM toonflow.character_appearances ca
+               WHERE ca.project_id=$1 AND ca.script_id=ANY($2)
+                 AND NOT EXISTS (
+                     SELECT 1 FROM toonflow.assets current_asset
+                     WHERE current_asset.appearance_id=ca.id
+                       AND current_asset.parent_asset_id=ca.role_asset_id
+                 )
+           ), legacy_derivatives AS (
+               SELECT d.id AS derived_id, sa.script_id, d.parent_asset_id AS role_asset_id,
+                      row_number() OVER (
+                          PARTITION BY sa.script_id, d.parent_asset_id ORDER BY d.id
+                      ) AS position,
+                      count(*) OVER (
+                          PARTITION BY sa.script_id, d.parent_asset_id
+                      ) AS item_count
+               FROM toonflow.assets d
+               JOIN toonflow.script_assets sa ON sa.asset_id=d.id
+               WHERE d.project_id=$1 AND sa.script_id=ANY($2)
+                 AND d.parent_asset_id IS NOT NULL AND d.appearance_id IS NULL
+           ), pairs AS (
+               SELECT legacy.derived_id, appearance.appearance_id
+               FROM legacy_derivatives legacy
+               JOIN unmatched_appearances appearance
+                 ON appearance.script_id=legacy.script_id
+                AND appearance.role_asset_id=legacy.role_asset_id
+                AND appearance.position=legacy.position
+                AND appearance.item_count=legacy.item_count
+           )
+           UPDATE toonflow.assets derived
+           SET appearance_id=pairs.appearance_id
+           FROM pairs
+           WHERE derived.id=pairs.derived_id AND derived.appearance_id IS NULL"#,
+    )
+    .bind(project_id)
+    .bind(script_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 async fn extract_group(
@@ -108,12 +203,13 @@ async fn extract_group(
     let system_prompt = toonflow_prompt_store::load(
         pool,
         "script_asset_extraction",
-        "提取 role/scene/tool 基础资产，并逐场输出每个有名角色的 appearances；role 不得包含服装，appearance 必须包含 roleName、name、scenes、costumePrompt、description、scriptId。只输出约定 JSON。",
+        "提取 role/scene/tool 基础资产，并逐场输出每个有名角色的 appearances。基础角色名必须使用统一身份名：童年王闲、少年王闲、成年王闲都必须写为 roleName=王闲，不得创建多个基础角色；role 描述只写不随年龄变化的身份特征，不得写年龄、身高、童年或成年外貌。年龄差异写入 appearance.ageStage，仅允许 child、teen、young_adult、adult、middle_aged、senior，剧本未明确年龄阶段时留空。role 不得包含服装，appearance 必须包含 roleName、name、ageStage、scenes、costumePrompt、description、scriptId。只输出约定 JSON。",
     )
     .await;
-    let output = ai_client::text(
+    let output = ai_client::project_text(
         pool,
         "universalAi",
+        project_id,
         &system_prompt,
         &format!("已有资产：{existing}\n\n{content}"),
     )
@@ -127,18 +223,24 @@ async fn extract_group(
         .await
         .map_err(|error| error.to_string())?;
     for asset in result.new_assets {
-        if asset.name.trim().is_empty() || !allowed.contains(&asset.type_.as_str()) {
+        let asset_type = normalized_asset_type(&asset.name, &asset.desc, &asset.type_);
+        if asset.name.trim().is_empty() || !allowed.contains(&asset_type.as_str()) {
             continue;
         }
-        if asset.type_ == "role" {
+        let asset_name = if asset_type == "role" {
+            normalize_role_name(asset.name.trim()).0
+        } else {
+            asset.name.trim().to_string()
+        };
+        if asset_type == "role" {
             toonflow_asset_description::validate_role_description(&asset.desc)?;
         }
         let existing_id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 AND type=$3 LIMIT 1",
         )
         .bind(project_id)
-        .bind(asset.name.trim())
-        .bind(&asset.type_)
+        .bind(&asset_name)
+        .bind(&asset_type)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
@@ -147,7 +249,7 @@ async fn extract_group(
         } else {
             let id = chrono::Utc::now().timestamp_micros();
             sqlx::query("INSERT INTO toonflow.assets(id,name,type,description,project_id,start_time) VALUES($1,$2,$3,$4,$5,$6)")
-                .bind(id).bind(asset.name.trim()).bind(&asset.type_).bind(asset.desc.trim()).bind(project_id).bind(chrono::Utc::now().timestamp_millis())
+                .bind(id).bind(&asset_name).bind(&asset_type).bind(asset.desc.trim()).bind(project_id).bind(chrono::Utc::now().timestamp_millis())
                 .execute(&mut *tx).await.map_err(|error|error.to_string())?;
             id
         };
@@ -164,25 +266,23 @@ async fn extract_group(
         }
     }
     for reference in result.existing_asset_refs {
+        let reference_type =
+            normalized_asset_type(&reference.name, &reference.desc, &reference.type_);
+        let reference_name = if reference_type == "role" {
+            normalize_role_name(reference.name.trim()).0
+        } else {
+            reference.name.trim().to_string()
+        };
         let asset_id: Option<i64> = sqlx::query_scalar(
             "SELECT a.id FROM toonflow.assets a WHERE a.project_id=$1 AND a.name=$2 AND a.type=$3 LIMIT 1",
         )
         .bind(project_id)
-        .bind(reference.name.trim())
-        .bind(&reference.type_)
+        .bind(&reference_name)
+        .bind(&reference_type)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
         if let Some(asset_id) = asset_id {
-            if reference.type_ == "role" && !reference.desc.trim().is_empty() {
-                toonflow_asset_description::validate_role_description(&reference.desc)?;
-                sqlx::query("UPDATE toonflow.assets SET description=$1 WHERE id=$2")
-                    .bind(reference.desc.trim())
-                    .bind(asset_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
             for script_id in reference
                 .script_ids
                 .into_iter()
@@ -202,11 +302,17 @@ async fn extract_group(
         {
             continue;
         }
+        let (role_name, inferred_from_role) = normalize_role_name(appearance.role_name.trim());
+        let inferred_from_appearance = normalize_role_name(appearance.name.trim()).1;
+        let age_stage = normalize_age_stage(&appearance.age_stage)
+            .or(inferred_from_role)
+            .or(inferred_from_appearance)
+            .unwrap_or("");
         let role_asset_id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM toonflow.assets WHERE project_id=$1 AND type='role' AND name=$2 AND parent_asset_id IS NULL LIMIT 1",
         )
         .bind(project_id)
-        .bind(appearance.role_name.trim())
+        .bind(&role_name)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|error| error.to_string())?;
@@ -214,12 +320,13 @@ async fn extract_group(
             continue;
         };
         let id = chrono::Utc::now().timestamp_micros() + offset as i64;
-        let retained_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.character_appearances(id,project_id,script_id,role_asset_id,name,scenes,costume_prompt,description,create_time,update_time) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT(script_id,role_asset_id,name) DO UPDATE SET scenes=excluded.scenes,costume_prompt=excluded.costume_prompt,description=excluded.description,update_time=excluded.update_time RETURNING id")
+        let retained_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.character_appearances(id,project_id,script_id,role_asset_id,name,age_stage,scenes,costume_prompt,description,create_time,update_time) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$10) ON CONFLICT(script_id,role_asset_id,age_stage,name) DO UPDATE SET scenes=excluded.scenes,costume_prompt=excluded.costume_prompt,description=excluded.description,update_time=excluded.update_time RETURNING id")
             .bind(id)
             .bind(project_id)
             .bind(appearance.script_id)
             .bind(role_asset_id)
             .bind(appearance.name.trim())
+            .bind(age_stage)
             .bind(json!(appearance.scenes))
             .bind(appearance.costume_prompt.trim())
             .bind(appearance.description.trim())
@@ -237,6 +344,7 @@ async fn extract_group(
     .execute(&mut *tx)
     .await
     .map_err(|error| error.to_string())?;
+    reconnect_legacy_derivatives(&mut tx, project_id, script_ids).await?;
     sqlx::query("UPDATE toonflow.scripts SET extract_state=1,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)")
         .bind(project_id).bind(script_ids).execute(&mut *tx).await.map_err(|error|error.to_string())?;
     tx.commit().await.map_err(|error| error.to_string())?;
@@ -252,20 +360,65 @@ pub async fn extract_assets(
     if request.script_ids.is_empty() {
         return Err(AppError::bad_request("请先选择剧本"));
     }
-    sqlx::query("UPDATE toonflow.scripts SET extract_state=2,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)")
-        .bind(request.project_id).bind(&request.script_ids).execute(&state.pool).await.map_err(|_|AppError::internal("failed to queue asset extraction"))?;
+    let task_id = chrono::Utc::now().timestamp_micros();
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to queue asset extraction"))?;
+    let queued = sqlx::query("UPDATE toonflow.scripts SET extract_state=2,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)")
+        .bind(request.project_id).bind(&request.script_ids).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to queue asset extraction"))?;
+    if queued.rows_affected() != request.script_ids.len() as u64 {
+        return Err(AppError::not_found("部分剧本不存在，请刷新后重试"));
+    }
+    let related_objects = json!({"scriptIds":request.script_ids}).to_string();
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time) SELECT $1,$2,'scriptAssetExtraction',$3,coalesce(chat_model::text,'universalAi'),'剧本资产提取','running',$4 FROM toonflow.projects WHERE id=$2")
+        .bind(task_id).bind(request.project_id).bind(related_objects).bind(chrono::Utc::now().timestamp_millis()).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to create asset extraction task"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to queue asset extraction"))?;
     let pool = state.pool.clone();
     let project_id = request.project_id;
     let ids = request.script_ids;
     let group_size = request.group_size.unwrap_or(5).clamp(1, 20);
     tokio::spawn(async move {
+        let mut failure = None;
         for group in ids.chunks(group_size) {
             if let Err(reason) = extract_group(&pool, project_id, group).await {
                 let _=sqlx::query("UPDATE toonflow.scripts SET extract_state=-1,error_reason=$3 WHERE project_id=$1 AND id=ANY($2)").bind(project_id).bind(group).bind(&reason).execute(&pool).await;
+                if failure.is_none() {
+                    failure = Some(reason);
+                }
             }
         }
+        if let Some(reason) = failure {
+            let _ = sqlx::query("UPDATE toonflow.tasks SET state='failed',reason=$2 WHERE id=$1")
+                .bind(task_id)
+                .bind(reason)
+                .execute(&pool)
+                .await;
+        } else {
+            let counts = sqlx::query_as::<_, (i64, i64)>(
+                "SELECT count(DISTINCT sa.asset_id),count(DISTINCT ca.id) FROM unnest($1::bigint[]) AS scripts(script_id) LEFT JOIN toonflow.script_assets sa ON sa.script_id=scripts.script_id LEFT JOIN toonflow.character_appearances ca ON ca.script_id=scripts.script_id",
+            )
+            .bind(&ids)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or((0, 0));
+            let description = format!(
+                "剧本资产提取完成：{} 个基础资产，{} 套人物服装/形态",
+                counts.0, counts.1
+            );
+            let related_objects =
+                json!({"scriptIds":ids,"assetCount":counts.0,"appearanceCount":counts.1})
+                    .to_string();
+            let _ = sqlx::query("UPDATE toonflow.tasks SET state='success',description=$2,related_objects=$3,reason=NULL WHERE id=$1")
+                .bind(task_id).bind(description).bind(related_objects).execute(&pool).await;
+        }
     });
-    Ok(Json(ApiResponse::new(json!({"message":"开始提取资产"}))))
+    Ok(Json(ApiResponse::new(
+        json!({"message":"开始提取资产","taskId":task_id}),
+    )))
 }
 
 #[derive(Deserialize)]

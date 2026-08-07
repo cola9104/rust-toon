@@ -50,10 +50,11 @@ async fn ensure_project(pool: &PgPool, project_id: i64) -> Result<(), AppError> 
 }
 async fn validate_project_models(
     pool: &PgPool,
+    chat: Option<i64>,
     image: Option<i64>,
     video: Option<i64>,
 ) -> Result<(), AppError> {
-    for (id, kind) in [(image, "image"), (video, "video")] {
+    for (id, kind) in [(chat, "chat"), (image, "image"), (video, "video")] {
         if let Some(id) = id {
             let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai.model_configs WHERE id=$1 AND type=$2 AND status=0)").bind(id).bind(kind).fetch_one(pool).await.map_err(|_|AppError::internal("failed to validate AI model"))?;
             if !valid {
@@ -69,6 +70,7 @@ async fn validate_project_models(
 pub struct ToonflowProject {
     pub id: i64,
     pub project_type: String,
+    pub chat_model: Option<i64>,
     pub image_model: Option<i64>,
     pub image_quality: String,
     pub video_model: Option<i64>,
@@ -90,6 +92,8 @@ pub struct SaveProjectRequest {
     pub id: Option<i64>,
     #[serde(default)]
     pub project_type: String,
+    #[serde(default)]
+    pub chat_model: Option<i64>,
     #[serde(default)]
     pub image_model: Option<i64>,
     #[serde(default)]
@@ -122,7 +126,7 @@ pub async fn list_projects(
 ) -> Result<Json<ApiResponse<Vec<ToonflowProject>>>, AppError> {
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, ToonflowProject>(
-        r#"SELECT id, project_type, image_model, image_quality, video_model, name, intro,
+        r#"SELECT id, project_type, chat_model, image_model, image_quality, video_model, name, intro,
                   type as type_, art_style, director_manual, mode, video_ratio, create_time, update_time
            FROM toonflow.projects ORDER BY create_time DESC"#,
     )
@@ -141,17 +145,24 @@ pub async fn create_project(
     if request.name.trim().is_empty() {
         return Err(AppError::bad_request("project name is required"));
     }
-    validate_project_models(&state.pool, request.image_model, request.video_model).await?;
+    validate_project_models(
+        &state.pool,
+        request.chat_model,
+        request.image_model,
+        request.video_model,
+    )
+    .await?;
     let id = request.id.unwrap_or_else(|| next_id(0));
     let time = now_ms();
     sqlx::query(
         r#"INSERT INTO toonflow.projects
-           (id, project_type, image_model, image_quality, video_model, name, intro, type,
+           (id, project_type, chat_model, image_model, image_quality, video_model, name, intro, type,
             art_style, director_manual, mode, video_ratio, user_id, create_time, update_time)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$14)"#,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)"#,
     )
     .bind(id)
     .bind(request.project_type)
+    .bind(request.chat_model)
     .bind(request.image_model)
     .bind(request.image_quality)
     .bind(request.video_model)
@@ -182,16 +193,23 @@ pub async fn update_project(
     let id = request
         .id
         .ok_or_else(|| AppError::bad_request("project id is required"))?;
-    validate_project_models(&state.pool, request.image_model, request.video_model).await?;
+    validate_project_models(
+        &state.pool,
+        request.chat_model,
+        request.image_model,
+        request.video_model,
+    )
+    .await?;
     let result = sqlx::query(
         r#"UPDATE toonflow.projects
-           SET project_type=$2, image_model=$3, image_quality=$4, video_model=$5, name=$6,
-               intro=$7, type=$8, art_style=$9, director_manual=$10, mode=$11,
-               video_ratio=$12, update_time=$13
+           SET project_type=$2, chat_model=$3, image_model=$4, image_quality=$5, video_model=$6,
+               name=$7, intro=$8, type=$9, art_style=$10, director_manual=$11, mode=$12,
+               video_ratio=$13, update_time=$14
            WHERE id=$1"#,
     )
     .bind(id)
     .bind(request.project_type)
+    .bind(request.chat_model)
     .bind(request.image_model)
     .bind(request.image_quality)
     .bind(request.video_model)
@@ -642,12 +660,14 @@ pub async fn delete_scripts(
     Json(request): Json<DeleteScriptsRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:episode:delete")?;
-    let result = sqlx::query("DELETE FROM toonflow.scripts WHERE id = ANY($1)")
+    if request.ids.is_empty() {
+        return Err(AppError::bad_request("script ids are required"));
+    }
+    sqlx::query("DELETE FROM toonflow.scripts WHERE id = ANY($1)")
         .bind(&request.ids)
         .execute(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to delete scripts"))?;
-    affected(result.rows_affected(), "script")?;
     Ok(Json(ApiResponse::with_message((), "删除剧本成功")))
 }
 
@@ -1633,7 +1653,7 @@ pub async fn get_project_by_path(
 ) -> Result<Json<ApiResponse<ToonflowProject>>, AppError> {
     require(&user, "toon:project:read")?;
     let row = sqlx::query_as::<_, ToonflowProject>(
-        r#"SELECT id, project_type, image_model, image_quality, video_model, name, intro,
+        r#"SELECT id, project_type, chat_model, image_model, image_quality, video_model, name, intro,
                   type as type_, art_style, director_manual, mode, video_ratio, create_time, update_time
            FROM toonflow.projects WHERE id=$1"#,
     )

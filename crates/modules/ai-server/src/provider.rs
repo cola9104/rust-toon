@@ -7,6 +7,31 @@ use rust_toon_ai_api::{
 };
 use serde_json::{Value, json};
 
+const CHAT_CONNECT_ATTEMPTS: usize = 3;
+
+async fn send_chat_request(builder: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    for attempt in 1..=CHAT_CONNECT_ATTEMPTS {
+        let request = builder
+            .try_clone()
+            .ok_or_else(|| "无法重建模型请求".to_string())?;
+        match request.send().await {
+            Ok(response) => return Ok(response),
+            Err(error) if error.is_connect() && attempt < CHAT_CONNECT_ATTEMPTS => {
+                tokio::time::sleep(std::time::Duration::from_millis(250 * attempt as u64)).await;
+            }
+            Err(error) => {
+                let retry_note = if attempt > 1 {
+                    format!("，已尝试 {attempt} 次")
+                } else {
+                    String::new()
+                };
+                return Err(format!("连接模型服务失败{retry_note}：{error}"));
+            }
+        }
+    }
+    unreachable!("chat request loop always returns")
+}
+
 mod anthropic;
 mod azure;
 mod doubao;
@@ -85,7 +110,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             }
         }
-        let response = builder.send().await.map_err(|e| e.to_string())?;
+        let response = send_chat_request(builder).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -118,7 +143,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             };
         }
-        let response = builder.send().await.map_err(|e| e.to_string())?;
+        let response = send_chat_request(builder).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -168,7 +193,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             }
         }
-        let response = builder.send().await.map_err(|e| e.to_string())?;
+        let response = send_chat_request(builder).await?;
         if !response.status().is_success() {
             return Err(response
                 .text()

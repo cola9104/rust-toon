@@ -93,6 +93,21 @@ async fn run(
     let (manual_path, parent) = context.ok_or_else(|| "资产不存在".to_string())?;
     let (label, key) =
         manual_key(&item.type_, parent.is_some()).ok_or_else(|| "不支持的类型".to_string())?;
+
+    // Costume assets describe a reusable garment, not the person wearing it.
+    // Sending costume descriptions through the character manual can introduce
+    // age, body and portrait terms that both conflict with the no-model layout
+    // and unnecessarily trigger image-provider text moderation.
+    if item.type_ == "costume" {
+        let prompt = standalone_costume_prompt(&item.describe);
+        sqlx::query("UPDATE toonflow.assets SET prompt=$2,prompt_state='已完成',prompt_error_reason=NULL WHERE id=$1")
+            .bind(item.assets_id)
+            .bind(&prompt)
+            .execute(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(prompt);
+    }
     let data: Option<(Value,)> = sqlx::query_as(
         "SELECT data FROM toonflow.creative_manuals WHERE kind='visual' AND path=$1",
     )
@@ -113,9 +128,10 @@ async fn run(
         })
         .filter(|s| !s.is_empty())
         .ok_or_else(|| "视觉手册未定义".to_string())?;
-    let prompt = ai_client::text(
+    let prompt = ai_client::project_text(
         pool,
         "universalAi",
+        project_id,
         &toonflow_asset_prompt::polish_system_prompt(&system, extra, &item.type_, parent.is_some()),
         &toonflow_asset_prompt::polish_user_prompt(label, &item.name, &item.describe),
     )
@@ -126,6 +142,18 @@ async fn run(
     }
     sqlx::query("UPDATE toonflow.assets SET prompt=$2,prompt_state='已完成',prompt_error_reason=NULL WHERE id=$1").bind(item.assets_id).bind(&prompt).execute(pool).await.map_err(|e|e.to_string())?;
     Ok(prompt)
+}
+
+fn standalone_costume_prompt(description: &str) -> String {
+    let neutral_description = description
+        .replace("按摩服务", "理疗服务")
+        .replace("按摩技师", "理疗技师")
+        .replace("按摩师", "理疗师")
+        .replace("合体收腰", "修身利落");
+    format!(
+        "独立服装产品设定，深色中性背景，服装平铺或悬挂展示，无人物、无人台、无人体部位。服装描述：{}",
+        neutral_description.trim()
+    )
 }
 async fn mark_failed(pool: &sqlx::PgPool, id: i64, reason: &str) {
     let _ = sqlx::query(
@@ -597,6 +625,24 @@ pub async fn poll_images(
             .map(|r| json!({"id":r.0,"state":r.1,"filePath":r.2,"errorReason":r.3,"imageId":r.4}))
             .collect(),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::standalone_costume_prompt;
+
+    #[test]
+    fn costume_prompt_is_garment_only_and_uses_neutral_service_wording() {
+        let prompt =
+            standalone_costume_prompt("深紫色按摩技师装，合体收腰，适合武馆按摩服务场景。");
+
+        assert!(prompt.contains("深紫色理疗技师装"));
+        assert!(prompt.contains("修身利落"));
+        assert!(prompt.contains("理疗服务场景"));
+        assert!(prompt.contains("无人物"));
+        assert!(!prompt.contains("按摩"));
+        assert!(!prompt.contains("合体收腰"));
+    }
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

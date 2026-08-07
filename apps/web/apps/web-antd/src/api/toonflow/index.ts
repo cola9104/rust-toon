@@ -4,6 +4,7 @@ export namespace ToonflowApi {
   export interface Project {
     id: number;
     projectType: string;
+    chatModel?: number;
     imageModel?: number;
     imageQuality: string;
     videoModel?: number;
@@ -21,6 +22,7 @@ export namespace ToonflowApi {
   export interface SaveProject {
     id?: number;
     projectType: string;
+    chatModel?: number;
     imageModel?: number;
     imageQuality: string;
     videoModel?: number;
@@ -146,10 +148,12 @@ export const getProjectStatistics = (projectId: number) => requestClient.post<To
 export const updateProjectProfile = (data: { id: number; intro?: string; type?: string; artStyle?: string; videoRatio?: string; projectType?: string }) => requestClient.post('/general/updateProject', data);
 export const getAgentModelDetails = (key: 'productionAgent' | 'scriptAgent') => requestClient.post<Record<string, any>>('/project/getModelDetails', { key });
 export const generateNovelEvents = (projectId: number, novelIds: number[]) => requestClient.post('/novel/event/generateEvents', { projectId, novelIds, concurrentCount: 5 });
-export const extractScriptAssets = (projectId: number, scriptIds: number[]) => requestClient.post('/script/extractAssets', { projectId, scriptIds, groupSize: 5 });
+export const extractScriptAssets = (projectId: number, scriptIds: number[]) => requestClient.post<{ taskId: number }>('/script/extractAssets', { projectId, scriptIds, groupSize: 5 });
 export const pollScriptAssets = (ids: number[]) => requestClient.post<Array<{ id: number; extractState: number; errorReason?: string; appearanceCount: number }>>('/script/pollScriptAssets', { ids });
 export const polishAssetPrompt = (data: { assetsId: number; projectId: number; type: string; name: string; describe: string }) => requestClient.post<{ prompt: string; assetsId: number }>('/assetsGenerate/polishAssetsPrompt', data);
 export const generateAssetImage = (data: { projectId: number; model: number | string; resolution: string; id: number; type: string; name: string; prompt: string; base64?: string }) => requestClient.post<{ path: string; assetsId: number }>('/assetsGenerate/generateAssets', data);
+export const queueAssetImages = (data: { projectId: number; model: number | string; resolution: string; concurrentCount?: number; items: Array<{ id: number; type: string; name: string; prompt: string; base64?: string }> }) => requestClient.post<{ total: number }>('/assetsGenerate/batchGenerateImageAssets', data);
+export const pollAssetImages = (ids: number[]) => requestClient.post<Array<{ id: number; state: string; filePath?: string; errorReason?: string; imageId: number }>>('/assets/pollingImageAssets', { ids });
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
 export const getMaterialData = (projectId: number, scriptId?: number) => requestClient.post<{ data: any[]; video: any[] }>('/assets/getMaterialData', { projectId, scriptId });
@@ -249,6 +253,10 @@ export function getAssetLibrary(projectId: number) {
 
 export function saveAsset(data: Partial<ToonflowApi.Asset> & { name: string; projectId: number }) {
   return requestClient.post<{ id: number }>('/toonflow/assets/saveAssets', data);
+}
+
+export function deleteAssets(ids: number[]) {
+  return requestClient.post('/toonflow/assets/batchDelete', { ids });
 }
 
 export function getFlowData(projectId: number, episodesId: number) {

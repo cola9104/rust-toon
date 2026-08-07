@@ -29,6 +29,7 @@ struct CharacterAppearance {
     id: i64,
     role_asset_id: i64,
     name: String,
+    age_stage: String,
     scenes: Value,
     costume_prompt: String,
     description: String,
@@ -75,7 +76,7 @@ pub async fn load_script_context(
     .fetch_all(pool)
     .await?;
     let appearance_rows = sqlx::query_as::<_, CharacterAppearance>(
-        r#"SELECT id,role_asset_id,name,scenes,costume_prompt,description
+        r#"SELECT id,role_asset_id,name,age_stage,scenes,costume_prompt,description
            FROM toonflow.character_appearances
            WHERE project_id=$1 AND script_id=$2
            ORDER BY role_asset_id,id"#,

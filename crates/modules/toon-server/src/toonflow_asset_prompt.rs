@@ -38,11 +38,13 @@ pub(crate) fn image_prompt_with_instruction(
     has_reference: bool,
     managed_instruction: Option<&str>,
 ) -> String {
+    let asymmetric_role = asset_type == "role" && requires_opposite_side_view(visual_description);
     let visual_description = if asset_type == "role" {
         role_visual_description(visual_description)
     } else {
         visual_description.trim().to_string()
     };
+    let visual_description = provider_safe_visual_description(&visual_description);
     let fallback_instruction = match asset_type {
         "role" if derivative => {
             "生成同一角色的标准四视图，保持参考图中的人物身份、面部、发型和体型一致，并应用提示词指定的服装或形态。"
@@ -59,21 +61,85 @@ pub(crate) fn image_prompt_with_instruction(
         }
         _ => "生成干净的资产标准设定图。",
     };
-    let subject_instruction = managed_instruction
-        .filter(|instruction| !instruction.trim().is_empty())
-        .unwrap_or(fallback_instruction);
+    let subject_instruction = if asset_type == "role" {
+        role_layout_instruction(derivative, asymmetric_role)
+    } else {
+        managed_instruction
+            .filter(|instruction| !instruction.trim().is_empty())
+            .unwrap_or(fallback_instruction)
+            .to_string()
+    };
     let reference_instruction = if has_reference {
         "\n保持参考图主体的可见特征一致，但不要复制参考图中的文字或标识。"
     } else {
         ""
     };
-
     format!(
         "画风：{style}\n类型：{asset_type}\n任务要求：{subject_instruction}\n\
          纯视觉描述：{visual_description}{reference_instruction}\n\
          将描述中的姓名、化名、编号、代号和称谓仅作为背景语义理解，绝不能把它们画出来。\n\
          画面中禁止出现任何文字、字母、数字、姓名、编号、胸牌、名牌、墙面标牌、字幕、标题、Logo或水印。\n\
          服装和背景表面保持无字、无编号、无标识。"
+    )
+}
+
+/// Keeps the stored, user-facing costume wording intact while avoiding
+/// ambiguous occupation/body terms at the image-provider moderation boundary.
+fn provider_safe_visual_description(description: &str) -> String {
+    description
+        .replace("按摩技师", "理疗服务人员")
+        .replace("按摩师", "理疗服务人员")
+        .replace("按摩工装", "理疗服务制服")
+        .replace("按摩室", "理疗服务室")
+        .replace("按摩动作", "工作动作")
+        .replace("按摩服务", "理疗服务")
+        .replace("合体收腰", "修身利落")
+        .replace("暴露设计", "不适宜设计")
+        .replace("性感", "时尚")
+}
+
+fn requires_opposite_side_view(description: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "左脸",
+        "右脸",
+        "左眼",
+        "右眼",
+        "左耳",
+        "右耳",
+        "左臂",
+        "右臂",
+        "左手",
+        "右手",
+        "左腿",
+        "右腿",
+        "单边",
+        "单侧",
+        "单耳",
+        "不对称",
+        "眼罩",
+        "机械臂",
+        "义肢",
+        "半边脸",
+        "一侧脸",
+        "侧脸伤疤",
+        "侧面纹身",
+    ];
+    MARKERS.iter().any(|marker| description.contains(marker))
+}
+
+fn role_layout_instruction(derivative: bool, asymmetric: bool) -> String {
+    let identity = if derivative {
+        "第一张参考图是同一人物的基础资产。严格保持参考人物的脸型、五官、发型、年龄、肤色、体型和人物比例，只改变提示词指定的服装、伤病或形态。"
+    } else {
+        "保持同一人物的脸型、五官、发型、年龄、肤色、体型、服装和人物比例完全一致。"
+    };
+    let layout = if asymmetric {
+        "检测到明确的单侧或不对称特征，生成严格四视图全身设定图。画面必须恰好并排出现4个同一人物，从左到右固定为：①正面0°，脸和胸口正对镜头；②左侧90°，鼻尖、胸口和脚尖朝画面左侧；③右侧90°，鼻尖、胸口和脚尖朝画面右侧；④背面180°，后脑和背部正对镜头且不得露出五官。第二格与第三格必须方向相反，完整展示两侧差异。"
+    } else {
+        "生成标准三视图全身设定图。画面必须恰好并排出现3个同一人物，从左到右固定为：①正面0°，脸和胸口正对镜头；②右侧90°标准侧面，鼻尖、胸口和脚尖全部明确朝画面右侧；③背面180°，后脑和背部正对镜头且不得露出眼睛、鼻子、嘴。禁止增加左侧视图，禁止重复方向，禁止用3/4侧面替代标准90°侧面。"
+    };
+    format!(
+        "{identity}{layout}所有视图都必须从头顶到脚底完整入画、等高等比例、基线对齐、自然直立、双臂自然下垂；纯净中性背景、均匀柔光；禁止特写、半身、裁切、不同人物、额外人物、文字和尺寸标注。"
     )
 }
 
@@ -229,6 +295,32 @@ pub(crate) fn storyboard_prompt_with_instruction(
     )
 }
 
+pub(crate) fn storyboard_generation_prompt(stored_prompt: &str) -> String {
+    const NON_VISUAL_MARKERS: [&str; 6] = ["台词：", "台词:", "对白：", "对白:", "音效：", "音效:"];
+    let visual_prompt = stored_prompt
+        .lines()
+        .map(|line| {
+            line.split('；')
+                .filter_map(|clause| {
+                    let end = NON_VISUAL_MARKERS
+                        .iter()
+                        .filter_map(|marker| clause.find(marker))
+                        .min()
+                        .unwrap_or(clause.len());
+                    let clause = clause[..end].trim();
+                    (!clause.is_empty()).then_some(clause)
+                })
+                .collect::<Vec<_>>()
+                .join("；")
+        })
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{visual_prompt}\n所有已绑定的参考资产都必须在画面中清晰可见并与描述一一对应；不得遗漏任何出镜人物，不得把应出镜人物裁切成只露手、肩膀或局部身体。\n画面中禁止出现任何文字、字母、数字、对白、字幕、标题、Logo或水印；不得把台词画进图像。"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,7 +330,9 @@ mod tests {
         let prompt = image_prompt("写实", "role", "年轻女性，神情谨慎", false, false);
 
         assert!(!prompt.contains("叶弥月"));
-        assert!(prompt.contains("生成角色标准四视图"));
+        assert!(prompt.contains("标准三视图全身设定图"));
+        assert!(prompt.contains("禁止增加左侧视图"));
+        assert!(prompt.contains("鼻尖、胸口和脚尖全部明确朝画面右侧"));
         assert!(prompt.contains("纯视觉描述：年轻女性，神情谨慎"));
         assert!(prompt.contains("禁止出现任何文字、字母、数字"));
         assert!(prompt.contains("服装和背景表面保持无字、无编号、无标识"));
@@ -278,10 +372,22 @@ mod tests {
     }
 
     #[test]
+    fn storyboard_generation_removes_dialogue_and_audio_metadata() {
+        let prompt = storyboard_generation_prompt(
+            "【画面】@图1 坐在床边；台词：甲：『你好』；音效：脚步声\n【风格】写实，16:9",
+        );
+        assert!(prompt.contains("@图1 坐在床边"));
+        assert!(prompt.contains("禁止出现任何文字"));
+        assert!(prompt.contains("不得遗漏任何出镜人物"));
+        assert!(!prompt.contains("『你好』"));
+        assert!(!prompt.contains("脚步声"));
+    }
+
+    #[test]
     fn derivative_role_keeps_identity_and_applies_clothing() {
         let prompt = image_prompt("写实", "role", "黑色校服", true, true);
 
-        assert!(prompt.contains("生成同一角色的标准四视图"));
+        assert!(prompt.contains("标准三视图全身设定图"));
         assert!(prompt.contains("纯视觉描述：黑色校服"));
         assert!(prompt.contains("保持参考图主体的可见特征一致"));
     }
@@ -337,6 +443,24 @@ mod tests {
     }
 
     #[test]
+    fn derivative_role_uses_provider_safe_wellness_wording() {
+        let prompt = image_prompt(
+            "写实",
+            "role",
+            "穿着合体收腰的按摩技师制服，便于按摩动作，不使用暴露设计",
+            true,
+            true,
+        );
+
+        assert!(prompt.contains("修身利落的理疗服务人员制服"));
+        assert!(prompt.contains("便于工作动作"));
+        assert!(prompt.contains("不使用不适宜设计"));
+        assert!(!prompt.contains("按摩"));
+        assert!(!prompt.contains("合体收腰"));
+        assert!(!prompt.contains("暴露设计"));
+    }
+
+    #[test]
     fn role_generation_removes_legacy_closeup_layout() {
         let prompt = image_prompt(
             "写实",
@@ -349,6 +473,21 @@ mod tests {
         assert!(!prompt.contains("人像特写"));
         assert!(!prompt.contains("正视图"));
         assert!(prompt.contains("青年男性，短黑发，身材高挑"));
-        assert!(prompt.contains("生成角色标准四视图"));
+        assert!(prompt.contains("标准三视图全身设定图"));
+    }
+
+    #[test]
+    fn unilateral_character_feature_enables_opposite_side_view() {
+        let prompt = image_prompt(
+            "写实",
+            "role",
+            "年轻女性，右眼戴眼罩，左脸无伤",
+            false,
+            false,
+        );
+
+        assert!(prompt.contains("严格四视图全身设定图"));
+        assert!(prompt.contains("第二格与第三格必须方向相反"));
+        assert!(!prompt.contains("禁止增加左侧视图"));
     }
 }

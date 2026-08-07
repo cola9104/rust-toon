@@ -44,6 +44,20 @@ pub fn prompt_format(model: &str) -> PromptFormat {
 }
 
 pub fn expected_items(table: &str, first_frame: bool) -> Vec<ExpectedPanelItem> {
+    expected_items_with_aliases(table, first_frame, &HashMap::new())
+}
+
+/// Parses the storyboard table into the exact rows that the panel agent must create.
+///
+/// A derived role is commonly named after an appearance (for example, `病房造型`) while the
+/// storyboard correctly refers to the character by their canonical name (`王闲`). `asset_aliases`
+/// connects the derived asset id to that canonical role name, so visible roles are not discarded
+/// merely because the two display names differ.
+pub fn expected_items_with_aliases(
+    table: &str,
+    first_frame: bool,
+    asset_aliases: &HashMap<i64, Vec<String>>,
+) -> Vec<ExpectedPanelItem> {
     let mut result = Vec::new();
     let mut segment_duration = None;
     let mut asset_ids = Vec::new();
@@ -58,13 +72,43 @@ pub fn expected_items(table: &str, first_frame: bool) -> Vec<ExpectedPanelItem> 
                  asset_names: &[String],
                  scene: usize| {
         if first_frame {
+            let mut active_role_ids = HashSet::new();
             result.extend(rows.drain(..).map(|(duration, shot)| {
-                let visible_assets = asset_ids
+                let mut visible_assets = asset_ids
                     .iter()
                     .copied()
                     .zip(asset_names.iter().cloned())
-                    .filter(|(_, name)| asset_is_visible(name, &shot.visual))
+                    .filter(|(id, name)| {
+                        asset_is_visible(name, &shot.visual)
+                            || asset_aliases
+                                .get(id)
+                                .into_iter()
+                                .flatten()
+                                .any(|alias| asset_is_visible(alias, &shot.visual))
+                    })
                     .collect::<Vec<_>>();
+                if inherits_scene_roles(&shot) {
+                    for (id, name) in asset_ids.iter().copied().zip(asset_names.iter().cloned()) {
+                        if asset_aliases.contains_key(&id)
+                            && active_role_ids.contains(&id)
+                            && !visible_assets
+                                .iter()
+                                .any(|(visible_id, _)| *visible_id == id)
+                        {
+                            visible_assets.push((id, name));
+                        }
+                    }
+                }
+                for (id, _) in &visible_assets {
+                    if asset_aliases.contains_key(id) {
+                        active_role_ids.insert(*id);
+                    }
+                }
+                for (id, aliases) in asset_aliases {
+                    if aliases.iter().any(|alias| role_exits(alias, &shot.visual)) {
+                        active_role_ids.remove(id);
+                    }
+                }
                 ExpectedPanelItem {
                     duration,
                     asset_ids: visible_assets.iter().map(|(id, _)| *id).collect(),
@@ -134,6 +178,27 @@ pub fn expected_items(table: &str, first_frame: bool) -> Vec<ExpectedPanelItem> 
         scene,
     );
     result
+}
+
+fn inherits_scene_roles(shot: &ExpectedShot) -> bool {
+    const INDEPENDENT_SHOT_TERMS: &[&str] = &[
+        "特写",
+        "大特写",
+        "空镜",
+        "反打",
+        "主观镜头",
+        "画外",
+        "另一个空间",
+        "切到",
+    ];
+    !INDEPENDENT_SHOT_TERMS
+        .iter()
+        .any(|term| shot.shot_size.contains(term) || shot.visual.contains(term))
+}
+
+fn role_exits(name: &str, visual: &str) -> bool {
+    const EXIT_TERMS: &[&str] = &["离开", "走出", "退出", "出门", "消失在", "退到画外"];
+    visual.contains(name) && EXIT_TERMS.iter().any(|term| visual.contains(term))
 }
 
 fn asset_is_visible(name: &str, visual: &str) -> bool {
@@ -412,7 +477,11 @@ fn spatial_anchors(visual: &str) -> impl Iterator<Item = &'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActualPanelItem, PromptFormat, expected_items, prompt_format, validate};
+    use super::{
+        ActualPanelItem, PromptFormat, expected_items, expected_items_with_aliases, prompt_format,
+        validate,
+    };
+    use std::collections::HashMap;
 
     const TABLE: &str = r#"
 ## 场1：客厅 ｜ 参演角色：甲、乙
@@ -458,6 +527,48 @@ mod tests {
             frames[0].asset_names,
             vec!["前世病房", "病床", "心电监护仪"]
         );
+    }
+
+    #[test]
+    fn keeps_a_derived_role_when_the_frame_uses_the_canonical_character_name() {
+        let table = r#"
+## 场1：病房 ｜ 参演角色：王闲
+### 片段一（约4s）
+**引用资产名称**：[病号服造型]
+**引用资产ID**：[19]
+| 序号 | 画面描述 | 时长 | 景别 | 运镜 | 台词 | 音效 |
+|---|---|---|---|---|---|---|
+| 1 | 王闲躺在病床上。 | 4 | 中景 | 固定 |  |  |
+"#;
+        let aliases = HashMap::from([(19, vec!["王闲".to_string()])]);
+
+        let frames = expected_items_with_aliases(table, true, &aliases);
+
+        assert_eq!(frames[0].asset_ids, vec![19]);
+        assert_eq!(frames[0].asset_names, vec!["病号服造型"]);
+    }
+
+    #[test]
+    fn carries_a_role_that_remains_in_the_same_segment_composition() {
+        let table = r#"
+## 场1：按摩房 ｜ 参演角色：王闲、叶弥月
+### 片段一（约10s）
+**引用资产名称**：[吊儿郎当高中生装, 8号按摩师伪装, 按摩房]
+**引用资产ID**：[19, 20, 30]
+| 序号 | 画面描述 | 时长 | 景别 | 运镜 | 台词 | 音效 |
+|---|---|---|---|---|---|---|
+| 1 | 王闲从按摩床上坐起来。 | 3 | 中景 | 固定 |  |  |
+| 2 | 叶弥月走进房间，来到床边。 | 7 | 中景 | 跟拍 |  |  |
+"#;
+        let aliases = HashMap::from([
+            (19, vec!["王闲".to_string()]),
+            (20, vec!["叶弥月".to_string()]),
+        ]);
+
+        let frames = expected_items_with_aliases(table, true, &aliases);
+
+        assert_eq!(frames[0].asset_ids, vec![19]);
+        assert_eq!(frames[1].asset_ids, vec![20, 19]);
     }
 
     #[test]

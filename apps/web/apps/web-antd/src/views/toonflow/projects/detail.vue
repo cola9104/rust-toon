@@ -34,10 +34,7 @@ import {
   addNovel,
   addScript,
   addStoryboard,
-  addVideoTrack,
   batchDeleteStoryboards,
-  batchGenerateVideoPrompts,
-  batchGenerateVideos,
   cancelWorkflowRun,
   cancelWorkflowNodeRun,
   clearAgentMemory,
@@ -72,7 +69,6 @@ import {
   getWorkflowRun,
   removeStoryboard,
   reorderStoryboards,
-  reorderVideoTracks,
   retryTrackVideo,
   retryWorkflowNodeRun,
   bindTrackStoryboards,
@@ -196,6 +192,16 @@ function updatePipelineStage(toolName: string, status: StageStatus) {
 
 function onAgentToolResult(payload: { toolName: string; result: any }) {
   const { toolName, result } = payload;
+  if (toolName === 'save_scripts') {
+    workspaceActiveTab.value = 'script';
+    updatePipelineStage(toolName, 'completed');
+    void loadScripts().then(() => {
+      workspaceTabs[2]!.content = orderedScripts.value
+        .map((script) => `### ${script.name}\n\n${script.content}`)
+        .join('\n\n---\n\n');
+    });
+    return;
+  }
   if (
     [
       'add_deriveAsset',
@@ -251,9 +257,6 @@ function onAgentToolResult(payload: { toolName: string; result: any }) {
     updatePipelineStage(toolName, 'completed');
   } else if (toolName.includes('script') && !toolName.includes('get_script')) {
     workspaceTabs[2]!.content = extractScriptItems(content);
-    workspaceActiveTab.value = 'script';
-    updatePipelineStage(toolName, 'completed');
-  } else if (toolName === 'save_scripts') {
     workspaceActiveTab.value = 'script';
     updatePipelineStage(toolName, 'completed');
   } else if (toolName.includes('supervision') || toolName.includes('review')) {
@@ -346,6 +349,7 @@ const storyboardForm = reactive({
   track: 'main',
   associateAssetsIds: [] as number[],
 });
+const rebuildingStoryboardPanel = ref(false);
 
 function scriptEpisodeNumber(script: ToonflowApi.Script) {
   const match = script.name.match(/(?:EP|第)\s*0*(\d+)/i);
@@ -365,7 +369,17 @@ const scriptOptions = computed(() =>
 );
 
 const assetOptions = computed(() =>
-  assets.value.map((item) => ({ label: `${item.name} (${item.type})`, value: item.id })),
+  (productionAssets.value.length > 0 ? productionAssets.value : assets.value).map((item) => {
+    const parent = item.parentAssetId
+      ? productionAssets.value.find((candidate) => candidate.id === item.parentAssetId)
+      : undefined;
+    const kind = item.parentAssetId ? '衍生角色' : item.type;
+    const owner = parent ? ` · ${parent.name}` : '';
+    return {
+      label: `${item.name} (${kind}${owner})`,
+      value: item.id,
+    };
+  }),
 );
 
 const novelColumns = [
@@ -607,8 +621,8 @@ async function removeScript(script: any) {
 }
 
 async function extractAssetsFromScript(script: ToonflowApi.Script) {
-  await extractScriptAssets(projectId.value, [script.id]);
-  message.success('资产提取任务已提交');
+  const result = await extractScriptAssets(projectId.value, [script.id]);
+  message.success(`资产提取任务 ${result.taskId} 已提交，可在任务中心查看`);
   for (let attempt = 0; attempt < 90; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2000));
     const [result] = await pollScriptAssets([script.id]);
@@ -1190,6 +1204,32 @@ async function saveStoryboardForm() {
   if (storyboardForm.id) await loadFlow();
 }
 
+async function rebuildStoryboardPanel() {
+  if (!selectedScriptId.value) {
+    message.warning('请先选择剧本');
+    return;
+  }
+  rebuildingStoryboardPanel.value = true;
+  try {
+    const hasExisting = storyboards.value.length > 0;
+    await executeAgentTool({
+      agentType: 'productionAgent',
+      projectId: projectId.value,
+      scriptId: selectedScriptId.value,
+      toolName: 'run_sub_agent_storyboard_panel',
+      arguments: {
+        prompt: hasExisting
+          ? '重新读取最新 storyboardTable、assets 和 storyboard。按分镜表顺序逐条核对并修复现有分镜，重点维护同场角色的入场、在场、画外和离场连续性；同步更新 videoDesc、prompt、track、duration、associateAssetsIds 和 shouldGenerateImage。现有分镜数量与分镜表一致时只能调用 update_storyboard，禁止重复新增。'
+          : '读取最新 storyboardTable 和 assets，按分镜表完整生成分镜面板；逐镜维护同场角色连续性，并确保画面描述、衍生角色资产ID和 prompt 的 @图N 一一对应。',
+      },
+    });
+    await loadFlow();
+    message.success(hasExisting ? '分镜面板已重新核对并修复' : '分镜面板已生成');
+  } finally {
+    rebuildingStoryboardPanel.value = false;
+  }
+}
+
 async function deleteStoryboard(row: any) {
   await removeStoryboard(row.id);
   await loadFlow();
@@ -1259,7 +1299,7 @@ function scheduleStoryboardPolling() {
   storyboardPollTimer = setTimeout(refresh, 1200);
 }
 
-async function generateStoryboards(ids: number[], compulsory = false, concurrentCount = 5) {
+async function generateStoryboards(ids: number[], compulsory = false, concurrentCount = 2) {
   if (!selectedScriptId.value || ids.length === 0) return message.warning('请先选择需要生成的分镜');
   storyboardBusy.value = true;
   try {
@@ -1460,6 +1500,13 @@ async function cancelStoryboardWorkflow() {
 
 async function retryStoryboardWorkflow() {
   if (!lastStoryboardNodeRunId.value) return;
+  const retryable = storyboards.value.filter((item) =>
+    ['已取消', '生成失败'].includes(item.state || ''),
+  );
+  if (retryable.length === 0) {
+    storyboardNodeRunState.value = '';
+    return message.info('当前没有生成失败或已取消的分镜，请勾选“未生成”分镜后点击生成选中');
+  }
   storyboardBusy.value = true;
   try {
     const nodeRun = await retryWorkflowNodeRun(lastStoryboardNodeRunId.value);
@@ -1486,11 +1533,6 @@ async function batchDeleteSelectedStoryboards(ids: number[]) {
   await batchDeleteStoryboards(ids, projectId.value);
   message.success(`已删除 ${ids.length} 个分镜`);
   await loadFlow();
-}
-
-async function generateAllStoryboardImages() {
-  if (!selectedScriptId.value || storyboards.value.length === 0) return message.warning('当前剧本没有可生成的分镜');
-  await generateStoryboards(storyboards.value.map((item) => item.id));
 }
 
 async function previewAllStoryboardImages() {
@@ -1524,25 +1566,12 @@ async function saveStoryboardOrder(ids: number[]) {
 }
 
 async function openVideoTrack(trackId: number) {
-  activeTab.value = 'video';
-  await nextTick();
-  document.getElementById(`video-track-${trackId}`)?.scrollIntoView({
-    behavior: 'smooth',
-    block: 'start',
-  });
-}
-
-async function createVideoTrack() {
-  if (!selectedScriptId.value) return message.warning('请先选择剧本');
-  const id = await addVideoTrack(projectId.value, selectedScriptId.value);
-  await loadFlow();
-  const track = videoTracks.value.find((item: any) => item.id === id) ?? { id, medias: [] };
+  const track = videoTracks.value.find((item: any) => item.id === trackId);
+  if (!track) return message.warning('未找到对应的视频轨道');
   openTrackBinding(track);
-  message.success('轨道已新增，请选择要移入的分镜');
 }
-async function moveVideoTrack(index:number,direction:-1|1){if(!selectedScriptId.value)return;const target=index+direction;if(target<0||target>=videoTracks.value.length)return;const list=[...videoTracks.value];[list[index],list[target]]=[list[target],list[index]];videoTracks.value=list;await reorderVideoTracks(projectId.value,selectedScriptId.value,list.map(track=>track.id))}
-function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=(track.medias??[]).map((media:any)=>media.id);trackBindingOpen.value=true}
-async function confirmTrackBinding(){const track=trackBindingTarget.value;if(!track)return;await bindTrackStoryboards(track.id,trackBindingStoryboardIds.value);trackBindingOpen.value=false;await loadFlow();message.success('分镜已移入该轨道')}
+function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=[...new Set<number>((track.medias??[]).map((media:any)=>media.id))];trackBindingOpen.value=true}
+async function confirmTrackBinding(){const track=trackBindingTarget.value;if(!track)return;const storyboardIds=[...new Set<number>(trackBindingStoryboardIds.value)];await bindTrackStoryboards(track.id,storyboardIds);trackBindingOpen.value=false;await loadFlow();message.success('分镜已移入该轨道')}
 async function saveTrackPrompt(track:any) { await updateVideoTrackPrompt(track.id, track.prompt || ''); message.success('视频提示词已保存'); }
 async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoMode.value}); message.success('视频提示词已生成'); }
 let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1590,8 +1619,6 @@ async function generateVideo(track:any) {
   message.loading({ content: `轨道 ${track.id} 正在生成视频`, duration: 2, key: `video-${id}` });
   startVideoPolling();
 }
-async function generateAllVideoPrompts(){if(!project.value?.videoModel)return message.warning('请先配置视频模型');await batchGenerateVideoPrompts({projectId:projectId.value,model:project.value.videoModel,mode:videoMode.value,concurrentCount:5,trackData:videoTracks.value.map(track=>({trackId:track.id,info:track.medias??[]}))});message.success('批量提示词任务已提交');window.setTimeout(loadFlow,3000)}
-async function generateAllVideos(){if(!selectedScriptId.value||!project.value?.videoModel)return message.warning('请先选择剧本并配置视频模型');await batchGenerateVideos({projectId:projectId.value,scriptId:selectedScriptId.value,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,trackData:videoTracks.value.map(track=>({trackId:track.id,prompt:track.prompt||'',duration:track.duration||5,uploadData:track.medias??[]}))});message.success('批量视频任务已提交');window.setTimeout(loadFlow,3000)}
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
@@ -1611,7 +1638,7 @@ watch(selectedScriptId, () => {
 
 watch(activeTab, (tab) => {
   if (tab === 'script-agent') agentType.value = 'scriptAgent';
-  if (tab === 'video' || tab === 'production') agentType.value = 'productionAgent';
+  if (tab === 'production') agentType.value = 'productionAgent';
   loadAgentMemory();
 });
 
@@ -1763,8 +1790,13 @@ watch(projectId, () => loadAll());
                 />
                 <Button @click="loadFlow">刷新制作数据</Button>
                 <Button type="primary" @click="saveFlowText">保存分镜工作区</Button>
+                <Button
+                  :loading="rebuildingStoryboardPanel"
+                  @click="rebuildStoryboardPanel"
+                >
+                  {{ storyboards.length ? 'Agent 修复分镜面板' : 'Agent 生成分镜面板' }}
+                </Button>
                 <Button @click="openStoryboard()">新增分镜</Button>
-                <Button type="primary" :disabled="storyboardBusy" @click="generateAllStoryboardImages">批量生成分镜图</Button>
                 <Button @click="previewAllStoryboardImages">合成预览</Button>
                 <Button v-if="productionAgentCollapsed" @click="productionAgentCollapsed = false">展开 Agent</Button>
               </Space>
@@ -1842,27 +1874,6 @@ watch(projectId, () => loadAll());
               </Card>
             </Col>
           </Row>
-        </Tabs.TabPane>
-        <Tabs.TabPane key="video" tab="视频制作">
-          <Card class="mb-3" size="small" title="视频生产 Agent">
-            <template #extra><Space><Tag color="blue">按当前剧本连续记忆</Tag><Button @click="loadAgentMemory">恢复会话</Button></Space></template>
-            <AgentChat
-              ref="agentChatRef"
-              agent-type="productionAgent"
-              :project-id="projectId"
-              :script-id="selectedScriptId"
-              :messages="productionChatMessages"
-              @tool-result="onAgentToolResult"
-            />
-          </Card>
-          <Space class="mb-3"><Select v-model:value="selectedScriptId" :options="scriptOptions" placeholder="选择剧本" style="width:240px"/><Button type="primary" @click="createVideoTrack">新增轨道</Button><Button @click="generateAllVideoPrompts">批量提示词</Button><Button @click="generateAllVideos">批量视频</Button><Button type="primary" @click="exportVideo">导出成片</Button><Button @click="loadFlow">刷新状态</Button></Space>
-          <Card v-for="(track,trackIndex) in videoTracks" :id="`video-track-${track.id}`" :key="track.id" class="mb-3 video-track-card" size="small">
-            <template #title>轨道 {{ track.id }} · {{ track.duration || 0 }} 秒</template>
-            <template #extra><Space><Button :disabled="trackIndex===0" @click="moveVideoTrack(trackIndex,-1)">上移</Button><Button :disabled="trackIndex===videoTracks.length-1" @click="moveVideoTrack(trackIndex,1)">下移</Button><Button @click="openTrackBinding(track)">调整分镜</Button><Button @click="createVideoPrompt(track)">AI 生成提示词</Button><Button @click="saveTrackPrompt(track)">保存提示词</Button><Button type="primary" @click="generateVideo(track)">生成视频</Button></Space></template>
-            <Input.TextArea v-model:value="track.prompt" :rows="3" placeholder="视频生成提示词"/>
-            <div class="mt-2"><Tag v-for="media in track.medias" :key="media.id">{{media.index}} · 分镜 {{media.id}}</Tag></div>
-            <div class="mt-3 flex gap-3 overflow-x-auto"><div v-for="video in track.videoList" :key="video.id"><video v-if="video.src" :src="video.src" controls class="h-40 rounded border"/><Tag :color="video.state==='生成成功'?'green':video.state==='生成失败'?'red':video.state==='生成中'?'processing':'default'">{{video.state}}</Tag><div v-if="video.errorReason" class="max-w-80 whitespace-normal text-xs text-red-500">{{video.errorReason}}</div><Space><Button v-if="video.state==='生成成功'" size="small" type="link" @click="chooseVideo(track,video)">{{track.selectVideoId===video.id?'已选中':'选择'}}</Button><Button v-if="video.state==='生成中'" size="small" type="link" @click="cancelVideo(video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" type="link" @click="retryVideo(video,track)">重试</Button><Button danger size="small" type="link" @click="removeVideo(video)">删除</Button></Space></div><Tag v-if="!track.videoList?.length">暂无候选视频</Tag></div>
-          </Card>
           <Modal v-model:open="trackBindingOpen" :title="`调整轨道 ${trackBindingTarget?.id ?? ''} 的分镜`" width="720px" @ok="confirmTrackBinding">
             <p class="mb-3 text-gray-500">选中的分镜会从原轨道移入当前轨道，可多选。</p>
             <Select
@@ -2152,15 +2163,6 @@ watch(projectId, () => loadAll());
 
 .production-agent-card :deep(.agent-chat-wrapper) {
   height: 600px;
-}
-
-.video-track-card {
-  scroll-margin-top: 16px;
-}
-
-.video-track-card:target,
-.video-track-card:focus-within {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ant-color-primary) 25%, transparent);
 }
 
 @media (max-width: 1199px) {

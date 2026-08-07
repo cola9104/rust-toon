@@ -589,12 +589,19 @@ pub struct BindStoryboardsRequest {
     storyboard_ids: Vec<i64>,
 }
 
+fn normalize_storyboard_ids(mut ids: Vec<i64>) -> Vec<i64> {
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 pub async fn bind_storyboards(
     user: CurrentUser,
     State(state): State<ToonState>,
     Json(req): Json<BindStoryboardsRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:update")?;
+    let storyboard_ids = normalize_storyboard_ids(req.storyboard_ids);
     let track: Option<(i64, Option<i64>)> =
         sqlx::query_as("SELECT project_id,script_id FROM toonflow.video_tracks WHERE id=$1")
             .bind(req.track_id)
@@ -602,6 +609,18 @@ pub async fn bind_storyboards(
             .await
             .map_err(|_| AppError::internal("failed to load track"))?;
     let (project_id, script_id) = track.ok_or_else(|| AppError::not_found("track not found"))?;
+    let valid_storyboard_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM toonflow.storyboards WHERE id=ANY($1) AND project_id=$2 AND script_id=$3",
+    )
+    .bind(&storyboard_ids)
+    .bind(project_id)
+    .bind(script_id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate storyboards"))?;
+    if valid_storyboard_count != storyboard_ids.len() as i64 {
+        return Err(AppError::bad_request("部分分镜不存在或不属于当前轨道项目"));
+    }
     let mut tx = state
         .pool
         .begin()
@@ -610,17 +629,14 @@ pub async fn bind_storyboards(
     let mut affected_track_ids: Vec<i64> = sqlx::query_scalar(
         "SELECT DISTINCT track_id FROM toonflow.storyboards WHERE id=ANY($1) AND track_id IS NOT NULL",
     )
-    .bind(&req.storyboard_ids)
+    .bind(&storyboard_ids)
     .fetch_all(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to load previous tracks"))?;
     affected_track_ids.push(req.track_id);
     affected_track_ids.sort_unstable();
     affected_track_ids.dedup();
-    let result=sqlx::query("UPDATE toonflow.storyboards SET track_id=$1 WHERE id=ANY($2) AND project_id=$3 AND script_id=$4").bind(req.track_id).bind(&req.storyboard_ids).bind(project_id).bind(script_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboards"))?;
-    if result.rows_affected() != req.storyboard_ids.len() as u64 {
-        return Err(AppError::bad_request("部分分镜不存在或不属于当前轨道项目"));
-    }
+    sqlx::query("UPDATE toonflow.storyboards SET track_id=$1 WHERE id=ANY($2) AND project_id=$3 AND script_id=$4").bind(req.track_id).bind(&storyboard_ids).bind(project_id).bind(script_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboards"))?;
     sqlx::query(
         "UPDATE toonflow.video_tracks vt SET duration=coalesce((SELECT sum(CASE WHEN s.duration ~ '^[0-9]+$' THEN s.duration::integer ELSE 0 END)::integer FROM toonflow.storyboards s WHERE s.track_id=vt.id),0) WHERE vt.id=ANY($1)",
     )
@@ -778,7 +794,7 @@ pub(crate) async fn create_prompt(
             .collect::<Vec<_>>()
             .join("\n")
     );
-    match ai_client::text(pool, "universalAi", &system, &content).await {
+    match ai_client::project_text(pool, "universalAi", project_id, &system, &content).await {
         Ok(text) => {
             sqlx::query(
                 "UPDATE toonflow.video_tracks SET prompt=$2,state='已完成',reason=NULL WHERE id=$1",
@@ -832,7 +848,8 @@ fn model_parameter(value: &Value) -> Result<String, AppError> {
 #[cfg(test)]
 mod prompt_tests {
     use super::{
-        Generate, merge_references, model_parameter, references_for_mode, video_prompt_name,
+        Generate, merge_references, model_parameter, normalize_storyboard_ids, references_for_mode,
+        video_prompt_name,
     };
     use serde_json::json;
 
@@ -861,6 +878,11 @@ mod prompt_tests {
         assert_eq!(model_parameter(&json!(123)).unwrap(), "123");
         assert_eq!(model_parameter(&json!("seedance")).unwrap(), "seedance");
         assert!(model_parameter(&json!({})).is_err());
+    }
+
+    #[test]
+    fn normalizes_duplicate_storyboard_ids_before_binding() {
+        assert_eq!(normalize_storyboard_ids(vec![3, 1, 3, 2, 1]), vec![1, 2, 3]);
     }
 
     #[test]

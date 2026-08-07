@@ -42,6 +42,7 @@ const saving = ref(false);
 const modalOpen = ref(false);
 const projects = ref<ToonflowApi.Project[]>([]);
 const manuals = ref<ToonflowApi.CreativeManual[]>([]);
+const chatModels = ref<{ label: string; value: number }[]>([]);
 const imageModels = ref<{ label: string; value: number }[]>([]);
 const videoModels = ref<{ label: string; value: number }[]>([]);
 const imageQualityOptions = [
@@ -61,6 +62,7 @@ const directorManualOptions = computed(() => manuals.value.filter((item) => item
 
 const form = reactive<ToonflowApi.SaveProject>({
   projectType: 'short_drama',
+  chatModel: undefined,
   imageModel: undefined,
   imageQuality: '2K',
   videoModel: undefined,
@@ -78,6 +80,7 @@ const columns = [
   { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
   { title: '视觉手册', dataIndex: 'artStyle', key: 'artStyle', width: 140 },
   { title: '比例', dataIndex: 'videoRatio', key: 'videoRatio', width: 90 },
+  { title: '对话模型', dataIndex: 'chatModel', key: 'chatModel', width: 160 },
   { title: '图片模型', dataIndex: 'imageModel', key: 'imageModel', width: 160 },
   { title: '视频模型', dataIndex: 'videoModel', key: 'videoModel', width: 160 },
   { title: '视频生成模式', dataIndex: 'mode', key: 'mode', width: 160 },
@@ -88,6 +91,7 @@ function resetForm() {
   Object.assign(form, {
     id: undefined,
     projectType: 'short_drama',
+    chatModel: undefined,
     imageModel: undefined,
     imageQuality: '2K',
     videoModel: undefined,
@@ -114,10 +118,12 @@ async function loadManuals() {
   manuals.value = await getCreativeManuals();
 }
 async function loadModels() {
-  const [images, videos] = await Promise.all([
+  const [chats, images, videos] = await Promise.all([
+    getModelSimpleList(AiModelTypeEnum.CHAT),
     getModelSimpleList(AiModelTypeEnum.IMAGE),
     getModelSimpleList(AiModelTypeEnum.VIDEO),
   ]);
+  chatModels.value = chats.map((item) => ({ label: item.model, value: item.id }));
   imageModels.value = images.map((item) => ({ label: item.model, value: item.id }));
   videoModels.value = videos.map((item) => ({ label: item.model, value: item.id }));
 }
@@ -126,12 +132,13 @@ function modelLabel(options: Array<{ label: string; value: number }>, id?: numbe
   return options.find((option) => option.value === id)?.label || '未配置';
 }
 
-function openCreate() {
+async function openCreate() {
   resetForm();
+  await loadModels();
   modalOpen.value = true;
 }
 
-function openEdit(project: any) {
+async function openEdit(project: any) {
   Object.assign(form, project);
   if (!imageQualityOptions.some((option) => option.value === form.imageQuality)) {
     form.imageQuality = '2K';
@@ -140,6 +147,7 @@ function openEdit(project: any) {
     form.mode = 'startEndRequired';
   }
   if (!form.videoRatio) form.videoRatio = '16:9';
+  await loadModels();
   modalOpen.value = true;
 }
 
@@ -218,6 +226,9 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
           <template v-if="column.key === 'imageModel'">
             {{ modelLabel(imageModels, record.imageModel) }}
           </template>
+          <template v-if="column.key === 'chatModel'">
+            {{ modelLabel(chatModels, record.chatModel) }}
+          </template>
           <template v-if="column.key === 'videoModel'">
             {{ modelLabel(videoModels, record.videoModel) }}
           </template>
@@ -276,6 +287,9 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
         </Form.Item>
         <Form.Item label="图片模型">
           <Select v-model:value="form.imageModel" allow-clear :options="imageModels" placeholder="选择统一图片模型" />
+        </Form.Item>
+        <Form.Item label="对话模型">
+          <Select v-model:value="form.chatModel" allow-clear :options="chatModels" placeholder="选择 Agent 对话模型" />
         </Form.Item>
         <Form.Item label="视频模型">
           <Select v-model:value="form.videoModel" allow-clear :options="videoModels" placeholder="选择统一视频模型" />

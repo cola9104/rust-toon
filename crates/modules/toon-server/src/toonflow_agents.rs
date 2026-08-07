@@ -219,9 +219,10 @@ async fn summarize_if_needed(state: &ToonState, request: &ChatRequest, agent_key
         .map(|(_, r, c)| format!("{r}: {c}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let Ok(summary) = ai_client::text(
+    let Ok(summary) = ai_client::project_text(
         &state.pool,
         agent_key,
+        request.project_id,
         "将对话压缩为500字以内的事实摘要，只输出摘要。",
         &source,
     )
@@ -249,7 +250,8 @@ deepRetrieve 用于搜索历史对话中的关键信息，仅在用户要求回�
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     } else {
-        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
+        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt}), deepRetrieve({keyword})。
+deepRetrieve 只检索当前项目与当前剧本的生产对话记忆，不读取实时工作区数据。
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     }
@@ -286,6 +288,10 @@ fn parse_tool_calls(text: &str) -> Vec<(String, Value)> {
         rest = &content[end + 12..];
     }
     calls
+}
+
+fn parse_native_tool_arguments(arguments: &str) -> Result<Value, &'static str> {
+    serde_json::from_str(arguments).map_err(|_| "工具参数不是合法 JSON，请修正参数后重新调用")
 }
 
 fn tool_names(agent_type: &str) -> &'static [&'static str] {
@@ -325,6 +331,7 @@ fn tool_names(agent_type: &str) -> &'static [&'static str] {
             "run_sub_agent_storyboard_table",
             "run_sub_agent_supervision",
             "use_skill",
+            "deepRetrieve",
         ]
     }
 }
@@ -381,7 +388,7 @@ fn tool_def(name: &str) -> Value {
             json!({"type":"function","function":{"name":"add_flowData_storyboard","description":"向分镜面板新增一条分镜记录。包含画面描述、提示词、轨道、时长、关联资产。","parameters":{"type":"object","properties":{"videoDesc":{"type":"string"},"prompt":{"type":"string"},"track":{"type":"string"},"duration":{"type":"integer"},"associateAssetsIds":{"type":"array","items":{"type":"integer"}},"shouldGenerateImage":{"type":"string"}},"required":["videoDesc","track","duration"]}}})
         }
         "update_storyboard" => {
-            json!({"type":"function","function":{"name":"update_storyboard","description":"更新已有分镜记录的字段。只更新传入的字段。","parameters":{"type":"object","properties":{"id":{"type":"integer"},"videoDesc":{"type":"string"},"prompt":{"type":"string"},"track":{"type":"string"},"duration":{"type":"integer"}},"required":["id"]}}})
+            json!({"type":"function","function":{"name":"update_storyboard","description":"更新已有分镜记录的字段或重新绑定当前画面真实可见的资产。提示词中 @图N 必须与 associateAssetsIds 顺序一一对应。","parameters":{"type":"object","properties":{"id":{"type":"integer"},"videoDesc":{"type":"string"},"prompt":{"type":"string"},"track":{"type":"string"},"duration":{"type":"integer"},"associateAssetsIds":{"type":"array","items":{"type":"integer"}},"shouldGenerateImage":{"type":"boolean"}},"required":["id"]}}})
         }
         "generate_storyboard" => {
             json!({"type":"function","function":{"name":"generate_storyboard","description":"触发分镜图片生成（异步任务）。传入分镜ID数组。","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"}},"concurrentCount":{"type":"integer"}},"required":["ids"]}}})
@@ -453,9 +460,10 @@ pub(crate) async fn run_scoped_production_agent(
         json!({"role":"user","content":prompt}),
     ];
     for _ in 0..24 {
-        let raw = ai_client::text_tools(
+        let raw = ai_client::project_text_tools(
             &state.pool,
             agent_key,
+            project_id,
             messages.clone(),
             definitions.clone(),
         )
@@ -496,8 +504,17 @@ pub(crate) async fn run_scoped_production_agent(
                 .pointer("/function/arguments")
                 .and_then(Value::as_str)
                 .unwrap_or("{}");
-            let arguments = serde_json::from_str(arguments)
-                .map_err(|_| AppError::bad_request("执行层工具参数不是合法 JSON"))?;
+            let arguments = match parse_native_tool_arguments(arguments) {
+                Ok(arguments) => arguments,
+                Err(message) => {
+                    messages.push(json!({
+                        "role":"tool",
+                        "tool_call_id":call_id,
+                        "content":json!({"error":message}).to_string()
+                    }));
+                    continue;
+                }
+            };
             let request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: "productionAgent".to_string(),
@@ -529,9 +546,10 @@ async fn run_native_tools(
         json!({"role":"user","content":request.content}),
     ];
     for _ in 0..12 {
-        let raw = ai_client::text_tools(
+        let raw = ai_client::project_text_tools(
             &state.pool,
             agent_key,
+            request.project_id,
             messages.clone(),
             native_tool_definitions(&request.agent_type),
         )
@@ -635,9 +653,10 @@ async fn run_with_tools(
     let mut prompt = request.content.clone();
     for _ in 0..4 {
         let event_pool = state.pool.clone();
-        let output = ai_client::text_stream(
+        let output = ai_client::project_text_stream(
             &state.pool,
             agent_key,
+            request.project_id,
             &complete_system,
             &prompt,
             move |delta| { let pool=event_pool.clone(); async move { sqlx::query("INSERT INTO toonflow.agent_run_events(run_id,event_type,data,create_time)VALUES($1,'delta',$2,$3)").bind(run_id).bind(json!({"text":delta})).bind(now_ms()).execute(&pool).await.map_err(|error|error.to_string())?;Ok(()) } },
@@ -795,9 +814,10 @@ pub(crate) async fn run_with_emitter(
             return Err("用户已中止".into());
         }
 
-        let raw = ai_client::text_tools(
+        let raw = ai_client::project_text_tools(
             &state.pool,
             agent_key,
+            request.project_id,
             messages.clone(),
             native_tool_definitions(&request.agent_type),
         )
@@ -1114,7 +1134,7 @@ pub async fn clear(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_tool_calls;
+    use super::{parse_native_tool_arguments, parse_tool_calls, tool_names};
 
     #[test]
     fn parses_multiple_tool_calls() {
@@ -1129,5 +1149,16 @@ mod tests {
     #[test]
     fn ignores_invalid_tool_payload() {
         assert!(parse_tool_calls("<tool_call>not-json</tool_call>").is_empty());
+    }
+
+    #[test]
+    fn production_agent_is_authorized_to_retrieve_its_memory() {
+        assert!(tool_names("productionAgent").contains(&"deepRetrieve"));
+    }
+
+    #[test]
+    fn invalid_native_tool_arguments_can_be_returned_to_the_model_for_repair() {
+        assert!(parse_native_tool_arguments(r#"{"key":"assets"}"#).is_ok());
+        assert!(parse_native_tool_arguments(r#"{"key":"assets""#).is_err());
     }
 }

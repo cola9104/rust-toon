@@ -13,6 +13,7 @@ mod toonflow_asset_description;
 mod toonflow_asset_library;
 mod toonflow_asset_prompt;
 mod toonflow_audio;
+mod toonflow_character_identity;
 mod toonflow_image_edit_prompt;
 mod toonflow_image_workflow;
 mod toonflow_manuals;
@@ -225,6 +226,15 @@ mod storyboard_database_tests {
 impl ToonState {
     pub fn new(pool: PgPool, tokens: TokenService) -> Self {
         Self { pool, tokens }
+    }
+
+    pub async fn recover_interrupted_image_tasks(&self) -> Result<u64, sqlx::Error> {
+        sqlx::query(
+            "UPDATE toonflow.images SET state='生成失败',error_reason='服务重启导致生成中断，请重新生成' WHERE state='生成中'",
+        )
+        .execute(&self.pool)
+        .await
+        .map(|result| result.rows_affected())
     }
 }
 
@@ -822,6 +832,23 @@ pub fn routes(state: ToonState) -> Router {
         .route("/novel/getNovelData", post(toonflow::all_novel))
         .route("/novel/updateNovel", post(toonflow::update_novel))
         .route("/novel/delNovel", post(toonflow::delete_novel))
+        .route(
+            "/novel/event/generateEvents",
+            post(toonflow_novel_events::generate),
+        )
+        .route("/novel/event/getEvent", post(toonflow_novel_events::list))
+        .route(
+            "/novel/getNovelEventState",
+            post(toonflow_novel_events::states),
+        )
+        .route(
+            "/novel/event/deletEvent",
+            post(toonflow_novel_events::delete),
+        )
+        .route(
+            "/novel/event/batchDeleteEvent",
+            post(toonflow_novel_events::batch_delete),
+        )
         .route("/script/addScript", post(toonflow::add_script))
         .route("/script/getScrptApi", post(toonflow::list_scripts))
         .route("/script/updateScript", post(toonflow::update_script))
@@ -840,6 +867,14 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/assetsGenerate/generateAssets",
             post(toonflow_asset_ai::generate_image),
+        )
+        .route(
+            "/assetsGenerate/batchGenerateImageAssets",
+            post(toonflow_asset_ai::batch_generate_images),
+        )
+        .route(
+            "/assets/pollingImageAssets",
+            post(toonflow_asset_ai::poll_images),
         )
         .route(
             "/assetsGenerate/cancelGenerate",

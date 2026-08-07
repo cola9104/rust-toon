@@ -13,7 +13,7 @@ import '../shared/page-card.css';
 const loading=ref(false); const tasks=ref<ToonflowApi.Task[]>([]);
 const columns=[{title:'任务',dataIndex:'description',width:260},{title:'项目',dataIndex:'projectName',width:180},{title:'类型',dataIndex:'taskClass',width:150},{title:'模型',dataIndex:'model',width:240},{title:'关联章节/对象',dataIndex:'relatedObjects'},{title:'开始时间',key:'startTime',width:180},{title:'状态',dataIndex:'state',width:110},{title:'失败原因',dataIndex:'reason'}];
 const color=(state:string)=>({success:'green',completed:'green',running:'blue',failed:'red',error:'red'}[state?.toLowerCase()]??'default');
-const typeLabel=(type:string)=>({novelEvent:'章节事件提取',videoExport:'成片导出','工作流图片生成':'工作流图片生成'}[type]??type);
+const typeLabel=(type:string)=>({novelEvent:'章节事件提取',scriptAssetExtraction:'剧本资产提取',videoExport:'成片导出','工作流图片生成':'工作流图片生成'}[type]??type);
 const stateLabel=(state:string)=>({success:'成功',completed:'已完成',running:'处理中',failed:'失败',error:'失败'}[state?.toLowerCase()]??state??'未知');
 async function load(){loading.value=true;try{tasks.value=await getTasks()}finally{loading.value=false}} onMounted(load);
 </script>

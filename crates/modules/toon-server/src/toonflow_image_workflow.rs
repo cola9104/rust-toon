@@ -17,7 +17,7 @@ async fn normalize_image_references(references: Vec<String>) -> Result<Vec<Strin
             || reference.starts_with("https://")
         {
             normalized.push(reference);
-        } else if reference.starts_with("/toonflow/assets/files/") {
+        } else if crate::toonflow_storage::is_asset_image_path(&reference) {
             normalized.push(crate::toonflow_storage::image_data_url(&reference).await?);
         } else {
             return Err(format!("不支持的参考图地址：{reference}"));
@@ -26,7 +26,10 @@ async fn normalize_image_references(references: Vec<String>) -> Result<Vec<Strin
     Ok(normalized)
 }
 
-fn validate_storyboard_prompt(prompt: &str, reference_count: usize) -> Result<(), String> {
+pub(crate) fn validate_storyboard_prompt(
+    prompt: &str,
+    reference_count: usize,
+) -> Result<(), String> {
     if prompt.trim().is_empty() {
         return Err("分镜图片提示词为空，请先按首位帧模式重新写入分镜面板".to_string());
     }
@@ -34,7 +37,7 @@ fn validate_storyboard_prompt(prompt: &str, reference_count: usize) -> Result<()
         let marker = format!("@图{index}");
         if !prompt.contains(&marker) {
             return Err(format!(
-                "分镜图片提示词缺少参考资产绑定 {marker}，请重新生成分镜面板"
+                "分镜图片已绑定参考资产 {marker}，但画面提示词未描述该资产；请补充其位置和姿态，或从当前分镜解除绑定"
             ));
         }
     }
@@ -220,7 +223,7 @@ pub struct StoryboardGenerate {
 
 #[derive(Clone)]
 pub(crate) struct StoryboardImageJob {
-    id: i64,
+    pub(crate) id: i64,
     prompt: String,
 }
 
@@ -305,10 +308,11 @@ async fn generate_storyboard_job(
                 .await;
         return false;
     }
+    let generation_prompt = crate::toonflow_asset_prompt::storyboard_generation_prompt(&job.prompt);
     match ai_client::image_with_references(
         &pool,
         &model,
-        &job.prompt,
+        &generation_prompt,
         &storyboard_image_size(&quality, &ratio),
         references,
     )
@@ -416,6 +420,33 @@ pub(crate) async fn run_storyboard_generation(
     summary
 }
 
+pub(crate) async fn load_storyboard_generation_results(
+    pool: &sqlx::PgPool,
+    storyboard_ids: &[i64],
+) -> Vec<Value> {
+    sqlx::query_as::<_, (i64, String, Option<String>, Option<String>, String, i32)>(
+        "SELECT id,coalesce(state,''),reason,file_path,prompt,should_generate_image
+         FROM toonflow.storyboards WHERE id=ANY($1) ORDER BY index,id",
+    )
+    .bind(storyboard_ids)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default()
+    .into_iter()
+    .map(|row| {
+        json!({
+            "id": row.0,
+            "state": row.1,
+            "reason": row.2,
+            "filePath": row.3,
+            "src": row.3,
+            "prompt": row.4,
+            "shouldGenerateImage": row.5,
+        })
+    })
+    .collect()
+}
+
 pub async fn schedule_storyboard_generation(
     pool: &sqlx::PgPool,
     project_id: i64,
@@ -448,10 +479,10 @@ mod prompt_tests {
     }
 
     #[test]
-    fn rejects_missing_reference_markers() {
-        let error = validate_storyboard_prompt("@图1 为角色，【画面】二人对视", 2)
-            .expect_err("missing @图2 must be rejected");
-        assert!(error.contains("@图2"));
+    fn rejects_bound_but_undocumented_reference_assets() {
+        let error = validate_storyboard_prompt("@图2 为角色，@图3 为场景", 3)
+            .expect_err("bound @图1 must be documented or unbound");
+        assert!(error.contains("已绑定参考资产 @图1"));
     }
 
     #[test]
@@ -478,7 +509,7 @@ pub async fn generate_storyboards(
         req.project_id,
         req.script_id,
         &req.storyboard_ids,
-        req.concurrent_count.unwrap_or(5),
+        req.concurrent_count.unwrap_or(2),
         req.compulsory.unwrap_or(false),
     )
     .await?;

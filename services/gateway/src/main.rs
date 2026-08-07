@@ -36,6 +36,13 @@ async fn main() -> anyhow::Result<()> {
     let toon_state = rust_toon_toon_server::ToonState::new(database.clone(), tokens.clone());
     let media_state = rust_toon_media_server::MediaState::new(database.clone(), tokens);
     system_state.bootstrap().await?;
+    let recovered_images = toon_state.recover_interrupted_image_tasks().await?;
+    if recovered_images > 0 {
+        warn!(
+            recovered_images,
+            "marked image tasks interrupted by the previous process as failed"
+        );
+    }
     let database_auth = system_state.database_auth_state();
 
     let mut app = Router::new()

@@ -23,7 +23,7 @@ pub async fn get_single_project(
     Json(request): Json<ProjectIdRequest>,
 ) -> Result<Json<ApiResponse<Vec<ToonflowProject>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, ToonflowProject>(r#"SELECT id,project_type,image_model,image_quality,video_model,name,intro,type as type_,art_style,director_manual,mode,video_ratio,create_time,update_time FROM toonflow.projects WHERE id=$1"#)
+    let rows = sqlx::query_as::<_, ToonflowProject>(r#"SELECT id,project_type,chat_model,image_model,image_quality,video_model,name,intro,type as type_,art_style,director_manual,mode,video_ratio,create_time,update_time FROM toonflow.projects WHERE id=$1"#)
         .bind(request.id).fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to get project"))?;
     Ok(Json(ApiResponse::new(rows)))
 }

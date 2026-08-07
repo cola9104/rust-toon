@@ -726,7 +726,7 @@ async fn launch_storyboard_node(
             "workflow node run has already started",
         ));
     }
-    let (storyboards, jobs) = toonflow_image_workflow::prepare_storyboard_generation(
+    let (_storyboards, jobs) = toonflow_image_workflow::prepare_storyboard_generation(
         &state.pool,
         row.3,
         row.4,
@@ -772,6 +772,7 @@ async fn launch_storyboard_node(
         .map_err(|_| AppError::internal("failed to commit workflow node run"))?;
 
     let total = jobs.len();
+    let generated_storyboard_ids = jobs.iter().map(|job| job.id).collect::<Vec<_>>();
     let task_state = state.clone();
     let workflow_run_id = row.0;
     let concurrency = input.concurrent_count;
@@ -795,6 +796,11 @@ async fn launch_storyboard_node(
                 Some(format!("{} 个分镜图片生成失败", summary.failed)),
             )
         };
+        let storyboards = toonflow_image_workflow::load_storyboard_generation_results(
+            &task_state.pool,
+            &generated_storyboard_ids,
+        )
+        .await;
         let output = json!({
             "total": summary.total,
             "succeeded": summary.succeeded,

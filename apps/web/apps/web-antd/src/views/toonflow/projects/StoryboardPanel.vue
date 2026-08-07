@@ -55,7 +55,11 @@ const statusAnnouncement = computed(() => {
   const completed = props.storyboards.filter((item) => item.state === '已完成').length;
   return `分镜状态：${completed} 个已完成，${generating} 个生成中，${failed} 个失败`;
 });
-const canRetry = computed(() => ['cancelled', 'failed'].includes(props.runState || ''));
+const canRetry = computed(
+  () =>
+    ['cancelled', 'failed'].includes(props.runState || '') &&
+    props.storyboards.some((item) => ['已取消', '生成失败'].includes(item.state || '')),
+);
 
 watch(
   () => props.storyboards.map((item) => item.id),
@@ -88,10 +92,7 @@ function statusColor(state?: string) {
 }
 
 function generateSelected(compulsory = false) {
-  const ids = selectedIds.value.length
-    ? selectedIds.value
-    : props.storyboards.map((item) => item.id);
-  emit('generate', ids, compulsory);
+  emit('generate', [...selectedIds.value], compulsory);
 }
 
 function selectedOrAll() {
@@ -129,13 +130,13 @@ function restoreOrder() {
         <Tag v-if="busy" color="processing">
           正在生成 {{ progressCurrent || 0 }} / {{ progressTotal || 0 }}
         </Tag>
-        <Button size="small" type="primary" :loading="busy" @click="generateSelected(false)">
-          {{ selectedIds.length ? '生成选中' : '生成全部' }}
+        <Button size="small" type="primary" :disabled="selectedIds.length === 0" :loading="busy" @click="generateSelected(false)">
+          生成选中
         </Button>
         <Button v-if="busy" danger size="small" @click="emit('cancel')">取消生成</Button>
         <Button v-if="canRetry && !busy" size="small" @click="emit('retry')">重试失败项</Button>
         <Tooltip title="忽略已有图片并重新生成">
-          <Button size="small" :disabled="busy" @click="generateSelected(true)">强制重生成</Button>
+          <Button size="small" :disabled="busy || selectedIds.length === 0" @click="generateSelected(true)">强制重生成</Button>
         </Tooltip>
         <Popconfirm
           title="确认删除选中的分镜？关联图片编辑流也会删除。"

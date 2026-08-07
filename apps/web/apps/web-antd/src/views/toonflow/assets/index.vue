@@ -28,12 +28,14 @@ import {
 
 import {
   batchBindAudio,
+  deleteAssets,
   generateAssetDubbing,
-  generateAssetImage,
   getAssetLibrary,
   getProject,
   getProjects,
+  pollAssetImages,
   polishAssetPrompt,
+  queueAssetImages,
   saveAsset,
   uploadMaterial,
 } from '#/api/toonflow';
@@ -246,15 +248,40 @@ async function generateAssetPicture(asset: ToonflowApi.Asset) {
       });
       visualPrompt = polished.prompt;
     }
-    await generateAssetImage({
-      projectId: selectedProjectId.value,
-      model: String(project.value.imageModel),
-      resolution: imageQuality.value,
-      id: asset.id,
-      type: asset.type,
-      name: asset.name,
-      prompt: visualPrompt,
-    });
+    const [current] = await pollAssetImages([asset.id]);
+    if (current?.state !== '生成中') {
+      await queueAssetImages({
+        projectId: selectedProjectId.value,
+        model: String(project.value.imageModel),
+        resolution: imageQuality.value,
+        concurrentCount: 1,
+        items: [{
+          id: asset.id,
+          type: asset.type,
+          name: asset.name,
+          prompt: visualPrompt,
+        }],
+      });
+    }
+    let completed = false;
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      const [result] = await pollAssetImages([asset.id]);
+      if (!result || result.state === '生成中') continue;
+      if (result.state !== '已完成') {
+        throw new Error(result.errorReason || `“${asset.name}”图片生成失败`);
+      }
+      completed = true;
+      break;
+    }
+    if (!completed) {
+      message.info({
+        content: `“${asset.name}”仍在后台生成，可稍后刷新查看`,
+        duration: 5,
+        key: messageKey,
+      });
+      return;
+    }
     failedImageIds.delete(asset.id);
     await loadAssets();
     message.success({
@@ -278,6 +305,22 @@ async function matchAssetVoice(asset: ToonflowApi.Asset) {
   await batchBindAudio(selectedProjectId.value, [asset.id]);
   message.success('已匹配项目中的音色资产');
   await loadAssets();
+}
+
+function removeAsset(asset: ToonflowApi.Asset) {
+  Modal.confirm({
+    title: `确认删除“${asset.name}”？`,
+    content: '关联的图片、剧本绑定和人物形态也会一并删除，且无法恢复。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await deleteAssets([asset.id]);
+      failedImageIds.delete(asset.id);
+      await loadAssets();
+      message.success(`“${asset.name}”已删除`);
+    },
+  });
 }
 
 function openDubbing(asset: ToonflowApi.Asset) {
@@ -453,6 +496,7 @@ watch(() => route.query.projectId, (value) => {
                   <Button v-if="item.type === 'role'" type="link" @click="openDubbing(item)">
                     生成配音
                   </Button>
+                  <Button danger type="link" @click="removeAsset(item)">删除</Button>
                 </Space>
               </div>
             </Card>
