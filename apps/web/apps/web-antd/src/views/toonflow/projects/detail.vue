@@ -86,6 +86,12 @@ import {
   uploadFlowImage,
 } from '#/api/toonflow';
 import { parseNovelText } from './novel-import';
+import {
+  extractScriptItems,
+  extractXmlContent,
+  formatEventDisplay,
+  renderMarkdown,
+} from './production-content';
 import AgentChat from './AgentChat.vue';
 import ImageFlowEditor from './ImageFlowEditor.vue';
 import ProductionFlowCanvas from './ProductionFlowCanvas.vue';
@@ -264,47 +270,6 @@ function onAgentToolResult(payload: { toolName: string; result: any }) {
     const currentStage = pipelineStages.find((s) => s.status === 'completed');
     if (currentStage) currentStage.status = 'review';
   }
-}
-
-function extractXmlContent(text: string, tag: string): string | null {
-  const regex = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'i');
-  const match = text.match(regex);
-  return match?.[1]?.trim() ?? null;
-}
-
-function extractScriptItems(text: string): string {
-  const matches = text.matchAll(/<scriptItem\s+name="([^"]*)">([\s\S]*?)<\/scriptItem>/gi);
-  const items: string[] = [];
-  for (const m of matches) {
-    items.push(`### ${m[1]}\n\n${m[2]?.trim() ?? ''}`);
-  }
-  return items.length > 0 ? items.join('\n\n---\n\n') : text;
-}
-
-function formatEventDisplay(eventJson: string): string {
-  if (!eventJson) return '';
-  try {
-    const arr = JSON.parse(eventJson);
-    if (!Array.isArray(arr)) return eventJson;
-    return arr.map((e: any, i: number) => `${i + 1}.${e.name}：${e.detail}`).join('；');
-  } catch {
-    return eventJson;
-  }
-}
-
-function renderMarkdown(text: string): string {
-  if (!text) return '';
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
-    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^# (.+)$/gm, '<h2>$1</h2>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^- (.+)$/gm, '<li>$1</li>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>');
 }
 
 // Agent chat messages (WebSocket-driven)

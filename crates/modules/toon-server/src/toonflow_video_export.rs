@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportRequest {
-    project_id: i64,
-    script_id: i64,
+    pub project_id: i64,
+    pub script_id: i64,
 }
 
 fn storage_dir() -> PathBuf {

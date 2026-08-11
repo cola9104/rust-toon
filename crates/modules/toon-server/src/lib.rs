@@ -32,6 +32,9 @@ mod toonflow_video_export;
 mod toonflow_workflow;
 mod toonflow_ws;
 
+#[cfg(test)]
+mod production_e2e_tests;
+
 use axum::{
     Json, Router,
     middleware::from_fn_with_state,

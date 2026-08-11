@@ -1,4 +1,5 @@
 mod compat;
+mod compat_fields;
 mod data_scope;
 mod excel;
 mod messaging;

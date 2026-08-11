@@ -75,6 +75,7 @@ Use these checks after startup:
 curl -fsS http://127.0.0.1:8080/health
 cargo test --workspace
 bash script/test-database-migrations.sh
+bash script/test-production-e2e.sh
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
 ```
 

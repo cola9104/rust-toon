@@ -52,7 +52,7 @@ cargo run -p rust-toon-gateway
 和基准数据，因此部署时不需要
 `sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
 
-后续修改数据库时，必须从 `0002` 开始新增更高版本的迁移文件，并在干净数据库
+后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0017`），并在干净数据库
 完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
 
 可选环境变量：
@@ -82,6 +82,7 @@ pnpm dev:antd
 cargo test --workspace
 bash script/test-database-migrations.sh
 bash script/test-ai-e2e.sh
+bash script/test-production-e2e.sh
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
 pnpm --dir apps/web --filter @vben/web-antd run build
 ```
