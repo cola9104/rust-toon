@@ -87,6 +87,17 @@ pnpm --dir apps/web --filter @vben/web-antd run typecheck
 pnpm --dir apps/web --filter @vben/web-antd run build
 ```
 
+真实图片与视频供应商测试会产生费用，因此不会进入默认测试。确认测试数据库已有可用模型配置后显式运行：
+
+```bash
+RUN_PAID_AI_E2E=1 \
+DATABASE_URL='postgres://...' \
+REAL_IMAGE_MODEL_ID='1' \
+REAL_VIDEO_MODEL_ID='2' \
+REAL_VIDEO_PAYLOAD_JSON='{"prompt":"A red paper boat slowly moving on calm water"}' \
+bash script/test-real-ai-providers.sh
+```
+
 ## 文档
 
 - [AI 启动交接指南](AGENTS.md)

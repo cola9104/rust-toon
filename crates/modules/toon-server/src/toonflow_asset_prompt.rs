@@ -13,6 +13,7 @@ pub(crate) fn polish_user_prompt(label: &str, name: &str, description: &str) -> 
     )
 }
 
+#[cfg(test)]
 pub(crate) fn image_prompt(
     style: &str,
     asset_type: &str,
@@ -184,95 +185,7 @@ fn role_visual_description(prompt: &str) -> String {
         .join("，")
 }
 
-/// Keeps stable identity traits from legacy character prompts while removing
-/// clothing and layout instructions that conflict with the canonical base model.
-pub(crate) fn base_role_visual_description(prompt: &str) -> String {
-    const LAYOUT_TERMS: &[&str] = &[
-        "人像特写",
-        "头像特写",
-        "大头贴",
-        "半身像",
-        "正视图",
-        "侧视图",
-        "后视图",
-        "四视图",
-        "四宫格",
-        "锁骨以上",
-    ];
-    const CLOTHING_MARKERS: &[&str] = &[
-        "穿着",
-        "身着",
-        "服装",
-        "服饰",
-        "装束",
-        "搭配",
-        "上衣",
-        "衬衫",
-        "夹克",
-        "T恤",
-        "练功服",
-        "校服",
-        "工作服",
-        "制服",
-        "西装",
-        "卫衣",
-        "风衣",
-        "大衣",
-        "袖口",
-        "长袖",
-        "短袖",
-        "衣摆",
-        "布带",
-        "腰带",
-        "面料",
-        "亚麻",
-        "长裤",
-        "短裤",
-        "裙",
-        "鞋袜",
-        "鞋子",
-        "配饰",
-    ];
-    const NARRATIVE_MARKERS: &[&str] = &[
-        "坐在",
-        "站在",
-        "躺在",
-        "位于",
-        "走在",
-        "手里",
-        "手持",
-        "拿着",
-        "背景",
-        "场景",
-        "环境",
-        "医院",
-        "病房",
-        "房间",
-        "姿态",
-        "动作",
-        "身体微微",
-    ];
-
-    prompt
-        .split(['\n', '。', '；'])
-        .filter_map(|clause| {
-            let clause = clause.trim().trim_matches([',', '，', ' ']);
-            if clause.is_empty() || LAYOUT_TERMS.iter().any(|term| clause.contains(term)) {
-                return None;
-            }
-            let removable_start = CLOTHING_MARKERS
-                .iter()
-                .chain(NARRATIVE_MARKERS)
-                .filter_map(|marker| clause.find(marker))
-                .min();
-            let identity = removable_start.map_or(clause, |index| &clause[..index]);
-            let identity = identity.trim().trim_matches([',', '，', ' ']);
-            (!identity.is_empty() && identity != "他" && identity != "她").then_some(identity)
-        })
-        .collect::<Vec<_>>()
-        .join("。")
-}
-
+#[cfg(test)]
 pub(crate) fn storyboard_prompt(
     visual_description: &str,
     ratio: &str,
@@ -281,6 +194,7 @@ pub(crate) fn storyboard_prompt(
     storyboard_prompt_with_instruction(visual_description, ratio, reference_count, None)
 }
 
+#[cfg(test)]
 pub(crate) fn storyboard_prompt_with_instruction(
     visual_description: &str,
     ratio: &str,

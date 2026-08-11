@@ -1,20 +1,6 @@
 use serde_json::Value;
 use sqlx::PgPool;
 
-async fn agent_model(pool: &PgPool, key: &str) -> Result<(i64, i32, i32), String> {
-    let row:Option<(Option<i64>,i32,i32,bool)>=sqlx::query_as("SELECT model_config_id,temperature,max_output_tokens,disabled FROM toonflow.agent_deployments WHERE key=$1").bind(key).fetch_optional(pool).await.map_err(|e|e.to_string())?;
-    let (model, temperature, tokens, disabled) =
-        row.ok_or_else(|| format!("Agent {key} 未配置"))?;
-    if disabled {
-        return Err(format!("Agent {key} 已停用"));
-    }
-    Ok((
-        model.ok_or_else(|| format!("Agent {key} 尚未绑定统一 AI 模型"))?,
-        temperature,
-        tokens,
-    ))
-}
-
 async fn project_agent_model(
     pool: &PgPool,
     key: &str,
@@ -83,15 +69,6 @@ fn chat_request(
         max_tokens: (tokens > 0).then_some(tokens as u32),
     }
 }
-pub async fn text(pool: &PgPool, key: &str, system: &str, user: &str) -> Result<String, String> {
-    let (model, temperature, tokens) = agent_model(pool, key).await?;
-    rust_toon_ai_server::AiModelFactory::new(pool.clone())
-        .chat(model, chat_request(system, user, temperature, tokens))
-        .await
-        .map(|x| x.content)
-        .map_err(|error| error.to_string())
-}
-
 pub async fn project_text(
     pool: &PgPool,
     key: &str,
@@ -134,15 +111,6 @@ fn model_id(value: &str, kind: &str) -> Result<i64, String> {
         .parse()
         .map_err(|_| format!("{kind}模型必须是统一 AI 模型 ID"))
 }
-pub async fn image(
-    pool: &PgPool,
-    configured: &str,
-    prompt: &str,
-    size: &str,
-) -> Result<String, String> {
-    image_with_references(pool, configured, prompt, size, Vec::new()).await
-}
-
 /// Generates an image with ordered visual references when the configured provider supports edits.
 pub async fn image_with_references(
     pool: &PgPool,

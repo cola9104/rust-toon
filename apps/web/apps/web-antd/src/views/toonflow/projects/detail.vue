@@ -86,6 +86,7 @@ import {
   uploadFlowImage,
 } from '#/api/toonflow';
 import { parseNovelText } from './novel-import';
+import { defaultImageFlowEdges, upstreamNodeIds } from './image-flow-graph';
 import {
   extractScriptItems,
   extractXmlContent,
@@ -795,17 +796,7 @@ function onProductionAgentActivity(payload: { status: string; toolName: string }
 }
 
 function collectUpstreamNodeIds(nodeId: string) {
-  const visited = new Set<string>();
-  const visit = (id: string) => {
-    for (const edge of imageFlowEdges.value.filter((item) => item.target === id)) {
-      if (!visited.has(edge.source)) {
-        visited.add(edge.source);
-        visit(edge.source);
-      }
-    }
-  };
-  visit(nodeId);
-  return visited;
+  return upstreamNodeIds(imageFlowEdges.value, nodeId);
 }
 
 async function createFlowImage(nodeId: string) {
@@ -1084,15 +1075,7 @@ function connectImageFlow(connection: any) {
 
 function restoreMissingImageFlowEdges() {
   if (imageFlowEdges.value.length || imageFlowNodes.value.length < 2) return;
-  const generatedNode = imageFlowNodes.value.find((node) => node.type === 'generated');
-  if (!generatedNode) return;
-  imageFlowEdges.value = imageFlowNodes.value
-    .filter((node) => node.id !== generatedNode.id && ['prompt', 'upload'].includes(node.type))
-    .map((node) => ({
-      id: `edge-${node.id}-${generatedNode.id}`,
-      source: node.id,
-      target: generatedNode.id,
-    }));
+  imageFlowEdges.value = defaultImageFlowEdges(imageFlowNodes.value);
 }
 
 async function planImageEditWithAgent(nodeId: string) {
@@ -2036,239 +2019,4 @@ watch(projectId, () => loadAll());
   </Page>
 </template>
 
-<style scoped>
-.tab-tools {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-
-.tab-tools :deep(.ant-space) {
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.novel-table :deep(.ant-table-cell) {
-  vertical-align: middle;
-}
-
-.novel-cell-text {
-  display: -webkit-box;
-  overflow: hidden;
-  color: var(--ant-color-text-secondary);
-  line-height: 20px;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.novel-actions {
-  white-space: nowrap;
-}
-
-.script-preview {
-  color: #4b5563;
-  display: -webkit-box;
-  line-height: 22px;
-  max-height: 66px;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-}
-
-.flow-editor {
-  font-family:
-    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
-    'Courier New', monospace;
-  min-height: 520px;
-}
-
-.production-layout {
-  position: relative;
-  align-items: flex-start;
-}
-
-.production-tools {
-  display: flex;
-}
-
-.production-flow-editor {
-  min-height: 320px;
-}
-
-.production-agent-card {
-  height: 100%;
-  border-radius: 10px 0 0 10px;
-  box-shadow: -8px 0 28px rgb(15 23 42 / 16%);
-}
-
-.production-agent-panel {
-  position: absolute;
-  z-index: 20;
-  top: 52px;
-  right: 0;
-  width: min(420px, 92vw);
-  height: calc(100% - 52px);
-  padding: 0 !important;
-}
-
-.production-agent-card :deep(.ant-card-body) {
-  padding: 10px;
-}
-
-.production-agent-context {
-  margin-bottom: 8px;
-}
-
-@media (min-width: 1200px) {
-  .production-layout:has(.production-agent-panel) :deep(.production-flow-shell) {
-    margin-right: 436px;
-  }
-}
-
-.production-agent-card :deep(.agent-chat-wrapper) {
-  height: 600px;
-}
-
-@media (max-width: 1199px) {
-  .production-agent-card :deep(.agent-chat-wrapper) {
-    height: 520px;
-  }
-}
-
-.mb-3 {
-  margin-bottom: 12px;
-}
-
-.agent-chat {
-  max-height: 560px;
-  min-height: 300px;
-  overflow: auto;
-}
-
-.agent-message-assistant {
-  background: rgb(248 250 252);
-}
-
-.image-flow-canvas {
-  display: flex;
-  min-height: 280px;
-  gap: 36px;
-  overflow-x: auto;
-  padding: 24px;
-  border: 1px dashed var(--ant-color-border);
-  border-radius: 8px;
-  background: var(--ant-color-fill-quaternary);
-}
-
-.image-flow-node {
-  position: relative;
-  min-width: 280px;
-  max-width: 280px;
-}
-
-.image-flow-arrow {
-  position: absolute;
-  top: 50%;
-  right: -30px;
-  color: var(--ant-color-primary);
-  font-size: 24px;
-}
-
-.image-flow-empty {
-  display: flex;
-  height: 160px;
-  align-items: center;
-  justify-content: center;
-  color: var(--ant-color-text-tertiary);
-}
-.event-text {
-  font-size: 12px;
-  line-height: 1.5;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.workspace-card {
-  height: 680px;
-  display: flex;
-  flex-direction: column;
-}
-/* Pipeline progress bar */
-.pipeline-bar {
-  display: flex;
-  align-items: center;
-  padding: 8px 4px 12px;
-  gap: 0;
-  border-bottom: 1px solid #f0f0f0;
-  margin-bottom: 4px;
-}
-.pipeline-step {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.pipeline-step.pending { color: #bfbfbf; }
-.pipeline-step.active { color: #1677ff; font-weight: 600; }
-.pipeline-step.completed { color: #52c41a; }
-.pipeline-step.review { color: #faad14; }
-.pipeline-dot { font-size: 14px; width: 18px; text-align: center; flex-shrink: 0; }
-.pipeline-label { flex-shrink: 0; }
-.pipeline-line {
-  flex: 1;
-  height: 2px;
-  min-width: 12px;
-  background: #e8e8e8;
-  margin: 0 4px;
-}
-.pipeline-step.completed .pipeline-line { background: #52c41a; }
-.pipeline-step.active .pipeline-line { background: #1677ff; }
-.workspace-card :deep(.ant-card-body) {
-  padding: 8px 12px;
-  flex: 1;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-}
-.workspace-card :deep(.ant-tabs) {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.workspace-card :deep(.ant-tabs-content-holder) {
-  flex: 1;
-  overflow: hidden;
-}
-.workspace-card :deep(.ant-tabs-content) {
-  height: 100%;
-  overflow-y: auto;
-}
-.workspace-pane {
-  height: 100%;
-  min-height: 0;
-}
-.workspace-placeholder {
-  color: #bfbfbf;
-  font-size: 13px;
-  padding: 16px 0;
-  text-align: center;
-}
-.workspace-output {
-  font-size: 13px;
-  line-height: 1.8;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.workspace-output :deep(h2) { font-size: 16px; margin: 10px 0 6px; border-bottom: 1px solid #f0f0f0; padding-bottom: 4px; }
-.workspace-output :deep(h3) { font-size: 15px; margin: 8px 0 4px; }
-.workspace-output :deep(h4) { font-size: 14px; margin: 6px 0 3px; color: #1677ff; }
-.workspace-output :deep(strong) { font-weight: 600; }
-.workspace-output :deep(li) { margin-left: 16px; }
-.workspace-output :deep(p) { margin: 4px 0; }
-.workspace-output :deep(hr) { border: none; border-top: 1px dashed #e8e8e8; margin: 12px 0; }
-
-</style>
+<style scoped src="./project-detail.css"></style>

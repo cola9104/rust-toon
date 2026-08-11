@@ -1,5 +1,6 @@
 use crate::{
-    ToonState, ai_client, shared::require, toonflow_agent_runtime, toonflow_agents,
+    ToonState, ai_client, shared::require, toonflow_agent_episode_scope::*,
+    toonflow_agent_read_tools, toonflow_agent_runtime, toonflow_agent_tool_record, toonflow_agents,
     toonflow_asset_ai, toonflow_image_workflow, toonflow_ws::WsEmitter,
 };
 use axum::{Json, extract::State};
@@ -12,98 +13,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const STORYBOARD_TABLE_AGENT_TOOLS: &[&str] = &["get_flowData", "set_flowData"];
 
-/// Parse event JSON array into readable text
-fn format_events(events_json: &str) -> String {
-    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(events_json) {
-        arr.iter()
-            .enumerate()
-            .map(|(i, v)| {
-                let name = v.get("name").and_then(Value::as_str).unwrap_or("");
-                let detail = v.get("detail").and_then(Value::as_str).unwrap_or("");
-                format!("  {}. {}：{}", i + 1, name, detail)
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    } else {
-        events_json.to_string()
-    }
-}
-
 #[cfg(test)]
 mod memory_tool_tests {
-    use super::{STORYBOARD_TABLE_AGENT_TOOLS, ToolRequest, memory_isolation_key};
-    use serde_json::json;
-
-    fn request(agent_type: &str, script_id: Option<i64>) -> ToolRequest {
-        ToolRequest {
-            agent_type: agent_type.to_string(),
-            project_id: 101,
-            script_id,
-            tool_name: "deepRetrieve".to_string(),
-            arguments: json!({"keyword":"进度"}),
-            emitter: None,
-        }
-    }
-
-    #[test]
-    fn deep_retrieve_uses_the_same_memory_isolation_as_agent_chat() {
-        assert_eq!(
-            memory_isolation_key(&request("scriptAgent", None)),
-            "scriptAgent:101:project"
-        );
-        assert_eq!(
-            memory_isolation_key(&request("productionAgent", Some(202))),
-            "productionAgent:101:202"
-        );
-        assert_eq!(
-            memory_isolation_key(&request("productionAgent", None)),
-            "productionAgent:101:none"
-        );
-    }
+    use super::STORYBOARD_TABLE_AGENT_TOOLS;
 
     #[test]
     fn storyboard_table_agent_can_read_and_persist_its_document() {
         assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"get_flowData"));
         assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"set_flowData"));
-    }
-}
-
-#[cfg(test)]
-mod episode_scope_tests {
-    use super::{
-        episode_limit, episode_references, explicit_episode_limit, script_episode_number,
-        validate_generated_script,
-    };
-
-    #[test]
-    fn parses_single_and_ranged_episode_references() {
-        assert_eq!(
-            episode_references("第1集、第4-6集、原著第10章"),
-            vec![1, 4, 6]
-        );
-        assert_eq!(explicit_episode_limit("生成1-3集"), Some(3));
-        assert_eq!(explicit_episode_limit("请编写第1/5集剧本"), Some(5));
-    }
-
-    #[test]
-    fn current_request_can_narrow_the_workspace_scope() {
-        let strategy = "#### 第1集\n#### 第2集\n#### 第3集\n#### 第4集\n#### 第5集";
-        assert_eq!(episode_limit(strategy, "本次只生成1-3集"), Some(3));
-        assert_eq!(episode_limit(strategy, "本次生成1-5集"), Some(5));
-    }
-
-    #[test]
-    fn rejects_placeholder_or_truncated_scripts() {
-        assert!(validate_generated_script("（根据第1集生成结果补充）").is_err());
-        assert!(validate_generated_script("稍后补充完整剧本").is_err());
-        assert!(validate_generated_script(&"完整剧本正文".repeat(40)).is_ok());
-    }
-
-    #[test]
-    fn parses_episode_number_from_script_names() {
-        assert_eq!(script_episode_number("作品 EP01：开端"), Some(1));
-        assert_eq!(script_episode_number("作品 第12集"), Some(12));
-        assert_eq!(script_episode_number("作品正文"), None);
     }
 }
 
@@ -120,156 +37,6 @@ fn tagged(text: &str, tag: &str) -> Option<String> {
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
     Some(text[start..end].trim().to_string())
-}
-
-fn episode_references(text: &str) -> Vec<u32> {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut references = Vec::new();
-    let mut index = 0;
-    while index < chars.len() {
-        if chars[index] != '第' {
-            index += 1;
-            continue;
-        }
-        let mut cursor = index + 1;
-        let first = cursor;
-        while cursor < chars.len() && chars[cursor].is_ascii_digit() {
-            cursor += 1;
-        }
-        if first == cursor {
-            index += 1;
-            continue;
-        }
-        let start = chars[first..cursor]
-            .iter()
-            .collect::<String>()
-            .parse::<u32>()
-            .ok();
-        let mut end = None;
-        if cursor < chars.len() && matches!(chars[cursor], '-' | '–' | '—' | '至' | '到') {
-            cursor += 1;
-            let second = cursor;
-            while cursor < chars.len() && chars[cursor].is_ascii_digit() {
-                cursor += 1;
-            }
-            if second < cursor {
-                end = chars[second..cursor]
-                    .iter()
-                    .collect::<String>()
-                    .parse::<u32>()
-                    .ok();
-            }
-        }
-        if cursor < chars.len() && chars[cursor] == '集' {
-            if let Some(start) = start {
-                references.push(start);
-            }
-            if let Some(end) = end {
-                references.push(end);
-            }
-            index = cursor + 1;
-        } else {
-            index += 1;
-        }
-    }
-    references
-}
-
-fn explicit_episode_limit(text: &str) -> Option<u32> {
-    let chars = text.chars().collect::<Vec<_>>();
-    let mut limits = episode_references(text);
-    let mut index = 0;
-    while index < chars.len() {
-        if !chars[index].is_ascii_digit() {
-            index += 1;
-            continue;
-        }
-        let first = index;
-        while index < chars.len() && chars[index].is_ascii_digit() {
-            index += 1;
-        }
-        let first_number = chars[first..index]
-            .iter()
-            .collect::<String>()
-            .parse::<u32>()
-            .ok();
-        let mut last_number = first_number;
-        if index < chars.len() && matches!(chars[index], '-' | '/' | '–' | '—' | '至' | '到')
-        {
-            index += 1;
-            if index < chars.len() && chars[index] == '第' {
-                index += 1;
-            }
-            let second = index;
-            while index < chars.len() && chars[index].is_ascii_digit() {
-                index += 1;
-            }
-            if second < index {
-                last_number = chars[second..index]
-                    .iter()
-                    .collect::<String>()
-                    .parse::<u32>()
-                    .ok();
-            }
-        }
-        if index < chars.len() && chars[index] == '集' {
-            if let Some(limit) = last_number {
-                limits.push(limit);
-            }
-        }
-    }
-    limits.into_iter().max()
-}
-
-fn episode_limit(strategy: &str, prompt: &str) -> Option<u32> {
-    let strategy_limit = explicit_episode_limit(strategy);
-    let request_limit = explicit_episode_limit(prompt);
-    match (strategy_limit, request_limit) {
-        (Some(strategy), Some(request)) => Some(strategy.min(request)),
-        (Some(strategy), None) => Some(strategy),
-        (None, Some(request)) => Some(request),
-        (None, None) => None,
-    }
-}
-
-fn script_episode_number(name: &str) -> Option<u32> {
-    if let Some(episode) = episode_references(name).into_iter().next() {
-        return Some(episode);
-    }
-    let lower = name.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
-    for index in 0..bytes.len().saturating_sub(1) {
-        if bytes[index] != b'e' || bytes[index + 1] != b'p' {
-            continue;
-        }
-        let mut cursor = index + 2;
-        while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'-' | b'_' | b'#') {
-            cursor += 1;
-        }
-        let start = cursor;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
-            cursor += 1;
-        }
-        if start < cursor {
-            return lower[start..cursor].parse().ok();
-        }
-    }
-    None
-}
-
-fn validate_generated_script(content: &str) -> Result<(), String> {
-    const PLACEHOLDER_MARKERS: [&str; 5] = ["生成结果补充", "稍后补充", "待补充", "TODO", "TBD"];
-    let character_count = content.chars().count();
-    if character_count < 200 {
-        return Err(format!("正文只有 {character_count} 字，少于最低 200 字"));
-    }
-    if let Some(marker) = PLACEHOLDER_MARKERS
-        .iter()
-        .find(|marker| content.contains(**marker))
-    {
-        return Err(format!("正文包含占位内容“{marker}”"));
-    }
-    Ok(())
 }
 
 async fn role_names_without_appearances(
@@ -316,142 +83,7 @@ async fn missing_appearance_derivatives(
     .map_err(|_| AppError::internal("failed to validate appearance derivatives"))
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProjectAgentRequest {
-    project_id: i64,
-    agent_type: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SavePlanRequest {
-    project_id: i64,
-    agent_type: String,
-    data: Value,
-}
-
-#[derive(Deserialize)]
-pub struct UpdatePlanRequest {
-    id: i64,
-    data: Value,
-}
-
-fn validate_script_agent(agent: &str) -> Result<(), AppError> {
-    if agent == "scriptAgent" {
-        Ok(())
-    } else {
-        Err(AppError::bad_request("agentType 必须是 scriptAgent"))
-    }
-}
-
-async fn scripts(pool: &sqlx::PgPool, project_id: i64) -> Result<Value, AppError> {
-    let rows: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id,name,content FROM toonflow.scripts WHERE project_id=$1 ORDER BY create_time,id",
-    )
-    .bind(project_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load scripts"))?;
-    Ok(json!(
-        rows.into_iter()
-            .map(|(id, name, content)| json!({"id":id,"name":name,"content":content}))
-            .collect::<Vec<_>>()
-    ))
-}
-
-pub async fn get_plan(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<ProjectAgentRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:project:read")?;
-    validate_script_agent(&request.agent_type)?;
-    let row:Option<(i64,Value)>=sqlx::query_as("SELECT id,data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key=$2").bind(request.project_id).bind(&request.agent_type).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load plan data"))?;
-    let (id, mut data) = if let Some(row) = row {
-        row
-    } else {
-        let id: i64=sqlx::query_scalar("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,$2,$3,$4,$4) RETURNING id").bind(request.project_id).bind(&request.agent_type).bind(json!({"storySkeleton":"","adaptationStrategy":""})).bind(now_ms()).fetch_one(&state.pool).await.map_err(|_|AppError::internal("failed to create plan data"))?;
-        (id, json!({"storySkeleton":"","adaptationStrategy":""}))
-    };
-    data["script"] = scripts(&state.pool, request.project_id).await?;
-    Ok(Json(ApiResponse::new(json!({"id":id,"data":data}))))
-}
-
-pub async fn set_plan(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<SavePlanRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:project:update")?;
-    validate_script_agent(&request.agent_type)?;
-    let skeleton = request
-        .data
-        .get("storySkeleton")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let strategy = request
-        .data
-        .get("adaptationStrategy")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let id:i64=sqlx::query_scalar("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,$2,$3,$4,$4) ON CONFLICT(project_id,key) WHERE episodes_id IS NULL DO UPDATE SET data=excluded.data,update_time=excluded.update_time RETURNING id").bind(request.project_id).bind(&request.agent_type).bind(json!({"storySkeleton":skeleton,"adaptationStrategy":strategy})).bind(now_ms()).fetch_one(&state.pool).await.map_err(|_|AppError::internal("failed to save plan data"))?;
-    if let Some(items) = request.data.get("script").and_then(Value::as_array) {
-        for (index, item) in items.iter().enumerate() {
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("未命名剧本");
-            let content = item
-                .get("content")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let script_id = now_ms() * 1000 + index as i64;
-            sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time)VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,content=excluded.content").bind(item.get("id").and_then(Value::as_i64).unwrap_or(script_id)).bind(name).bind(content).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save agent script"))?;
-        }
-    }
-    Ok(Json(ApiResponse::new(json!({"id":id}))))
-}
-
-pub async fn update_plan(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<UpdatePlanRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:project:update")?;
-    let row: Option<(i64, String)> =
-        sqlx::query_as("SELECT project_id,key FROM toonflow.agent_work_data WHERE id=$1")
-            .bind(request.id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to load plan data"))?;
-    let (project_id, key) = row.ok_or_else(|| AppError::not_found("plan data not found"))?;
-    validate_script_agent(&key)?;
-    sqlx::query("UPDATE toonflow.agent_work_data SET data=$2,update_time=$3 WHERE id=$1")
-        .bind(request.id)
-        .bind(&request.data)
-        .bind(now_ms())
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to update plan data"))?;
-    if let Some(items) = request.data.get("script").and_then(Value::as_array) {
-        for item in items {
-            if let (Some(id), Some(content)) = (
-                item.get("id").and_then(Value::as_i64),
-                item.get("content").and_then(Value::as_str),
-            ) {
-                sqlx::query("UPDATE toonflow.scripts SET content=$3 WHERE id=$1 AND project_id=$2")
-                    .bind(id)
-                    .bind(project_id)
-                    .bind(content)
-                    .execute(&state.pool)
-                    .await
-                    .map_err(|_| AppError::internal("failed to update script"))?;
-            }
-        }
-    }
-    Ok(Json(ApiResponse::new(json!(true))))
-}
+pub use crate::toonflow_agent_plan::{get_plan, set_plan, update_plan};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -464,21 +96,6 @@ pub(crate) struct ToolRequest {
     pub(crate) arguments: Value,
     #[serde(skip, default)]
     pub(crate) emitter: Option<WsEmitter>,
-}
-
-fn memory_isolation_key(request: &ToolRequest) -> String {
-    if request.agent_type == "productionAgent" {
-        format!(
-            "productionAgent:{}:{}",
-            request.project_id,
-            request
-                .script_id
-                .map(|id| id.to_string())
-                .unwrap_or_else(|| "none".to_string())
-        )
-    } else {
-        format!("scriptAgent:{}:project", request.project_id)
-    }
 }
 
 async fn rollback_new_storyboard_rows(
@@ -543,158 +160,39 @@ pub(crate) async fn execute_recorded(
     request: &ToolRequest,
 ) -> Result<(i64, Value), AppError> {
     let call_id = now_ms() * 1000;
-    sqlx::query("INSERT INTO toonflow.agent_tool_calls(id,agent_type,tool_name,arguments,state,create_time)VALUES($1,$2,$3,$4,'running',$5)").bind(call_id).bind(&request.agent_type).bind(&request.tool_name).bind(&request.arguments).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to start tool call"))?;
+    toonflow_agent_tool_record::start(
+        &state.pool,
+        call_id,
+        &request.agent_type,
+        &request.tool_name,
+        &request.arguments,
+        now_ms(),
+    )
+    .await?;
     match execute_inner(state, request).await {
         Ok(value) => {
-            sqlx::query("UPDATE toonflow.agent_tool_calls SET result=$2,state='success',finish_time=$3 WHERE id=$1").bind(call_id).bind(&value).bind(now_ms()).execute(&state.pool).await.ok();
-            // UI-triggered production tools (for example an image-edit node) must join the
-            // same per-script memory as the persistent Production Agent conversation.
+            toonflow_agent_tool_record::succeed(&state.pool, call_id, &value, now_ms()).await;
             if request.emitter.is_none() && request.agent_type == "productionAgent" {
                 if let Some(script_id) = request.script_id {
-                    let memory_id = call_id + 1;
-                    let isolation_key =
-                        format!("productionAgent:{}:{}", request.project_id, script_id);
-                    let content = format!(
-                        "工具 {} 已执行。参数：{}。结果：{}",
-                        request.tool_name, request.arguments, value
-                    );
-                    if sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,create_time)VALUES($1,'productionAgent',$2,'assistant:execution',$3,$4)")
-                        .bind(memory_id).bind(isolation_key).bind(&content).bind(now_ms()).execute(&state.pool).await.is_ok()
-                    {
-                        toonflow_agent_runtime::store_memory_embedding(&state.pool, memory_id, &content).await;
-                    }
+                    toonflow_agent_tool_record::remember_ui_execution(
+                        &state.pool,
+                        call_id,
+                        request.project_id,
+                        script_id,
+                        &request.tool_name,
+                        &request.arguments,
+                        &value,
+                        now_ms(),
+                    )
+                    .await;
                 }
             }
             Ok((call_id, value))
         }
         Err(error) => {
-            sqlx::query("UPDATE toonflow.agent_tool_calls SET state='failed',error_reason=$2,finish_time=$3 WHERE id=$1").bind(call_id).bind(format!("{error:?}")).bind(now_ms()).execute(&state.pool).await.ok();
+            toonflow_agent_tool_record::fail(&state.pool, call_id, &error, now_ms()).await;
             Err(error)
         }
-    }
-}
-
-/// Execute a tool with WebSocket emitter for real-time visualization.
-/// Falls back to regular execute_recorded when emitter is not available.
-pub(crate) async fn execute_with_emitter(
-    state: &ToonState,
-    request: &ToolRequest,
-    _emitter: &WsEmitter,
-    _msg_id: &str,
-) -> Result<(i64, Value), AppError> {
-    execute_recorded(state, request).await
-}
-
-/// Execute a read-only tool for sub-agents
-async fn execute_sub_tool(state: &ToonState, project_id: i64, name: &str, args: &Value) -> String {
-    match name {
-        "get_novel_events" => {
-            let indexes: Vec<i32> = args
-                .get("chapterIndexs")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|v| v.as_i64().map(|x| x as i32))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let rows: Vec<(i32, String, Option<String>)> = sqlx::query_as(
-                "SELECT chapter_index,chapter,event FROM toonflow.novels WHERE project_id=$1 AND chapter_index=ANY($2) ORDER BY chapter_index",
-            )
-            .bind(project_id).bind(&indexes)
-            .fetch_all(&state.pool).await.unwrap_or_default();
-            rows.into_iter()
-                .map(|(i, c, e)| {
-                    format!("第{i}章「{c}」\n{}", format_events(&e.unwrap_or_default()))
-                })
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        }
-        "get_novel_text" => {
-            let index: i32 = args
-                .get("chapterIndex")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0) as i32;
-            sqlx::query_scalar(
-                "SELECT chapter_data FROM toonflow.novels WHERE project_id=$1 AND chapter_index=$2",
-            )
-            .bind(project_id)
-            .bind(index)
-            .fetch_optional(&state.pool)
-            .await
-            .unwrap_or_default()
-            .unwrap_or_default()
-        }
-        "get_planData" => {
-            let data: Option<Value> = sqlx::query_scalar(
-                "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
-            )
-            .bind(project_id).fetch_optional(&state.pool).await.unwrap_or_default();
-            let key = args.get("key").and_then(Value::as_str).unwrap_or("");
-            if key.is_empty() {
-                // Return all data with clear labels
-                let d = data.as_ref();
-                let skeleton = d
-                    .and_then(|v| v.get("storySkeleton"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("（空）");
-                let adaptation = d
-                    .and_then(|v| v.get("adaptationStrategy"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("（空）");
-                format!(
-                    "可用 key: storySkeleton, adaptationStrategy\n\n=== storySkeleton ===\n{skeleton}\n\n=== adaptationStrategy ===\n{adaptation}"
-                )
-            } else {
-                // Try exact match first, then case-insensitive
-                let result = data
-                    .as_ref()
-                    .and_then(|d| d.get(key))
-                    .and_then(|v| v.as_str().map(|s| s.to_string()));
-                if result.is_some() {
-                    return result.unwrap();
-                }
-                // Try known key mappings
-                let mapped = match key.to_lowercase().as_str() {
-                    "story_skeleton" | "skeleton" => data
-                        .as_ref()
-                        .and_then(|d| d.get("storySkeleton"))
-                        .and_then(|v| v.as_str()),
-                    "adaptation_strategy" | "adaptation" => data
-                        .as_ref()
-                        .and_then(|d| d.get("adaptationStrategy"))
-                        .and_then(|v| v.as_str()),
-                    "script" => data
-                        .as_ref()
-                        .and_then(|d| d.get("script"))
-                        .and_then(|v| v.as_str()),
-                    _ => None,
-                };
-                mapped.map(|s| s.to_string()).unwrap_or_else(|| {
-                    format!("key '{key}' 不存在。可用 key: storySkeleton, adaptationStrategy")
-                })
-            }
-        }
-        "get_script_content" => {
-            let ids: Vec<i64> = args
-                .get("ids")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_i64()).collect())
-                .unwrap_or_default();
-            let rows: Vec<(String, String)> = sqlx::query_as(
-                "SELECT name,content FROM toonflow.scripts WHERE project_id=$1 AND id=ANY($2)",
-            )
-            .bind(project_id)
-            .bind(&ids)
-            .fetch_all(&state.pool)
-            .await
-            .unwrap_or_default();
-            rows.into_iter()
-                .map(|(n, c)| format!("<scriptItem name=\"{n}\">{c}</scriptItem>"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-        _ => format!("未知工具: {name}"),
     }
 }
 
@@ -730,7 +228,11 @@ pub(crate) async fn execute_inner(
                 .and_then(Value::as_str)
                 .unwrap_or("");
             let agent_type = &request.agent_type;
-            let isolation_key = memory_isolation_key(request);
+            let isolation_key = toonflow_agent_tool_record::memory_isolation_key(
+                &request.agent_type,
+                request.project_id,
+                request.script_id,
+            );
             let mems = toonflow_agent_runtime::relevant_memories(
                 &state.pool,
                 agent_type,
@@ -757,7 +259,7 @@ pub(crate) async fn execute_inner(
                 rows.into_iter()
                     .map(|(i, c, e)| format!(
                         "第{i}章「{c}」\n{}",
-                        format_events(&e.unwrap_or_default())
+                        toonflow_agent_read_tools::format_events(&e.unwrap_or_default())
                     ))
                     .collect::<Vec<_>>()
                     .join("\n\n")
@@ -1031,8 +533,13 @@ pub(crate) async fn execute_inner(
                         .and_then(Value::as_str)
                         .unwrap_or("{}");
                     let args: Value = serde_json::from_str(args).unwrap_or(json!({}));
-                    let result =
-                        execute_sub_tool(state, request.project_id, tool_name, &args).await;
+                    let result = toonflow_agent_read_tools::execute_sub_tool(
+                        state,
+                        request.project_id,
+                        tool_name,
+                        &args,
+                    )
+                    .await;
                     messages.push(json!({"role":"tool","tool_call_id":call_id,"content":result}));
                 }
             }

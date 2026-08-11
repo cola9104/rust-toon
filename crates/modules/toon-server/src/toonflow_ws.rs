@@ -10,7 +10,6 @@ use futures_util::{SinkExt, StreamExt};
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::watch;
 use tracing::warn;
 
@@ -49,13 +48,6 @@ enum ClientMessage {
 // ---------------------------------------------------------------------------
 // Outgoing event builders (mirrors Toonflow-app socket protocol)
 // ---------------------------------------------------------------------------
-
-fn now_ms() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
 
 fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
@@ -202,24 +194,6 @@ impl WsEmitter {
         );
     }
 
-    /// Convenience: append tool call result chunk.
-    pub fn tool_call_result_chunk(
-        &self,
-        message_id: &str,
-        content_id: &str,
-        tool_call_id: &str,
-        chunk: &str,
-    ) {
-        self.update_content(
-            message_id,
-            content_id,
-            "toolcall",
-            &json!({ "toolCallId": tool_call_id, "chunk": chunk }),
-            "append",
-            "streaming",
-        );
-    }
-
     /// Convenience: finalize a tool call with success.
     pub fn tool_call_success(
         &self,
@@ -273,18 +247,6 @@ impl WsEmitter {
             "thinking",
             &json!({ "text": text }),
             "append",
-            "streaming",
-        );
-    }
-
-    /// Convenience: update thinking title.
-    pub fn thinking_title(&self, message_id: &str, content_id: &str, title: &str) {
-        self.update_content(
-            message_id,
-            content_id,
-            "thinking",
-            &json!({ "title": title }),
-            "merge",
             "streaming",
         );
     }
@@ -372,7 +334,7 @@ async fn handle_socket(
     let mut think_level: i32 = 0;
 
     // Abort controller
-    let (mut abort_tx, mut abort_rx) = watch::channel(false);
+    let (mut abort_tx, abort_rx) = watch::channel(false);
     let mut current_abort_rx = abort_rx.clone();
 
     // Restore historical messages as chat bubbles

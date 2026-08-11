@@ -286,7 +286,8 @@ pub struct ImageItem {
     pub(crate) id: i64,
     #[serde(rename = "type")]
     pub(crate) type_: String,
-    pub(crate) name: String,
+    #[serde(rename = "name")]
+    pub(crate) _name: String,
     pub(crate) prompt: String,
     pub(crate) base64: Option<String>,
 }
@@ -460,7 +461,7 @@ pub(crate) async fn schedule_asset_generation(
         let item = ImageItem {
             id,
             type_,
-            name,
+            _name: name,
             prompt,
             base64,
         };
@@ -557,7 +558,7 @@ pub async fn generate_image(
     let item = ImageItem {
         id: req.id,
         type_: req.type_,
-        name: req.name,
+        _name: req.name,
         prompt: req.prompt,
         base64: req.base64,
     };

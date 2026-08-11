@@ -43,6 +43,7 @@ pub fn prompt_format(model: &str) -> PromptFormat {
     }
 }
 
+#[cfg(test)]
 pub fn expected_items(table: &str, first_frame: bool) -> Vec<ExpectedPanelItem> {
     expected_items_with_aliases(table, first_frame, &HashMap::new())
 }

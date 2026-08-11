@@ -4,7 +4,11 @@ mod projects;
 mod scenes;
 mod shared;
 mod toonflow;
+mod toonflow_agent_episode_scope;
+mod toonflow_agent_plan;
+mod toonflow_agent_read_tools;
 mod toonflow_agent_runtime;
+mod toonflow_agent_tool_record;
 mod toonflow_agent_tools;
 mod toonflow_agents;
 mod toonflow_asset_ai;
@@ -30,10 +34,14 @@ mod toonflow_storyboard_table_validation;
 mod toonflow_video;
 mod toonflow_video_export;
 mod toonflow_workflow;
+mod toonflow_workflow_control;
+mod toonflow_workflow_definition;
 mod toonflow_ws;
 
 #[cfg(test)]
 mod production_e2e_tests;
+#[cfg(test)]
+mod provider_e2e_tests;
 
 use axum::{
     Json, Router,

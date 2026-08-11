@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     sync::{Mutex, OnceLock},
 };
 
@@ -16,54 +16,24 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use tokio::task::AbortHandle;
 
+pub use crate::toonflow_workflow_control::{cancel_node, cancel_run, latest_node_run, retry_node};
+pub use crate::toonflow_workflow_definition::{
+    WorkflowDefinition, WorkflowNode, default_production_workflow, validate_workflow,
+    workflow_from_data,
+};
 use crate::{
     ToonState, shared::require, toonflow_agent_tools, toonflow_image_workflow, toonflow_video,
 };
 
-const WORKFLOW_SCHEMA_VERSION: i32 = 1;
 static ACTIVE_NODE_RUNS: OnceLock<Mutex<HashMap<i64, AbortHandle>>> = OnceLock::new();
 static ACTIVE_WORKFLOW_RUNS: OnceLock<Mutex<HashMap<i64, AbortHandle>>> = OnceLock::new();
 
-fn active_node_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
+pub(crate) fn active_node_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
     ACTIVE_NODE_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-fn active_workflow_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
+pub(crate) fn active_workflow_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
     ACTIVE_WORKFLOW_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowPosition {
-    pub x: f64,
-    pub y: f64,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowNode {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub node_type: String,
-    pub position: WorkflowPosition,
-    #[serde(default)]
-    pub config: Value,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowEdge {
-    pub id: String,
-    pub source: String,
-    pub target: String,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowDefinition {
-    pub schema_version: i32,
-    pub nodes: Vec<WorkflowNode>,
-    pub edges: Vec<WorkflowEdge>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,133 +185,6 @@ fn empty_object() -> Value {
 
 fn default_concurrency() -> usize {
     5
-}
-
-pub fn default_production_workflow() -> WorkflowDefinition {
-    let nodes = [
-        ("script", "script.source", 0.0),
-        ("scriptPlan", "director.plan", 1000.0),
-        ("storyboardTable", "storyboard.plan", 2000.0),
-        ("storyboard", "storyboard.image", 3000.0),
-        ("workbench", "video.generate", 4000.0),
-    ]
-    .into_iter()
-    .map(|(id, node_type, x)| WorkflowNode {
-        id: id.into(),
-        node_type: node_type.into(),
-        position: WorkflowPosition { x, y: 0.0 },
-        config: json!({}),
-    })
-    .collect();
-    let edges = [
-        ("script-plan", "script", "scriptPlan"),
-        ("plan-table", "scriptPlan", "storyboardTable"),
-        ("table-panel", "storyboardTable", "storyboard"),
-        ("panel-workbench", "storyboard", "workbench"),
-    ]
-    .into_iter()
-    .map(|(id, source, target)| WorkflowEdge {
-        id: id.into(),
-        source: source.into(),
-        target: target.into(),
-    })
-    .collect();
-    WorkflowDefinition {
-        schema_version: WORKFLOW_SCHEMA_VERSION,
-        nodes,
-        edges,
-    }
-}
-
-pub fn workflow_from_data(data: &Value) -> Result<WorkflowDefinition, AppError> {
-    match data.get("workflow") {
-        Some(value) => serde_json::from_value(value.clone())
-            .map_err(|_| AppError::bad_request("workflow definition is invalid")),
-        None => Ok(default_production_workflow()),
-    }
-}
-
-pub fn validate_workflow(workflow: &WorkflowDefinition) -> Result<Vec<String>, AppError> {
-    if workflow.schema_version != WORKFLOW_SCHEMA_VERSION {
-        return Err(AppError::bad_request("unsupported workflow schema version"));
-    }
-    if workflow.nodes.is_empty() {
-        return Err(AppError::bad_request(
-            "workflow must contain at least one node",
-        ));
-    }
-    let mut node_types = HashMap::new();
-    for node in &workflow.nodes {
-        let id = node.id.trim();
-        let node_type = node.node_type.trim();
-        if id.is_empty() || node_type.is_empty() {
-            return Err(AppError::bad_request(
-                "workflow node id and type are required",
-            ));
-        }
-        if node.config.is_null() || (!node.config.is_object() && !node.config.is_array()) {
-            return Err(AppError::bad_request("workflow node config must be JSON"));
-        }
-        if node_types
-            .insert(id.to_string(), node_type.to_string())
-            .is_some()
-        {
-            return Err(AppError::bad_request("workflow node ids must be unique"));
-        }
-    }
-
-    let mut edge_ids = HashSet::new();
-    let mut indegree = node_types
-        .keys()
-        .map(|id| (id.clone(), 0_usize))
-        .collect::<HashMap<_, _>>();
-    let mut downstream = HashMap::<String, Vec<String>>::new();
-    for edge in &workflow.edges {
-        if !edge_ids.insert(edge.id.trim()) {
-            return Err(AppError::bad_request("workflow edge ids must be unique"));
-        }
-        if !node_types.contains_key(edge.source.as_str())
-            || !node_types.contains_key(edge.target.as_str())
-        {
-            return Err(AppError::bad_request(
-                "workflow edge references an unknown node",
-            ));
-        }
-        if edge.source == edge.target {
-            return Err(AppError::bad_request("workflow cannot contain self edges"));
-        }
-        *indegree.get_mut(&edge.target).expect("validated target") += 1;
-        downstream
-            .entry(edge.source.clone())
-            .or_default()
-            .push(edge.target.clone());
-    }
-
-    let mut ready = indegree
-        .iter()
-        .filter_map(|(id, degree)| (*degree == 0).then_some(id.clone()))
-        .collect::<Vec<_>>();
-    ready.sort();
-    let mut ready = VecDeque::from(ready);
-    let mut order = Vec::with_capacity(workflow.nodes.len());
-    while let Some(id) = ready.pop_front() {
-        order.push(id.clone());
-        if let Some(children) = downstream.get(&id) {
-            let mut children = children.clone();
-            children.sort();
-            for child in children {
-                let degree = indegree.get_mut(&child).expect("validated child");
-                *degree -= 1;
-                if *degree == 0 {
-                    ready.push_back(child);
-                }
-            }
-        }
-    }
-    if order.len() != workflow.nodes.len() {
-        return Err(AppError::bad_request("workflow must not contain cycles"));
-    }
-    Ok(order)
 }
 
 pub async fn persist_definition(
@@ -577,7 +420,7 @@ pub async fn create_run(
     })))
 }
 
-async fn recover_stale_node_runs(state: &ToonState) {
+pub(crate) async fn recover_stale_node_runs(state: &ToonState) {
     let active = active_node_runs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -913,7 +756,7 @@ async fn remove_storyboard_rows(
         .map_err(|error| error.to_string())
 }
 
-async fn rollback_partial_storyboard_panel(
+pub(crate) async fn rollback_partial_storyboard_panel(
     pool: &PgPool,
     project_id: i64,
     script_id: i64,
@@ -1222,7 +1065,7 @@ async fn launch_standard_node(
     })
 }
 
-async fn launch_node(
+pub(crate) async fn launch_node(
     state: &ToonState,
     node_run_id: i64,
     input: Value,
@@ -1599,284 +1442,6 @@ pub async fn run_state(
     })))
 }
 
-pub async fn cancel_run(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<WorkflowRunIdRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:scene:update")?;
-    let run = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT state,project_id,script_id FROM toonflow.workflow_runs WHERE id=$1",
-    )
-    .bind(request.id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load workflow run"))?
-    .ok_or_else(|| AppError::not_found("workflow run not found"))?;
-    if matches!(run.0.as_str(), "success" | "failed" | "cancelled") {
-        return Err(AppError::bad_request("workflow run has already finished"));
-    }
-    if let Some(handle) = active_workflow_runs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&request.id)
-    {
-        handle.abort();
-    }
-    let running_nodes = sqlx::query_as::<_, (i64, String, Value)>(
-        "SELECT id,node_type,input FROM toonflow.workflow_node_runs
-         WHERE workflow_run_id=$1 AND state='running'",
-    )
-    .bind(request.id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load active workflow nodes"))?;
-    for (node_run_id, node_type, input) in &running_nodes {
-        if let Some(handle) = active_node_runs()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(node_run_id)
-        {
-            handle.abort();
-        }
-        if node_type == "storyboard.plan" {
-            rollback_partial_storyboard_panel(&state.pool, run.1, run.2, input)
-                .await
-                .map_err(|_| AppError::internal("failed to roll back partial storyboard panel"))?;
-        } else if node_type == "storyboard.image" {
-            if let Ok(input) = serde_json::from_value::<StoryboardImageNodeInput>(input.clone()) {
-                let _ = sqlx::query(
-                    "UPDATE toonflow.storyboards SET state='已取消',reason='用户取消生成'
-                     WHERE id=ANY($1) AND state='生成中'",
-                )
-                .bind(input.storyboard_ids)
-                .execute(&state.pool)
-                .await;
-            }
-        } else if node_type == "video.generate"
-            && let Ok(input) =
-                serde_json::from_value::<toonflow_video::WorkflowVideoInput>(input.clone())
-        {
-            let _ = sqlx::query(
-                "UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成'
-                 WHERE id=ANY($1) AND state='生成中'",
-            )
-            .bind(input.video_ids)
-            .execute(&state.pool)
-            .await;
-        }
-    }
-    let time = chrono::Utc::now().timestamp_millis();
-    let mut transaction = state
-        .pool
-        .begin()
-        .await
-        .map_err(|_| AppError::internal("failed to begin workflow cancellation"))?;
-    sqlx::query(
-        "UPDATE toonflow.workflow_node_runs
-         SET state='cancelled',error_reason='用户取消工作流',finish_time=$2
-         WHERE workflow_run_id=$1 AND state IN('pending','blocked','running')",
-    )
-    .bind(request.id)
-    .bind(time)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| AppError::internal("failed to cancel workflow nodes"))?;
-    sqlx::query(
-        "UPDATE toonflow.workflow_runs
-         SET state='cancelled',error_reason='用户取消工作流',finish_time=$2 WHERE id=$1",
-    )
-    .bind(request.id)
-    .bind(time)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| AppError::internal("failed to cancel workflow run"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| AppError::internal("failed to commit workflow cancellation"))?;
-    Ok(Json(ApiResponse::new(
-        json!({"id":request.id,"state":"cancelled"}),
-    )))
-}
-
-pub async fn latest_node_run(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Query(query): Query<LatestNodeRunQuery>,
-) -> Result<Json<ApiResponse<Option<WorkflowNodeRunResponse>>>, AppError> {
-    require(&user, "toon:scene:read")?;
-    recover_stale_node_runs(&state).await;
-    let row = sqlx::query_as::<_, WorkflowNodeRunResponse>(
-        "SELECT nr.id,nr.workflow_run_id,nr.node_id,nr.node_type,nr.attempt,nr.state,
-                nr.input,nr.output,nr.error_reason,nr.progress_current,nr.progress_total,
-                nr.retry_of_id,nr.start_time,nr.finish_time,nr.create_time
-         FROM toonflow.workflow_node_runs nr
-         JOIN toonflow.workflow_runs r ON r.id=nr.workflow_run_id
-         WHERE r.project_id=$1 AND r.script_id=$2 AND nr.node_id=$3
-         ORDER BY nr.create_time DESC,nr.id DESC LIMIT 1",
-    )
-    .bind(query.project_id)
-    .bind(query.script_id)
-    .bind(query.node_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load latest workflow node run"))?;
-    Ok(Json(ApiResponse::new(row)))
-}
-
-pub async fn cancel_node(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<NodeRunIdRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:scene:update")?;
-    if let Some(handle) = active_node_runs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&request.id)
-    {
-        handle.abort();
-    }
-    let row = sqlx::query_as::<_, (i64, String, Value, i64, i64)>(
-        "SELECT nr.workflow_run_id,nr.node_type,nr.input,r.project_id,r.script_id
-         FROM toonflow.workflow_node_runs nr
-         JOIN toonflow.workflow_runs r ON r.id=nr.workflow_run_id
-         WHERE nr.id=$1 AND nr.state='running'",
-    )
-    .bind(request.id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load running workflow node"))?
-    .ok_or_else(|| AppError::bad_request("workflow node run has already finished"))?;
-    if row.1 == "storyboard.plan" {
-        rollback_partial_storyboard_panel(&state.pool, row.3, row.4, &row.2)
-            .await
-            .map_err(|_| AppError::internal("failed to roll back partial storyboard panel"))?;
-    }
-    let time = chrono::Utc::now().timestamp_millis();
-    let mut transaction = state
-        .pool
-        .begin()
-        .await
-        .map_err(|_| AppError::internal("failed to begin workflow cancellation"))?;
-    if row.1 == "storyboard.image" {
-        let input: StoryboardImageNodeInput = serde_json::from_value(row.2.clone())
-            .map_err(|_| AppError::internal("stored storyboard node input is invalid"))?;
-        sqlx::query(
-            "UPDATE toonflow.storyboards SET state='已取消',reason='用户取消生成'
-             WHERE id=ANY($1) AND state='生成中'",
-        )
-        .bind(&input.storyboard_ids)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| AppError::internal("failed to cancel storyboard generation"))?;
-    } else if row.1 == "video.generate" {
-        let input: toonflow_video::WorkflowVideoInput = serde_json::from_value(row.2.clone())
-            .map_err(|_| AppError::internal("stored video node input is invalid"))?;
-        sqlx::query(
-            "UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成'
-             WHERE id=ANY($1) AND state='生成中'",
-        )
-        .bind(&input.video_ids)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|_| AppError::internal("failed to cancel video generation"))?;
-    }
-    sqlx::query(
-        "UPDATE toonflow.workflow_node_runs
-         SET state='cancelled',error_reason='用户取消生成',finish_time=$2
-         WHERE id=$1 AND state='running'",
-    )
-    .bind(request.id)
-    .bind(time)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| AppError::internal("failed to cancel workflow node run"))?;
-    sqlx::query(
-        "UPDATE toonflow.workflow_runs
-         SET state='cancelled',error_reason='用户取消生成',finish_time=$2 WHERE id=$1",
-    )
-    .bind(row.0)
-    .bind(time)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| AppError::internal("failed to cancel workflow run"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| AppError::internal("failed to commit workflow cancellation"))?;
-    Ok(Json(ApiResponse::new(
-        json!({"id": request.id, "state": "cancelled"}),
-    )))
-}
-
-pub async fn retry_node(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<NodeRunIdRequest>,
-) -> Result<Json<ApiResponse<StartWorkflowNodeResponse>>, AppError> {
-    require(&user, "toon:scene:update")?;
-    recover_stale_node_runs(&state).await;
-    let source = sqlx::query_as::<_, (i64, String, String, i32, String, Value)>(
-        "SELECT workflow_run_id,node_id,node_type,attempt,state,input
-         FROM toonflow.workflow_node_runs WHERE id=$1",
-    )
-    .bind(request.id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to load workflow retry source"))?
-    .ok_or_else(|| AppError::not_found("workflow node run not found"))?;
-    if !matches!(source.4.as_str(), "failed" | "cancelled") {
-        return Err(AppError::bad_request(
-            "only failed or cancelled workflow nodes can be retried",
-        ));
-    }
-    let mut input = source.5;
-    if source.2 == "storyboard.image" {
-        let mut storyboard_input: StoryboardImageNodeInput = serde_json::from_value(input)
-            .map_err(|_| AppError::internal("stored storyboard node input is invalid"))?;
-        storyboard_input.storyboard_ids = sqlx::query_scalar(
-            "SELECT id FROM toonflow.storyboards
-             WHERE id=ANY($1) AND state IN('生成失败','已取消') ORDER BY id",
-        )
-        .bind(&storyboard_input.storyboard_ids)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to load retryable storyboards"))?;
-        if storyboard_input.storyboard_ids.is_empty() {
-            return Err(AppError::bad_request(
-                "no failed or cancelled storyboards to retry",
-            ));
-        }
-        input = serde_json::to_value(storyboard_input)
-            .map_err(|_| AppError::internal("failed to serialize storyboard retry input"))?;
-    } else if source.2 == "video.generate" {
-        let mut video_input: toonflow_video::WorkflowVideoInput = serde_json::from_value(input)
-            .map_err(|_| AppError::internal("stored video node input is invalid"))?;
-        video_input.video_ids.clear();
-        input = serde_json::to_value(video_input)
-            .map_err(|_| AppError::internal("failed to serialize video retry input"))?;
-    }
-    let node_run_id: i64 = sqlx::query_scalar(
-        "INSERT INTO toonflow.workflow_node_runs
-         (workflow_run_id,node_id,node_type,attempt,state,input,retry_of_id,create_time)
-         VALUES($1,$2,$3,$4,'pending',$5,$6,$7) RETURNING id",
-    )
-    .bind(source.0)
-    .bind(source.1)
-    .bind(source.2)
-    .bind(source.3 + 1)
-    .bind(&input)
-    .bind(request.id)
-    .bind(chrono::Utc::now().timestamp_millis())
-    .fetch_one(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to create workflow node retry"))?;
-    let response = launch_node(&state, node_run_id, input).await?;
-    Ok(Json(ApiResponse::new(response)))
-}
-
 pub async fn list_runs(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -1894,35 +1459,4 @@ pub async fn list_runs(
     .await
     .map_err(|_| AppError::internal("failed to list workflow runs"))?;
     Ok(Json(ApiResponse::new(rows)))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{default_production_workflow, validate_workflow};
-
-    #[test]
-    fn default_workflow_has_stable_execution_order() {
-        let workflow = default_production_workflow();
-        assert_eq!(
-            validate_workflow(&workflow).unwrap(),
-            [
-                "script",
-                "scriptPlan",
-                "storyboardTable",
-                "storyboard",
-                "workbench"
-            ]
-        );
-    }
-
-    #[test]
-    fn rejects_cycles() {
-        let mut workflow = default_production_workflow();
-        workflow.edges.push(super::WorkflowEdge {
-            id: "cycle".into(),
-            source: "workbench".into(),
-            target: "script".into(),
-        });
-        assert!(validate_workflow(&workflow).is_err());
-    }
 }
