@@ -929,6 +929,7 @@ async fn launch_standard_node(
                 let request = toonflow_agent_tools::ToolRequest {
                     emitter: None,
                     agent_type: "productionAgent".into(),
+                    isolation_key: format!("productionAgent:{project_id}:{script_id}"),
                     project_id,
                     script_id: Some(script_id),
                     tool_name,
@@ -957,6 +958,7 @@ async fn launch_standard_node(
                     let panel_request = toonflow_agent_tools::ToolRequest {
                         emitter: None,
                         agent_type: "productionAgent".into(),
+                        isolation_key: format!("productionAgent:{project_id}:{script_id}"),
                         project_id,
                         script_id: Some(script_id),
                         tool_name: "run_sub_agent_storyboard_panel".into(),

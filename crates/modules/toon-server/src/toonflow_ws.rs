@@ -43,6 +43,15 @@ enum ClientMessage {
         #[serde(rename = "thinkLevel")]
         think_level: i32,
     },
+    #[serde(rename = "updateContext")]
+    UpdateContext {
+        #[serde(rename = "isolationKey")]
+        isolation_key: String,
+        #[serde(rename = "projectId")]
+        project_id: i64,
+        #[serde(rename = "scriptId")]
+        script_id: Option<i64>,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -56,12 +65,12 @@ fn uuid() -> String {
 /// Shared sender that agent execution uses to push events to the WebSocket.
 #[derive(Clone)]
 pub struct WsEmitter {
-    tx: tokio::sync::mpsc::UnboundedSender<String>,
+    tx: tokio::sync::mpsc::UnboundedSender<Message>,
 }
 
 impl WsEmitter {
     fn send_json(&self, value: &Value) {
-        let _ = self.tx.send(value.to_string());
+        let _ = self.tx.send(Message::Text(value.to_string().into()));
     }
 
     /// Create a new message bubble. Returns (message_id, datetime).
@@ -303,25 +312,36 @@ pub async fn ws_handler(
 async fn handle_socket(
     socket: WebSocket,
     state: ToonState,
-    params: WsParams,
+    mut params: WsParams,
     agent_type: String,
     _user_id: String,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // Create a channel for the emitter
-    let (emitter_tx, mut emitter_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (emitter_tx, mut emitter_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
     // Spawn a task to forward emitter messages to the WebSocket
     let forward_handle = tokio::spawn(async move {
         while let Some(msg) = emitter_rx.recv().await {
-            if ws_tx.send(Message::Text(msg.into())).await.is_err() {
+            if ws_tx.send(msg).await.is_err() {
                 break;
             }
         }
     });
 
     let emitter = WsEmitter { tx: emitter_tx };
+    let heartbeat_tx = emitter.tx.clone();
+    let heartbeat_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            if heartbeat_tx.send(Message::Ping(Vec::new().into())).is_err() {
+                break;
+            }
+        }
+    });
 
     // Resolve agent key
     let agent_key = match toonflow_agents::agent_key_for(&agent_type) {
@@ -390,12 +410,17 @@ async fn handle_socket(
     }
 
     // Main message loop
-    while let Some(msg_result) = ws_rx.next().await {
+    loop {
         // Check abort
         if *current_abort_rx.borrow() {
             break;
         }
 
+        let msg_result =
+            match tokio::time::timeout(std::time::Duration::from_secs(90), ws_rx.next()).await {
+                Ok(Some(result)) => result,
+                Ok(None) | Err(_) => break,
+            };
         let msg = match msg_result {
             Ok(m) => m,
             Err(_) => break,
@@ -498,9 +523,20 @@ async fn handle_socket(
                 think = t;
                 think_level = tl.clamp(0, 3);
             }
+            ClientMessage::UpdateContext {
+                isolation_key,
+                project_id,
+                script_id,
+            } => {
+                params.isolation_key = isolation_key;
+                params.project_id = project_id;
+                params.script_id = script_id;
+                emitter.send_json(&json!({"event":"updateContext:ack","data":{"success":true}}));
+            }
         }
     }
 
     // Cleanup
     forward_handle.abort();
+    heartbeat_handle.abort();
 }

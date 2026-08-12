@@ -30,7 +30,7 @@ fn builder(config: &ModelConfig, request: &ChatRequest, stream: bool) -> reqwest
         .get("textPath")
         .and_then(Value::as_str)
         .unwrap_or("/v1/messages");
-    reqwest::Client::new()
+    super::http_client()
         .post(format!("{}{}", config.url.trim_end_matches('/'), path))
         .header("x-api-key", &config.api_key)
         .header(
@@ -51,10 +51,7 @@ impl ChatProvider for AnthropicProvider {
         config: &ModelConfig,
         request: &ChatRequest,
     ) -> Result<ChatResponse, String> {
-        let response = builder(config, request, false)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = super::send_with_retry(builder(config, request, false)).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -93,10 +90,7 @@ impl AnthropicProvider {
         F: FnMut(String) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>>,
     {
-        let response = builder(config, request, true)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = super::send_with_retry(builder(config, request, true)).await?;
         if !response.status().is_success() {
             return Err(response
                 .text()

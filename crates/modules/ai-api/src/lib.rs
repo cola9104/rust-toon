@@ -231,6 +231,31 @@ pub struct ModelConfig {
     pub config: Value,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCapabilities {
+    #[serde(default, alias = "VideoMode")]
+    pub video_modes: Vec<String>,
+    #[serde(default)]
+    pub duration_resolution_map: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub think_levels: Vec<String>,
+    #[serde(default)]
+    pub multi_reference: bool,
+}
+
+impl ModelConfig {
+    pub fn capabilities(&self) -> ModelCapabilities {
+        serde_json::from_value(
+            self.config
+                .get("capabilities")
+                .cloned()
+                .unwrap_or_else(|| self.config.clone()),
+        )
+        .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,

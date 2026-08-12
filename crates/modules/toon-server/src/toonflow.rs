@@ -410,6 +410,52 @@ pub async fn all_novel(
     Ok(Json(ApiResponse::new(rows)))
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct NovelIndexRow {
+    pub id: i64,
+    #[serde(rename = "index")]
+    pub chapter_index: i32,
+    pub chapter: String,
+}
+
+pub async fn novel_index(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ProjectIdRequest>,
+) -> Result<Json<ApiResponse<Vec<NovelIndexRow>>>, AppError> {
+    require(&user, "toon:project:read")?;
+    let rows = sqlx::query_as(
+        "SELECT id,chapter_index,chapter FROM toonflow.novels WHERE project_id=$1 ORDER BY chapter_index",
+    )
+    .bind(request.project_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to list novel index"))?;
+    Ok(Json(ApiResponse::new(rows)))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BatchIdsRequest {
+    pub ids: Vec<i64>,
+}
+
+pub async fn batch_delete_novel(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<BatchIdsRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if request.ids.is_empty() {
+        return Err(AppError::bad_request("请先选择需要删除的内容"));
+    }
+    sqlx::query("DELETE FROM toonflow.novels WHERE id=ANY($1)")
+        .bind(request.ids)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to batch delete novel chapters"))?;
+    Ok(Json(ApiResponse::with_message((), "删除原文成功")))
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateNovelRequest {
@@ -853,6 +899,22 @@ pub async fn delete_assets(
         .map_err(|_| AppError::internal("failed to delete assets"))?;
     affected(result.rows_affected(), "asset")?;
     Ok(Json(ApiResponse::with_message((), "删除资产成功")))
+}
+
+pub async fn delete_asset(
+    user: CurrentUser,
+    state: State<ToonState>,
+    Json(request): Json<IdRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    delete_assets(
+        user,
+        state,
+        Json(DeleteIdsRequest {
+            ids: Some(vec![request.id]),
+            id: None,
+        }),
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]

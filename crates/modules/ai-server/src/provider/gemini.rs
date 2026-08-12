@@ -53,12 +53,12 @@ impl ChatProvider for GeminiProvider {
         config: &ModelConfig,
         request: &ChatRequest,
     ) -> Result<ChatResponse, String> {
-        let response = reqwest::Client::new()
-            .post(url(config, false))
-            .json(&body(request))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = super::send_with_retry(
+            super::http_client()
+                .post(url(config, false))
+                .json(&body(request)),
+        )
+        .await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -93,12 +93,12 @@ impl GeminiProvider {
         F: FnMut(String) -> Fut,
         Fut: std::future::Future<Output = Result<(), String>>,
     {
-        let response = reqwest::Client::new()
-            .post(url(config, true))
-            .json(&body(request))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = super::send_with_retry(
+            super::http_client()
+                .post(url(config, true))
+                .json(&body(request)),
+        )
+        .await?;
         if !response.status().is_success() {
             return Err(response
                 .text()

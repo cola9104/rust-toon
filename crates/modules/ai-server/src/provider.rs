@@ -7,29 +7,46 @@ use rust_toon_ai_api::{
 };
 use serde_json::{Value, json};
 
-const CHAT_CONNECT_ATTEMPTS: usize = 3;
+fn request_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(
+        std::env::var("AI_REQUEST_TIMEOUT_SECONDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(120),
+    )
+}
 
-async fn send_chat_request(builder: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
-    for attempt in 1..=CHAT_CONNECT_ATTEMPTS {
-        let request = builder
-            .try_clone()
-            .ok_or_else(|| "无法重建模型请求".to_string())?;
-        match request.send().await {
+pub(crate) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(request_timeout())
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+pub(crate) async fn send_with_retry(
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, String> {
+    let template = request
+        .try_clone()
+        .ok_or_else(|| "AI 请求无法安全重试".to_string())?;
+    for attempt in 0..3 {
+        let current = if attempt == 0 {
+            request
+                .try_clone()
+                .unwrap_or_else(|| template.try_clone().unwrap())
+        } else {
+            template.try_clone().unwrap()
+        };
+        match current.send().await {
+            Ok(response) if response.status().is_server_error() && attempt < 2 => {}
             Ok(response) => return Ok(response),
-            Err(error) if error.is_connect() && attempt < CHAT_CONNECT_ATTEMPTS => {
-                tokio::time::sleep(std::time::Duration::from_millis(250 * attempt as u64)).await;
-            }
-            Err(error) => {
-                let retry_note = if attempt > 1 {
-                    format!("，已尝试 {attempt} 次")
-                } else {
-                    String::new()
-                };
-                return Err(format!("连接模型服务失败{retry_note}：{error}"));
-            }
+            Err(error) if (error.is_connect() || error.is_timeout()) && attempt < 2 => {}
+            Err(error) => return Err(error.to_string()),
         }
+        tokio::time::sleep(std::time::Duration::from_millis(250 * (1 << attempt))).await;
     }
-    unreachable!("chat request loop always returns")
+    Err("AI 请求重试耗尽".into())
 }
 
 mod anthropic;
@@ -100,7 +117,7 @@ impl OpenAiCompatibleProvider {
             .get("textPath")
             .and_then(Value::as_str)
             .unwrap_or("/chat/completions");
-        let mut builder = reqwest::Client::new()
+        let mut builder = http_client()
             .post(format!("{}{}", config.url.trim_end_matches('/'), path))
             .json(&body);
         if !config.api_key.is_empty() {
@@ -110,7 +127,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             }
         }
-        let response = send_chat_request(builder).await?;
+        let response = send_with_retry(builder).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -133,7 +150,7 @@ impl OpenAiCompatibleProvider {
         if let Some(limit) = request.max_tokens {
             body["max_tokens"] = json!(limit);
         }
-        let mut builder = reqwest::Client::new()
+        let mut builder = http_client()
             .post(format!("{}{}", config.url.trim_end_matches('/'), path))
             .json(&body);
         if !config.api_key.is_empty() {
@@ -143,7 +160,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             };
         }
-        let response = send_chat_request(builder).await?;
+        let response = send_with_retry(builder).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -183,7 +200,7 @@ impl OpenAiCompatibleProvider {
         if let Some(limit) = request.max_tokens {
             body["max_tokens"] = json!(limit)
         }
-        let mut builder = reqwest::Client::new()
+        let mut builder = http_client()
             .post(format!("{}{}", config.url.trim_end_matches('/'), path))
             .json(&body);
         if !config.api_key.is_empty() {
@@ -193,7 +210,7 @@ impl OpenAiCompatibleProvider {
                 builder.header(auth_header, &config.api_key)
             }
         }
-        let response = send_chat_request(builder).await?;
+        let response = send_with_retry(builder).await?;
         if !response.status().is_success() {
             return Err(response
                 .text()
@@ -235,7 +252,7 @@ impl OpenAiCompatibleProvider {
     }
     fn request(&self, config: &ModelConfig, path: &str) -> reqwest::RequestBuilder {
         let mut request =
-            reqwest::Client::new().post(format!("{}{}", config.url.trim_end_matches('/'), path));
+            http_client().post(format!("{}{}", config.url.trim_end_matches('/'), path));
         if !config.api_key.is_empty() {
             request = request.bearer_auth(config.api_key.trim_start_matches("Bearer "));
         }
@@ -278,6 +295,7 @@ impl OpenAiCompatibleProvider {
         let image_client = reqwest::Client::builder()
             .http1_only()
             .connect_timeout(std::time::Duration::from_secs(15))
+            .timeout(request_timeout())
             .build()
             .map_err(|error| format!("创建图片 HTTP 客户端失败: {error:?}"))?;
         let mut image_request =
@@ -285,11 +303,9 @@ impl OpenAiCompatibleProvider {
         if !config.api_key.is_empty() {
             image_request = image_request.bearer_auth(config.api_key.trim_start_matches("Bearer "));
         }
-        let response = image_request
-            .json(&body)
-            .send()
+        let response = send_with_retry(image_request.json(&body))
             .await
-            .map_err(|error| format!("图片服务连接失败: {error:?}"))?;
+            .map_err(|error| format!("图片服务连接失败: {error}"))?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {
@@ -408,7 +424,7 @@ impl OpenAiCompatibleProvider {
         payload: Option<Value>,
         operation: &str,
     ) -> Result<Value, String> {
-        let mut request = reqwest::Client::new().request(
+        let mut request = http_client().request(
             method,
             format!("{}{}", config.url.trim_end_matches('/'), path),
         );
@@ -427,7 +443,7 @@ impl OpenAiCompatibleProvider {
         if let Some(body) = payload {
             request = request.json(&body);
         }
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let response = send_with_retry(request).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -446,12 +462,7 @@ impl OpenAiCompatibleProvider {
             .and_then(Value::as_str)
             .unwrap_or("/videos/generations");
         payload["model"] = json!(config.model);
-        let response = self
-            .request(config, path)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        let response = send_with_retry(self.request(config, path).json(&payload)).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {
@@ -489,12 +500,7 @@ impl OpenAiCompatibleProvider {
             .and_then(Value::as_str)
             .unwrap_or("/music/generations");
         payload["model"] = json!(config.model);
-        let response = self
-            .request(config, path)
-            .json(&payload)
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
+        let response = send_with_retry(self.request(config, path).json(&payload)).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -533,7 +539,7 @@ impl OpenAiCompatibleProvider {
             .unwrap_or("/music/tasks/{taskId}");
         let path = template.replace("{taskId}", task_id);
         let mut request =
-            reqwest::Client::new().get(format!("{}{}", config.url.trim_end_matches('/'), path));
+            http_client().get(format!("{}{}", config.url.trim_end_matches('/'), path));
         if !config.api_key.is_empty() {
             let header = config
                 .config
@@ -546,7 +552,7 @@ impl OpenAiCompatibleProvider {
                 request.header(header, &config.api_key)
             }
         }
-        let response = request.send().await.map_err(|e| e.to_string())?;
+        let response = send_with_retry(request).await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|e| e.to_string())?;
         if !status.is_success() {
@@ -577,7 +583,7 @@ impl OpenAiCompatibleProvider {
             .get("speechPath")
             .and_then(Value::as_str)
             .unwrap_or("/audio/speech");
-        let response=self.request(config,path).json(&json!({"model":config.model,"input":request.input,"voice":request.voice,"response_format":request.format})).send().await.map_err(|error|error.to_string())?;
+        let response = send_with_retry(self.request(config,path).json(&json!({"model":config.model,"input":request.input,"voice":request.voice,"response_format":request.format}))).await?;
         let status = response.status();
         let content_type = response
             .headers()
@@ -605,12 +611,11 @@ impl OpenAiCompatibleProvider {
             .get("embeddingPath")
             .and_then(Value::as_str)
             .unwrap_or("/embeddings");
-        let response = self
-            .request(config, path)
-            .json(&json!({"model":config.model,"input":request.inputs}))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        let response = send_with_retry(
+            self.request(config, path)
+                .json(&json!({"model":config.model,"input":request.inputs})),
+        )
+        .await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {
@@ -655,11 +660,20 @@ impl OpenAiCompatibleProvider {
     }
 }
 fn api_error(value: &Value, fallback: &str) -> String {
-    value
+    if let Some(message) = value
         .pointer("/error/message")
         .and_then(Value::as_str)
-        .unwrap_or(fallback)
-        .to_string()
+        .or_else(|| value.get("message").and_then(Value::as_str))
+    {
+        return message.to_string();
+    }
+    let body = value.to_string();
+    let summary = body.chars().take(500).collect::<String>();
+    if summary == "null" || summary == "{}" {
+        fallback.to_string()
+    } else {
+        format!("{fallback}：{summary}")
+    }
 }
 
 #[async_trait]

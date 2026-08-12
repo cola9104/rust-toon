@@ -32,3 +32,9 @@ Toonflow-app 仅作为功能、流程、字段与交互语义的参照。前端�
 每个条目必须同时具备 Rust 接口、数据库迁移、权限、前端入口或原页面调用兼容，并通过后端检查、前端类型检查和关键流程测试，才可标记完成。
 
 当前仓库的准确实现范围以实际 Rust 路由、数据库迁移和 Vben 菜单为准。未实现能力必须返回明确的 404 或业务错误，不能通过空数组、空对象或固定 `true` 冒充成功。
+
+## Toonflow 兼容端点状态
+
+- 已覆盖：`novel/getNovelIndex`、`novel/batchDeleteNovel`、`production/assets/updateAssetsUrl`、`production/assets/deleteAssetsDireve`、`script/getAiRegex`、`script/exportScript`、`artStyle/extractStylePrompt`、`assets/addAudioAssets`、`assets/updateAudioAssets`、`assets/delAssets`、`modelSelect/getModelList`、`modelSelect/getModelDetail`、`other/getVersion`。
+- 服务端专属能力：Agent WebSocket 支持 `updateContext`、心跳和断线超时；启动时会将被服务重启中断的生成任务标记为失败。
+- 桌面端专属端点不移植：`checkUpdate`、`openFolder`、`selectFolder`、`openExternal` 等 Electron/本机文件管理能力。

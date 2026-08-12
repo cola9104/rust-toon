@@ -6,7 +6,118 @@ use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use sqlx::FromRow;
+
+#[derive(Deserialize)]
+pub struct ModelListRequest {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelDetailRequest {
+    model_id: String,
+}
+
+pub async fn model_list(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ModelListRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:read")?;
+    let kind = if request.kind == "text" {
+        "chat"
+    } else {
+        request.kind.as_str()
+    };
+    let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
+        "SELECT id,name,model,type,platform FROM ai.model_configs WHERE status=0 AND ($1='all' OR type=$1) AND ($1<>'all' OR type<>'video') ORDER BY name,id",
+    )
+    .bind(kind)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to list models"))?;
+    let data = rows
+        .into_iter()
+        .map(|(id, label, model, kind, platform)| {
+            let public_kind = if kind == "chat" { "text" } else { &kind };
+            json!({"id":platform,"label":label,"value":model,"type":public_kind,"name":platform,"modelConfigId":id})
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(ApiResponse::new(json!(data))))
+}
+
+pub async fn model_detail(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ModelDetailRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:read")?;
+    let numeric_id = request.model_id.parse::<i64>().ok();
+    let (platform, model) = request
+        .model_id
+        .split_once(':')
+        .map(|(platform, model)| (Some(platform), model))
+        .unwrap_or((None, request.model_id.as_str()));
+    let row: Option<(i64, String, String, String, String, Value)> = sqlx::query_as(
+        "SELECT id,name,model,type,platform,config FROM ai.model_configs WHERE status=0 AND (($1::bigint IS NOT NULL AND id=$1) OR ($1 IS NULL AND model=$2 AND ($3::text IS NULL OR platform=$3))) ORDER BY id LIMIT 1",
+    ).bind(numeric_id).bind(model).bind(platform).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load model"))?;
+    let data = row
+        .map(|(id, name, model, kind, platform, config)| {
+            let public_kind = if kind == "chat" { "text" } else { &kind };
+            json!({"id":id,"name":name,"modelName":model,"type":public_kind,"vendorId":platform,"config":config})
+        })
+        .unwrap_or(Value::Null);
+    Ok(Json(ApiResponse::new(data)))
+}
+
+pub async fn version() -> Json<ApiResponse<&'static str>> {
+    Json(ApiResponse::new(env!("CARGO_PKG_VERSION")))
+}
+
+#[derive(Deserialize)]
+pub struct ExtractStyleRequest {
+    images: Vec<String>,
+}
+
+pub async fn extract_style_prompt(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ExtractStyleRequest>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if request.images.is_empty() {
+        return Err(AppError::bad_request("请至少提供一张图片"));
+    }
+    let content = request
+        .images
+        .into_iter()
+        .map(|image| json!({"type":"image_url","image_url":{"url":image}}))
+        .collect::<Vec<_>>();
+    let raw = crate::ai_client::text_tools(
+        &state.pool,
+        "universalAi",
+        vec![
+            json!({"role":"system","content":"综合分析图片共同画风，只输出一个括号包裹的中英文画风提示词，格式：(画风：中文描述, idiomatic English style prompt)。无法识别时输出无法描述。"}),
+            json!({"role":"user","content":content}),
+        ],
+        Vec::new(),
+    )
+    .await
+    .map_err(AppError::bad_request)?;
+    let result = raw
+        .pointer("/choices/0/message/content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if result.is_empty() {
+        return Err(AppError::bad_request("模型未返回画风提示词"));
+    }
+    Ok(Json(ApiResponse::new(result)))
+}
 
 use crate::{
     ToonState,

@@ -2237,6 +2237,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zip 8.6.0",
 ]
 
 [[package]]

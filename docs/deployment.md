@@ -1,85 +1,120 @@
-# 启动、部署与运维
+# 部署文档
 
-AI 编码助手接手项目时应先阅读仓库根目录的 [AI 启动交接指南](../AGENTS.md)。该文件包含本地启动、新服务器启动、systemd、Nginx 和常见故障的可执行命令。
+本文档给出本地开发与生产部署的操作步骤。配置项的含义与默认值见 [configuration.md](configuration.md)，架构说明见 [technical-solution.md](technical-solution.md)。根目录 `AGENTS.md` 是启动命令的权威参考，本文与之保持一致。
 
-## 本地开发方案
+## 1. 前置要求
 
-推荐使用仓库启动脚本：
+- Rust stable（支持 Rust 2024 edition）。
+- Docker 与 Docker Compose（本地基础设施）。
+- Node.js `22.18+` 或 `24.x`，pnpm `11+`（通过 Corepack；`apps/web/package.json` 锁定 `pnpm@11.13.0`）。
+- 生产环境另需 Nginx 或其他反向代理。
+
+## 2. 本地开发
+
+### 2.1 启动基础设施
 
 ```bash
-bash script/start-local.sh infra    # 仅 PostgreSQL、Redis、NATS、MinIO
-bash script/start-local.sh backend  # 基础设施 + 前台网关
-bash script/start-local.sh all      # 基础设施 + 网关 + 前端
+docker compose -f script/docker/docker-compose.yml up -d
 ```
 
-脚本只为本地开发提供默认密码。生产环境不得使用其中的默认密钥。
+包含 PostgreSQL（5432）、Redis（6379）、NATS（4222/8222）、MinIO（9000/9001）。也可以使用便捷脚本 `script/start-local.sh [infra|backend|all]`：它会先起 compose，再按模式启动后端（自动导出本地默认环境变量）。
 
-1. 执行 `docker compose -f script/docker/docker-compose.yml up -d`。
-2. 按 [配置文档](configuration.md) 导出数据库、JWT 和管理员环境变量。
-3. 执行 `cargo run -p rust-toon-gateway`（首次启动自动初始化数据库并执行全部迁移）。
-4. 在 `apps/web` 执行 `pnpm install && pnpm dev:antd`。
-5. 检查 `GET http://127.0.0.1:8080/health`，然后访问 `http://127.0.0.1:5666`。
+### 2.2 启动后端网关
 
-数据库结构由网关的 SQLx Migrator 自动管理，启动时仅执行迁移，禁止同时把 SQL 文件挂载进 `/docker-entrypoint-initdb.d`。
+```bash
+export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
+export REDIS_URL='redis://127.0.0.1:6379'
+export JWT_SECRET='local-development-jwt-secret-change-me-32bytes'
+export BOOTSTRAP_ADMIN_USERNAME='admin'
+export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
+export RUST_LOG='info'
+cargo run -p rust-toon-gateway
+```
 
-## 后端生产构建
+网关启动时自动执行 `sql/postgresql` 下的全部迁移（空库从零建表并写入基线数据），并校验存在启用的超级管理员。
+
+### 2.3 启动前端
+
+```bash
+cd apps/web
+corepack enable
+pnpm install
+pnpm dev:antd
+```
+
+### 2.4 访问入口
+
+- 前端：`http://127.0.0.1:5666`
+- 后端健康检查：`http://127.0.0.1:8080/health`
+- OpenAPI 文档：`http://127.0.0.1:8080/openapi.json`
+- MinIO 控制台：`http://127.0.0.1:9001`（`rust_toon` / `rust_toon_password`）
+
+默认本地账号：`admin`（基线迁移内置；开发前端默认填充密码 `admin123`，首次登录后请修改）。
+
+### 2.5 本地验证
+
+```bash
+curl -fsS http://127.0.0.1:8080/health
+cargo test --workspace
+bash script/test-database-migrations.sh
+pnpm --dir apps/web --filter @vben/web-antd run typecheck
+```
+
+前端生产构建检查：`pnpm --dir apps/web --filter @vben/web-antd run build`。
+
+## 3. 数据库迁移管理
+
+- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0011`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
+- 变更流程（与根 `AGENTS.md` 一致）：
+  1. 新增编号迁移文件，已发布/已应用的迁移不得修改。
+  2. 迁移必须幂等，同时支持空库初始化与已有库升级。
+  3. 运行 `bash script/test-database-migrations.sh` 验证空库可到达最新结构（脚本用 Docker 起临时 `postgres:18`，端口 `TEST_POSTGRES_PORT`，默认 55432）。
+  4. 可选：对干净参考库导出 `sql/bootstrap/current.sql`（`pg_dump` 快照，仅供查阅，应用从不加载）。
+  5. 更新 `crates/framework/database/tests/migrations.rs` 中的迁移数量与基线断言。
+- 保护机制：若数据库已有业务表但无 `_sqlx_migrations` 历史，启动迁移会拒绝执行，防止误覆盖。
+
+## 4. 新服务器生产部署
+
+### 4.1 克隆与基础设施
+
+```bash
+git clone <repo-url> rust-toon
+cd rust-toon
+docker compose -f script/docker/docker-compose.yml up -d
+```
+
+使用云厂商托管的 PostgreSQL/Redis 时，可只启动其余服务，并把 `DATABASE_URL` / `REDIS_URL` 指向托管实例。
+
+### 4.2 网关环境文件
+
+在 git 之外创建 `/etc/rust-toon/gateway.env`（样例见 `deploy/env/gateway.env.example`）：
+
+```bash
+DATABASE_URL=postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon
+REDIS_URL=redis://127.0.0.1:6379
+JWT_SECRET=replace-with-a-strong-random-secret-at-least-32-bytes
+GATEWAY_HOST=0.0.0.0
+GATEWAY_PORT=8080
+RUST_LOG=info
+BOOTSTRAP_ADMIN_USERNAME=admin
+BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
+```
+
+`JWT_SECRET` 必须 ≥ 32 字节，否则启动失败。首次登录成功后将 `BOOTSTRAP_ADMIN_PASSWORD` 从环境文件中移除并重启服务。生产环境如使用本地文件存储，建议显式设置 `INFRA_UPLOAD_DIR`（默认 `storage/uploads`，相对工作目录）；AI 密钥落库加密可通过 `SECRET_ENCRYPTION_KEY` 独立指定（缺省回退 `JWT_SECRET`）。
+
+### 4.3 构建与试运行
 
 ```bash
 cargo build --release -p rust-toon-gateway
+set -a; . /etc/rust-toon/gateway.env; set +a
+./target/release/rust-toon-gateway
 ```
 
-产物为 `target/release/rust-toon-gateway`。生产服务至少需要：
+确认迁移与管理员就绪后 Ctrl+C 停止，交给 systemd 管理。
 
-- `DATABASE_URL`
-- 强随机 `JWT_SECRET`
-- `GATEWAY_HOST` 和 `GATEWAY_PORT`
-- 可选 `REDIS_URL`
+### 4.4 systemd
 
-推荐由 systemd、Docker、Kubernetes 或其他进程管理器注入环境变量并负责重启。多个网关实例可以共享 PostgreSQL 和 Redis；异步任务轮询使用持久化状态，重复轮询应由供应商任务查询接口保持幂等。
-
-新服务器首次部署建议流程：
-
-1. 安装 Rust stable、Docker Compose、Node.js `22.18+` 或 `24.x`，并通过 Corepack 使用 pnpm `11+`。
-2. 克隆代码到固定目录，例如 `/opt/rust-toon`。
-3. 启动基础设施：`docker compose -f script/docker/docker-compose.yml up -d`。使用托管 PostgreSQL/Redis 时，改为在环境变量中指向托管地址。
-4. 创建 `/etc/rust-toon/gateway.env`，写入 `DATABASE_URL`、`REDIS_URL`、强随机 `JWT_SECRET`、`GATEWAY_HOST`、`GATEWAY_PORT`、`RUST_LOG` 和首次管理员变量。
-5. 执行 `cargo build --release -p rust-toon-gateway`。
-6. 手动加载环境变量运行一次 `target/release/rust-toon-gateway`，确认迁移成功和管理员可登录。
-7. 管理员创建后，从环境文件移除 `BOOTSTRAP_ADMIN_PASSWORD`。
-8. 使用 systemd、Docker 或 Kubernetes 托管网关进程。
-
-仓库已提供可直接安装的 systemd 单元：
-
-```bash
-sudo install -d -m 0750 -o rust-toon -g rust-toon /etc/rust-toon
-sudo install -m 0644 deploy/systemd/rust-toon-gateway.service /etc/systemd/system/
-sudo install -m 0640 deploy/env/gateway.env.example /etc/rust-toon/gateway.env
-sudo editor /etc/rust-toon/gateway.env
-sudo systemctl daemon-reload
-sudo systemctl enable --now rust-toon-gateway
-```
-
-等价的核心配置为：
-
-```ini
-[Unit]
-Description=Rust Toon Gateway
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/rust-toon
-EnvironmentFile=/etc/rust-toon/gateway.env
-ExecStart=/opt/rust-toon/target/release/rust-toon-gateway
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-启用服务：
+仓库提供样例 `deploy/systemd/rust-toon-gateway.service`（`User=rust-toon`、`EnvironmentFile=/etc/rust-toon/gateway.env`、开启 `ProtectSystem=strict` 等加固项，并放行 `/opt/rust-toon/storage` 可写）：
 
 ```bash
 sudo systemctl daemon-reload
@@ -88,7 +123,17 @@ sudo systemctl status rust-toon-gateway
 curl -fsS http://127.0.0.1:8080/health
 ```
 
-## 前端生产构建
+### 4.5 备份与恢复
+
+仓库提供脚本与定时器样例：
+
+- `script/database/backup-postgres.sh`：`pg_dump` 备份，要求 `DATABASE_URL`；`BACKUP_DIR`（默认 `/var/backups/rust-toon/postgresql`）、`BACKUP_RETENTION_DAYS`（默认 14）控制目录与保留天数，拒绝不安全的备份目录。
+- `script/database/restore-postgres.sh`：恢复，`--backup FILE --database-url URL --confirm`。
+- `deploy/systemd/rust-toon-postgres-backup.service` + `.timer`：每日 03:15 定时备份（环境文件 `/etc/rust-toon/backup.env`，样例 `deploy/env/backup.env.example`）。
+
+除数据库外，别忘了备份上传目录（`INFRA_UPLOAD_DIR`）与 MinIO 数据卷。
+
+## 5. 前端生产部署
 
 ```bash
 corepack enable
@@ -96,9 +141,7 @@ pnpm --dir apps/web install --frozen-lockfile
 pnpm --dir apps/web --filter @vben/web-antd run build
 ```
 
-静态产物位于 `apps/web/apps/web-antd/dist`，可由 Nginx 或对象存储/CDN 托管。SPA 部署需要把未知前端路径回退至 `index.html`，并将 `/api/` 反向代理到 Rust 网关。
-
-Nginx 核心配置示例：
+产物目录：`apps/web/apps/web-antd/dist`（另产出 `dist.zip`）。交给 Nginx/CDN 托管，SPA 路由回退 `index.html`，`/api/` 反代到网关：
 
 ```nginx
 location / {
@@ -106,131 +149,23 @@ location / {
 }
 
 location /api/ {
-    proxy_pass http://rust-toon-gateway:8080/;
+    proxy_pass http://127.0.0.1:8080/;
     proxy_http_version 1.1;
-    proxy_buffering off; # SSE 必须关闭代理缓冲
+    proxy_buffering off;
     proxy_read_timeout 600s;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
 ```
 
-## 数据库迁移
+要点：`X-Forwarded-For` 影响后端限流的客户端识别；SSE/流式响应需要关闭代理缓冲并加大读超时；WebSocket 端点（`/api/socket/{agent}`）需要反代放行 Upgrade 头。生产跨域应在反代层控制，不要开启 `WEB_PERMISSIVE_CORS`。
 
-数据库结构由 Rust 网关启动时的 SQLx Migrator 统一管理，不依赖 Docker 卷挂载或外部 SQL 导入。
+## 6. 常见问题
 
-- 迁移文件位于 `sql/postgresql`，版本号必须是唯一整数前缀。
-- 网关连接数据库后、监听端口前自动执行迁移。
-- 空数据库首次启动时直接执行全部迁移。`0001_initial.sql` 提供当前完整 schema 和基准数据，不依赖 `sql/bootstrap/current.sql`。
-- 每次修改 schema 或基准数据都必须新增更高版本的迁移，并更新空库迁移测试的版本数和数据断言。
-- 全部迁移在干净参考库执行成功后，重新导出 `sql/bootstrap/current.sql` 用于人工比对；应用不得依赖该文件启动。
-- 发布前运行 `bash script/test-database-migrations.sh`，验证空 PostgreSQL 18 可完成全部迁移。
-- 已在生产执行的迁移不得修改；后续结构变化应新增更高版本迁移。
-- 本次迁移历史已合并为新的 `0001`，保留旧 `_sqlx_migrations` 记录的数据库需要清空后重建。
-- 正式升级前必须备份数据库，并先在备份副本验证升级。
-
-## 数据库备份与恢复
-
-### 手动备份
-
-服务器需要安装与 PostgreSQL 服务端主版本兼容的 `pg_dump`、`pg_restore` 和 `sha256sum`。
-
-```bash
-set -a
-. /etc/rust-toon/backup.env
-set +a
-/opt/rust-toon/script/database/backup-postgres.sh
-```
-
-备份脚本具有以下行为：
-
-- 使用 PostgreSQL custom format，支持并行恢复和对象级检查；
-- 先写入 `.partial` 文件，`pg_restore --list` 成功后才原子改名；
-- 为每个 dump 生成 `.sha256` 校验文件；
-- 默认保留 14 天，可通过 `BACKUP_RETENTION_DAYS` 调整；
-- 不备份运行中的 PostgreSQL 数据目录，不依赖 Docker volume 路径。
-
-### 自动备份
-
-```bash
-sudo install -d -m 0700 -o rust-toon -g rust-toon /var/backups/rust-toon/postgresql
-sudo install -m 0640 deploy/env/backup.env.example /etc/rust-toon/backup.env
-sudo editor /etc/rust-toon/backup.env
-sudo install -m 0644 deploy/systemd/rust-toon-postgres-backup.service /etc/systemd/system/
-sudo install -m 0644 deploy/systemd/rust-toon-postgres-backup.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now rust-toon-postgres-backup.timer
-sudo systemctl start rust-toon-postgres-backup.service
-sudo systemctl status rust-toon-postgres-backup.service
-sudo systemctl list-timers rust-toon-postgres-backup.timer
-```
-
-timer 默认每天 03:15 执行，并有最多 15 分钟随机延迟。至少把一份备份同步到服务器之外的对象存储，并对异地副本配置独立保留策略。
-
-### 恢复与演练
-
-恢复会清理目标数据库中的同名对象，必须显式传入 `--confirm`。恢复前停止网关，避免恢复期间产生新写入：
-
-```bash
-sudo systemctl stop rust-toon-gateway
-set -a
-. /etc/rust-toon/backup.env
-set +a
-/opt/rust-toon/script/database/restore-postgres.sh \
-  --backup /var/backups/rust-toon/postgresql/rust-toon-YYYYMMDDTHHMMSSZ.dump \
-  --confirm
-sudo systemctl start rust-toon-gateway
-curl -fsS http://127.0.0.1:8080/health
-```
-
-推荐每月至少在临时数据库执行一次恢复演练，检查 `_sqlx_migrations`、管理员登录、项目数量和资产记录。`sql/bootstrap/current.sql` 是开发比对快照，不是生产备份，不能替代上述 dump。
-
-数据库只保存 MinIO 对象键和元数据，图片、音频、视频等文件本体位于 MinIO。完整灾备必须同时备份 MinIO bucket（例如用 `mc mirror` 同步到异地对象存储），并确保数据库与对象备份的时间窗口一致。
-
-### 升级顺序
-
-1. 创建并校验数据库备份，同时完成 MinIO 增量同步。
-2. 在备份副本上恢复并运行新版本网关，验证迁移。
-3. 停止生产网关，执行最后一次备份。
-4. 部署新二进制并启动；网关在监听端口前自动执行 SQLx 迁移。
-5. 验证 `/health`、登录、项目和任务状态后再恢复外部流量。
-
-## 首次管理员
-
-仅首次部署设置：
-
-```bash
-export BOOTSTRAP_ADMIN_USERNAME=admin
-export BOOTSTRAP_ADMIN_PASSWORD='替换为高强度密码'
-```
-
-管理员存在后可以移除 `BOOTSTRAP_ADMIN_PASSWORD`，网关会跳过初始化。不要把生产密码提交到仓库或镜像。
-
-## 健康检查与日志
-
-- 存活检查：`GET /health`
-- OpenAPI 文档：`GET /openapi.json`
-- 请求自动生成或透传 `x-request-id`
-- 使用 `RUST_LOG=info` 或模块级过滤规则控制 tracing 输出
-
-## 测试和发布检查
-
-```bash
-cargo fmt --all -- --check
-cargo test --workspace
-bash script/test-database-migrations.sh
-bash script/test-ai-e2e.sh
-pnpm --dir apps/web --filter @vben/web-antd run typecheck
-pnpm --dir apps/web --filter @vben/web-antd run build
-```
-
-`test-ai-e2e.sh` 会启动临时 PostgreSQL，并用本地模拟模型验证 JWT、普通聊天、SSE、消息落库及 Midjourney Imagine/Action 状态机，不调用外部付费模型。
-
-## 常见问题
-
-- 网关提示 `DATABASE_URL is required`：未配置数据库连接串。
-- 网关提示 JWT 密钥过短：`JWT_SECRET` 必须至少 32 字节。
-- 没有初始管理员：确认首次启动时设置了 `BOOTSTRAP_ADMIN_PASSWORD`。
-- SSE 到前端后一次性出现：关闭 Nginx/Ingress 的响应缓冲并增加读取超时。
-- AI 任务一直处理中：检查模型配置的任务查询路径、鉴权头和供应商任务 ID；可调用 `/poll` 接口立即同步。
-- 前端请求 404：确认 Vben API 基址或 Nginx `/api/` 转发是否去掉了正确的前缀。
+- `DATABASE_URL is required`：未导出或未写入环境文件。
+- JWT 启动报错：`JWT_SECRET` 必须至少 32 字节。
+- 启动报 "no enabled super administrator"：数据库缺少基线超级管理员，检查迁移是否完整执行。
+- 没有管理员账号：首次启动参考 `AGENTS.md` 设置 `BOOTSTRAP_ADMIN_PASSWORD`，账号建立后移除该变量。
+- 前端 API 404：检查 `VITE_BASE_URL`、`VITE_GLOB_API_URL` 与 Nginx `/api/` 前缀处理。
+- SSE 一次性返回：反代未关缓冲或读超时太短。
+- 端口占用：`ss -ltnp | rg ':(8080|5666|5432|6379)'`。

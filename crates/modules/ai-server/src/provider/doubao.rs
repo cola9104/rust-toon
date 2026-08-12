@@ -25,7 +25,7 @@ pub(super) fn normalize_seedream_size(model: &str, size: &str) -> String {
 impl DouBaoMediaProvider {
     fn client(&self, config: &ModelConfig) -> reqwest::Client {
         let _ = config;
-        reqwest::Client::new()
+        super::http_client()
     }
 
     fn url(config: &ModelConfig, path: &str) -> String {
@@ -143,14 +143,13 @@ impl DouBaoMediaProvider {
             .get("videoGeneratePath")
             .and_then(Value::as_str)
             .unwrap_or("/contents/generations/tasks");
-        let response = self
-            .client(config)
-            .post(Self::url(config, path))
-            .bearer_auth(config.api_key.trim_start_matches("Bearer "))
-            .json(&Self::video_body(config, payload)?)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        let response = super::send_with_retry(
+            self.client(config)
+                .post(Self::url(config, path))
+                .bearer_auth(config.api_key.trim_start_matches("Bearer "))
+                .json(&Self::video_body(config, payload)?),
+        )
+        .await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {
@@ -170,13 +169,12 @@ impl DouBaoMediaProvider {
             .and_then(Value::as_str)
             .unwrap_or("/contents/generations/tasks/{taskId}");
         let path = template.replace("{taskId}", task_id);
-        let response = self
-            .client(config)
-            .get(Self::url(config, &path))
-            .bearer_auth(config.api_key.trim_start_matches("Bearer "))
-            .send()
-            .await
-            .map_err(|error| error.to_string())?;
+        let response = super::send_with_retry(
+            self.client(config)
+                .get(Self::url(config, &path))
+                .bearer_auth(config.api_key.trim_start_matches("Bearer ")),
+        )
+        .await?;
         let status = response.status();
         let value: Value = response.json().await.map_err(|error| error.to_string())?;
         if !status.is_success() {

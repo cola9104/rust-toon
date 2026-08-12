@@ -139,6 +139,58 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
             "## 项目信息\n小说名称：{name}\n小说类型：{kind}\n小说简介：{intro}\n视觉风格：{style}\n视频画幅：{ratio}\n章节数量：{chapters}章\n\n**重要**：平台规格=视频画幅({ratio})，风格定位=小说类型({kind})+视觉风格({style})。这两项参数已由项目配置确定，无需再向用户确认，直接使用即可。"
         ))
     } else {
+        let image_model_label = if let Some(id) = image_model {
+            sqlx::query_as::<_, (String, Value)>(
+                "SELECT name,config FROM ai.model_configs WHERE id=$1",
+            )
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load image model"))?
+            .map(|(name, config)| {
+                format!(
+                    "{name}（ID {id}，多参：{}）",
+                    if config
+                        .get("multiReference")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        "是"
+                    } else {
+                        "否"
+                    }
+                )
+            })
+            .unwrap_or_else(|| format!("未知模型（ID {id}）"))
+        } else {
+            "未配置".into()
+        };
+        let video_model_label = if let Some(id) = video_model {
+            sqlx::query_as::<_, (String, Value)>(
+                "SELECT name,config FROM ai.model_configs WHERE id=$1",
+            )
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load video model"))?
+            .map(|(name, config)| {
+                format!(
+                    "{name}（ID {id}，多参：{}）",
+                    if config
+                        .get("multiReference")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        "是"
+                    } else {
+                        "否"
+                    }
+                )
+            })
+            .unwrap_or_else(|| format!("未知模型（ID {id}）"))
+        } else {
+            "未配置".into()
+        };
         let script = if let Some(id) = request.script_id {
             sqlx::query_as::<_, (String, String)>(
                 "SELECT name,content FROM toonflow.scripts WHERE id=$1 AND project_id=$2",
@@ -156,12 +208,8 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
             .unwrap_or_default();
         Ok(format!(
             "## 生产上下文\n项目：{name}\n图像模型 ID：{}\n视频模型 ID：{}\n视频画幅：{ratio}\n视频生成模式：{mode}\n分镜面板写入模式：{}{script_context}",
-            image_model
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "未配置".into()),
-            video_model
-                .map(|x| x.to_string())
-                .unwrap_or_else(|| "未配置".into()),
+            image_model_label,
+            video_model_label,
             if mode == "text" {
                 "纯文本多参模式"
             } else {
@@ -172,8 +220,13 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
 }
 
 async fn memory_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
-    let summaries:Vec<String>=sqlx::query_scalar("SELECT content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='summary' ORDER BY create_time DESC LIMIT 5").bind(&request.agent_type).bind(&request.isolation_key).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load agent memory"))?;
-    let messages:Vec<(String,String)>=sqlx::query_as("SELECT role,content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' ORDER BY create_time DESC LIMIT 8").bind(&request.agent_type).bind(&request.isolation_key).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load agent memory"))?;
+    let summary_limit =
+        toonflow_agent_runtime::setting_usize(&state.pool, "summaryLimit", 5).await as i64;
+    let short_term_limit =
+        toonflow_agent_runtime::setting_usize(&state.pool, "shortTermLimit", 8).await as i64;
+    let rag_limit = toonflow_agent_runtime::setting_usize(&state.pool, "ragLimit", 5).await;
+    let summaries:Vec<String>=sqlx::query_scalar("SELECT content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='summary' ORDER BY create_time DESC LIMIT $3").bind(&request.agent_type).bind(&request.isolation_key).bind(summary_limit).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load agent memory"))?;
+    let messages:Vec<(String,String)>=sqlx::query_as("SELECT role,content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' AND summarized=false ORDER BY create_time DESC LIMIT $3").bind(&request.agent_type).bind(&request.isolation_key).bind(short_term_limit).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load agent memory"))?;
     let recent = messages
         .into_iter()
         .rev()
@@ -185,7 +238,7 @@ async fn memory_context(state: &ToonState, request: &ChatRequest) -> Result<Stri
         &request.agent_type,
         &request.isolation_key,
         &request.content,
-        5,
+        rag_limit,
     )
     .await
     .map_err(|_| AppError::internal("failed to retrieve relevant agent memory"))?;
@@ -196,7 +249,7 @@ async fn memory_context(state: &ToonState, request: &ChatRequest) -> Result<Stri
     ))
 }
 
-async fn add_memory(
+pub(crate) async fn add_memory(
     state: &ToonState,
     agent: &str,
     isolation: &str,
@@ -206,12 +259,27 @@ async fn add_memory(
     let id = next_id(if role == "user" { 1 } else { 2 });
     sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,create_time) VALUES($1,$2,$3,$4,$5,$6)").bind(id).bind(agent).bind(isolation).bind(role).bind(content).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save agent memory"))?;
     toonflow_agent_runtime::store_memory_embedding(&state.pool, id, content).await;
+    let agent_key = if agent == "scriptAgent" {
+        "scriptAgent:decisionAgent"
+    } else {
+        "productionAgent:decisionAgent"
+    };
+    summarize_if_needed(state, agent, isolation, agent_key).await;
     Ok(id)
 }
 
-async fn summarize_if_needed(state: &ToonState, request: &ChatRequest, agent_key: &str) {
-    let rows:Vec<(i64,String,String)>=sqlx::query_as("SELECT id,role,content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' AND summarized=false ORDER BY create_time LIMIT 6").bind(&request.agent_type).bind(&request.isolation_key).fetch_all(&state.pool).await.unwrap_or_default();
-    if rows.len() < 6 {
+async fn summarize_if_needed(
+    state: &ToonState,
+    agent_type: &str,
+    isolation_key: &str,
+    agent_key: &str,
+) {
+    let messages_per_summary =
+        toonflow_agent_runtime::setting_usize(&state.pool, "messagesPerSummary", 6).await;
+    let summary_max_length =
+        toonflow_agent_runtime::setting_usize(&state.pool, "summaryMaxLength", 500).await;
+    let rows:Vec<(i64,String,String)>=sqlx::query_as("SELECT id,role,content FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' AND summarized=false ORDER BY create_time LIMIT $3").bind(agent_type).bind(isolation_key).bind(messages_per_summary as i64).fetch_all(&state.pool).await.unwrap_or_default();
+    if rows.len() < messages_per_summary {
         return;
     }
     let source = rows
@@ -219,11 +287,10 @@ async fn summarize_if_needed(state: &ToonState, request: &ChatRequest, agent_key
         .map(|(_, r, c)| format!("{r}: {c}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let Ok(summary) = ai_client::project_text(
+    let Ok(summary) = ai_client::text(
         &state.pool,
         agent_key,
-        request.project_id,
-        "将对话压缩为500字以内的事实摘要，只输出摘要。",
+        &format!("将对话压缩为{summary_max_length}字以内的事实摘要，只输出摘要。"),
         &source,
     )
     .await
@@ -231,15 +298,18 @@ async fn summarize_if_needed(state: &ToonState, request: &ChatRequest, agent_key
         return;
     };
     let ids = rows.iter().map(|(id, _, _)| *id).collect::<Vec<_>>();
+    let summary_id = next_id(3);
     let Ok(mut tx) = state.pool.begin().await else {
         return;
     };
-    if sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,memory_type,related_message_ids,create_time) VALUES($1,$2,$3,'system',$4,'summary',$5,$6)").bind(next_id(3)).bind(&request.agent_type).bind(&request.isolation_key).bind(summary).bind(json!(ids)).bind(now_ms()).execute(&mut *tx).await.is_err(){return}
+    if sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,memory_type,related_message_ids,create_time) VALUES($1,$2,$3,'system',$4,'summary',$5,$6)").bind(summary_id).bind(agent_type).bind(isolation_key).bind(&summary).bind(json!(ids)).bind(now_ms()).execute(&mut *tx).await.is_err(){return}
     let _ = sqlx::query("UPDATE toonflow.agent_memories SET summarized=true WHERE id=ANY($1)")
         .bind(&ids)
         .execute(&mut *tx)
         .await;
-    let _ = tx.commit().await;
+    if tx.commit().await.is_ok() {
+        toonflow_agent_runtime::store_memory_embedding(&state.pool, summary_id, &summary).await;
+    }
 }
 
 fn tool_guide(agent_type: &str) -> &'static str {
@@ -250,7 +320,7 @@ deepRetrieve 用于搜索历史对话中的关键信息，仅在用户要求回�
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     } else {
-        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt}), deepRetrieve({keyword})。
+        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), deepRetrieve({keyword}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_image_edit({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
 deepRetrieve 只检索当前项目与当前剧本的生产对话记忆，不读取实时工作区数据。
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
@@ -306,6 +376,7 @@ fn tool_names(agent_type: &str) -> &'static [&'static str] {
             "run_supervision_agent",
             "save_scripts",
             "use_skill",
+            "read_skill_file",
             "deepRetrieve",
         ]
     } else {
@@ -327,10 +398,12 @@ fn tool_names(agent_type: &str) -> &'static [&'static str] {
             "run_sub_agent_generate_assets",
             "run_sub_agent_director_plan",
             "run_sub_agent_storyboard_gen",
+            "run_sub_agent_image_edit",
             "run_sub_agent_storyboard_panel",
             "run_sub_agent_storyboard_table",
             "run_sub_agent_supervision",
             "use_skill",
+            "read_skill_file",
             "deepRetrieve",
         ]
     }
@@ -367,6 +440,9 @@ fn tool_def(name: &str) -> Value {
         }
         "use_skill" => {
             json!({"type":"function","function":{"name":"use_skill","description":"加载动态Skill内容。需要专项技法参考时使用，传入skill文件路径即可获取完整内容。","parameters":{"type":"object","properties":{"path":{"type":"string","description":"Skill文件路径，如 production_skills/storyboard_prompt_techniques"}},"required":["path"]}}})
+        }
+        "read_skill_file" => {
+            json!({"type":"function","function":{"name":"read_skill_file","description":"读取已列出的动态 Skill 资源文件。","parameters":{"type":"object","properties":{"path":{"type":"string","description":"skill_list 中的安全相对路径"}},"required":["path"]}}})
         }
         // Production agent tools
         "get_flowData" => {
@@ -419,6 +495,9 @@ fn tool_def(name: &str) -> Value {
         }
         "run_sub_agent_storyboard_gen" => {
             json!({"type":"function","function":{"name":"run_sub_agent_storyboard_gen","description":"【阶段6】派发分镜图生成任务给执行层子Agent。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
+        }
+        "run_sub_agent_image_edit" => {
+            json!({"type":"function","function":{"name":"run_sub_agent_image_edit","description":"派发分镜图片编辑任务给执行层子Agent。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
         }
         "run_sub_agent_storyboard_panel" => {
             json!({"type":"function","function":{"name":"run_sub_agent_storyboard_panel","description":"【阶段5】派发分镜面板写入任务给执行层子Agent。将分镜表逐条写入面板。","parameters":{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}}})
@@ -518,6 +597,7 @@ pub(crate) async fn run_scoped_production_agent(
             let request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: "productionAgent".to_string(),
+                isolation_key: String::new(),
                 project_id,
                 script_id,
                 tool_name: name.to_string(),
@@ -603,6 +683,7 @@ async fn run_native_tools(
             let tool_request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: request.agent_type.clone(),
+                isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
                 tool_name: name.to_string(),
@@ -626,7 +707,8 @@ async fn run_with_tools(
     system: &str,
     run_id: i64,
 ) -> Result<String, String> {
-    let dynamic_skills = toonflow_agent_runtime::dynamic_skills(&state.pool).await?;
+    let dynamic_skills =
+        toonflow_agent_runtime::dynamic_skills(&state.pool, request.project_id).await?;
     let skill_guide = if dynamic_skills.is_empty() {
         String::new()
     } else {
@@ -634,7 +716,7 @@ async fn run_with_tools(
             "\n动态 Skill：{}。需要专项技法时调用 use_skill({{path}})。",
             dynamic_skills
                 .iter()
-                .map(|(path, name)| format!("{name}={path}"))
+                .map(|(path, name, description)| format!("{name}（{description}）={path}"))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -671,6 +753,7 @@ async fn run_with_tools(
             let tool_request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: request.agent_type.clone(),
+                isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
                 tool_name: name.clone(),
@@ -733,12 +816,11 @@ async fn perform_run(
                 &request.agent_type,
                 &request.isolation_key,
                 "assistant",
-                &output,
+                &toonflow_agent_runtime::strip_xml_tags(&output),
             )
             .await
             .map_err(|error| format!("{error:?}"))?;
             sqlx::query("UPDATE toonflow.agent_runs SET output=$2,state='success',finish_time=$3 WHERE id=$1 AND state='running'").bind(run_id).bind(&output).bind(now_ms()).execute(&state.pool).await.map_err(|error|error.to_string())?;
-            summarize_if_needed(state, request, agent_key).await;
             Ok(output)
         }
         Err(error) => {
@@ -776,7 +858,8 @@ pub(crate) async fn run_with_emitter(
         .await
         .map_err(|error| format!("{error:?}"))?;
     let skill = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
-    let dynamic_skills = toonflow_agent_runtime::dynamic_skills(&state.pool).await?;
+    let dynamic_skills =
+        toonflow_agent_runtime::dynamic_skills(&state.pool, request.project_id).await?;
 
     let skill_guide = if dynamic_skills.is_empty() {
         String::new()
@@ -785,7 +868,7 @@ pub(crate) async fn run_with_emitter(
             "\n动态 Skill：{}。需要专项技法时调用 use_skill({{path}})。",
             dynamic_skills
                 .iter()
-                .map(|(path, name)| format!("{name}={path}"))
+                .map(|(path, name, description)| format!("{name}（{description}）={path}"))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -847,50 +930,49 @@ pub(crate) async fn run_with_emitter(
                 continue;
             }
 
-            // Stream text with think tag detection
-            let open_tag = "<think>";
-            let close_tag = "</think>";
-            let mut rest = text.as_str();
-            let mut in_thinking = false;
+            // Incremental filter preserves tags split across provider chunks.
+            let mut filter = toonflow_agent_runtime::ThinkingStream::default();
             let mut thinking_cid: Option<String> = None;
             let mut thinking_start = 0i64;
             let mut thinking_buf = String::new();
-
-            while !rest.is_empty() {
-                if !in_thinking {
-                    if let Some(idx) = rest.find(open_tag) {
-                        if idx > 0 {
-                            emitter.text_delta(msg_id, text_cid, &rest[..idx]);
-                        }
-                        in_thinking = true;
+            let mut parts = Vec::new();
+            let characters = text.chars().collect::<Vec<_>>();
+            for chunk in characters.chunks(64) {
+                parts.extend(filter.push(&chunk.iter().collect::<String>()));
+            }
+            parts.extend(filter.finish());
+            for part in parts {
+                match part {
+                    toonflow_agent_runtime::ThinkingPart::Text(value) => {
+                        emitter.text_delta(msg_id, text_cid, &value)
+                    }
+                    toonflow_agent_runtime::ThinkingPart::Start => {
                         thinking_start = now_ms();
                         thinking_buf.clear();
                         thinking_cid = Some(emitter.thinking_start(msg_id, "思考中..."));
-                        rest = &rest[idx + open_tag.len()..];
-                    } else {
-                        emitter.text_delta(msg_id, text_cid, rest);
-                        break;
                     }
-                } else {
-                    if let Some(idx) = rest.find(close_tag) {
-                        let think_text = &rest[..idx];
-                        thinking_buf.push_str(think_text);
+                    toonflow_agent_runtime::ThinkingPart::Thinking(value) => {
+                        thinking_buf.push_str(&value);
+                        if let Some(ref cid) = thinking_cid {
+                            emitter.thinking_append(msg_id, cid, &value);
+                        }
+                    }
+                    toonflow_agent_runtime::ThinkingPart::End => {
                         if let Some(ref cid) = thinking_cid {
                             let elapsed = (now_ms() - thinking_start) as f64 / 1000.0;
-                            let title = format!("思考完毕（{elapsed:.1}秒）");
-                            emitter.thinking_complete(msg_id, cid, &title, &thinking_buf);
+                            emitter.thinking_complete(
+                                msg_id,
+                                cid,
+                                &format!("思考完毕（{elapsed:.1}秒）"),
+                                &thinking_buf,
+                            );
                         }
                         thinking_cid = None;
-                        in_thinking = false;
-                        rest = &rest[idx + close_tag.len()..];
-                    } else {
-                        thinking_buf.push_str(rest);
-                        if let Some(ref cid) = thinking_cid {
-                            emitter.thinking_append(msg_id, cid, rest);
-                        }
-                        break;
                     }
                 }
+            }
+            if let Some(cid) = thinking_cid {
+                emitter.thinking_complete(msg_id, &cid, "思考输出结束", &thinking_buf);
             }
 
             let _ = add_memory(
@@ -898,7 +980,7 @@ pub(crate) async fn run_with_emitter(
                 &request.agent_type,
                 &request.isolation_key,
                 "assistant",
-                &text,
+                &toonflow_agent_runtime::strip_xml_tags(&text),
             )
             .await;
             return Ok(text);
@@ -932,6 +1014,7 @@ pub(crate) async fn run_with_emitter(
 
             let tool_request = toonflow_agent_tools::ToolRequest {
                 agent_type: request.agent_type.clone(),
+                isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
                 tool_name: name.to_string(),
@@ -1122,14 +1205,43 @@ pub async fn clear(
             "memoryType 仅支持 message、summary 或 all",
         ));
     }
-    sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND ($3='all' OR ($3='summary' AND memory_type='summary') OR ($3='message' AND memory_type<>'summary'))")
-        .bind(request.agent_type)
-        .bind(request.isolation_key)
-        .bind(memory_type)
-        .execute(&state.pool)
+    clear_memory_records(
+        &state.pool,
+        &request.agent_type,
+        &request.isolation_key,
+        memory_type,
+    )
+    .await?;
+    Ok(Json(ApiResponse::new(json!(true))))
+}
+
+pub(crate) async fn clear_memory_records(
+    pool: &sqlx::PgPool,
+    agent_type: &str,
+    isolation_key: &str,
+    memory_type: &str,
+) -> Result<(), AppError> {
+    let mut tx = pool
+        .begin()
         .await
         .map_err(|_| AppError::internal("failed to clear memories"))?;
-    Ok(Json(ApiResponse::new(json!(true))))
+    if memory_type == "summary" {
+        sqlx::query("UPDATE toonflow.agent_memories SET summarized=false WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' AND id IN (SELECT jsonb_array_elements_text(related_message_ids)::bigint FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='summary')")
+            .bind(agent_type).bind(isolation_key).execute(&mut *tx).await
+            .map_err(|_| AppError::internal("failed to reset summarized memories"))?;
+    }
+    if memory_type == "message" {
+        sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='summary'")
+            .bind(agent_type).bind(isolation_key).execute(&mut *tx).await
+            .map_err(|_| AppError::internal("failed to clear related summaries"))?;
+    }
+    sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND ($3='all' OR ($3='summary' AND memory_type='summary') OR ($3='message' AND memory_type='message'))")
+        .bind(agent_type).bind(isolation_key).bind(memory_type).execute(&mut *tx).await
+        .map_err(|_| AppError::internal("failed to clear memories"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit memory clear"))?;
+    Ok(())
 }
 
 #[cfg(test)]

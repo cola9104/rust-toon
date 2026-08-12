@@ -234,6 +234,127 @@ mod storyboard_database_tests {
     }
 }
 
+#[cfg(test)]
+mod agent_memory_database_tests {
+    use std::time::Duration;
+
+    use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+    use rust_toon_framework_security::{SecurityConfig, TokenService};
+    use serde_json::json;
+
+    use super::{ToonState, toonflow_agent_runtime, toonflow_agent_tools, toonflow_agents};
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn memory_cascades_retrieval_expansion_and_script_upsert_match_toonflow() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+        let project_id = 9_200_001_i64;
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO toonflow.projects(id,name,create_time,update_time) VALUES($1,'agent memory test',0,0)")
+            .bind(project_id).execute(&pool).await.unwrap();
+        let isolation = "test:memory:cascade";
+        sqlx::query("DELETE FROM toonflow.agent_memories WHERE isolation_key=$1")
+            .bind(isolation)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (id, content, summarized) in
+            [(9_200_010_i64, "first", true), (9_200_011, "second", true)]
+        {
+            sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,memory_type,summarized,create_time) VALUES($1,'scriptAgent',$2,'user',$3,'message',$4,$1)")
+                .bind(id).bind(isolation).bind(content).bind(summarized).execute(&pool).await.unwrap();
+        }
+        sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,memory_type,related_message_ids,create_time) VALUES(9200020,'scriptAgent',$1,'system','summary','summary',$2,9200020)")
+            .bind(isolation).bind(json!([9_200_010_i64,9_200_011_i64])).execute(&pool).await.unwrap();
+
+        let expanded = toonflow_agent_runtime::expand_related_messages(
+            &pool,
+            "scriptAgent",
+            isolation,
+            &[9_200_011, 9_200_010],
+        )
+        .await
+        .unwrap();
+        assert_eq!(expanded, vec!["first", "second"]);
+        toonflow_agents::clear_memory_records(&pool, "scriptAgent", isolation, "summary")
+            .await
+            .unwrap();
+        let summarized: Vec<bool> = sqlx::query_scalar(
+            "SELECT summarized FROM toonflow.agent_memories WHERE isolation_key=$1 ORDER BY id",
+        )
+        .bind(isolation)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(summarized, vec![false, false]);
+
+        let tokens = TokenService::new(
+            SecurityConfig::new(
+                "agent-memory-test-secret-at-least-32-bytes",
+                "test",
+                "test",
+                Duration::from_secs(60),
+            )
+            .unwrap(),
+        );
+        let state = ToonState::new(pool.clone(), tokens);
+        let first_version = "完整剧本第一版正文。".repeat(40);
+        let second_version = "完整剧本第二版正文。".repeat(40);
+        for content in [&first_version, &second_version] {
+            toonflow_agent_tools::execute_inner(
+                &state,
+                &toonflow_agent_tools::ToolRequest {
+                    agent_type: "scriptAgent".into(),
+                    isolation_key: isolation.into(),
+                    project_id,
+                    script_id: None,
+                    tool_name: "save_scripts".into(),
+                    arguments: json!({"scripts":[{"name":"episode one","content":content}]}),
+                    emitter: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let scripts: Vec<(String, String)> =
+            sqlx::query_as("SELECT name,content FROM toonflow.scripts WHERE project_id=$1")
+                .bind(project_id)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            scripts,
+            vec![("episode one".into(), second_version.clone())]
+        );
+
+        sqlx::query("INSERT INTO toonflow.agent_memories(id,agent_type,isolation_key,role,content,memory_type,related_message_ids,create_time) VALUES(9200021,'scriptAgent',$1,'system','summary two','summary',$2,9200021)")
+            .bind(isolation).bind(json!([9_200_010_i64])).execute(&pool).await.unwrap();
+        toonflow_agents::clear_memory_records(&pool, "scriptAgent", isolation, "message")
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM toonflow.agent_memories WHERE isolation_key=$1",
+        )
+        .bind(isolation)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(count, 0);
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
 impl ToonState {
     pub fn new(pool: PgPool, tokens: TokenService) -> Self {
         Self { pool, tokens }
@@ -247,6 +368,29 @@ impl ToonState {
         .await
         .map(|result| result.rows_affected())
     }
+}
+
+/// Marks work interrupted by a process restart as failed before serving traffic.
+pub async fn repair_interrupted_state(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("UPDATE toonflow.workflow_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.workflow_node_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.novels SET event_state=-1,error_reason='服务重启导致失败' WHERE event_state=0")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.assets SET prompt_state='生成失败',prompt_error_reason='服务重启导致失败' WHERE prompt_state='生成中'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.images SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.video_tracks SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 pub fn routes(state: ToonState) -> Router {
@@ -781,6 +925,11 @@ pub fn routes(state: ToonState) -> Router {
         .route("/api/novel/getNovelData", post(toonflow::all_novel))
         .route("/api/novel/updateNovel", post(toonflow::update_novel))
         .route("/api/novel/delNovel", post(toonflow::delete_novel))
+        .route("/api/novel/getNovelIndex", post(toonflow::novel_index))
+        .route(
+            "/api/novel/batchDeleteNovel",
+            post(toonflow::batch_delete_novel),
+        )
         .route("/api/script/addScript", post(toonflow::add_script))
         .route(
             "/api/script/batchAddScript",
@@ -789,11 +938,46 @@ pub fn routes(state: ToonState) -> Router {
         .route("/api/script/getScrptApi", post(toonflow::list_scripts))
         .route("/api/script/updateScript", post(toonflow::update_script))
         .route("/api/script/delScript", post(toonflow::delete_scripts))
+        .route("/api/script/getAiRegex", post(toonflow_script_ai::ai_regex))
+        .route(
+            "/api/script/exportScript",
+            post(toonflow_script_ai::export_scripts),
+        )
         .route("/api/assets/getAssetsApi", post(toonflow::list_assets))
         .route("/api/assets/saveAssets", post(toonflow::save_asset))
         .route("/api/assets/addAssets", post(toonflow::save_asset))
         .route("/api/assets/updateAssets", post(toonflow::save_asset))
         .route("/api/assets/batchDelete", post(toonflow::delete_assets))
+        .route("/api/assets/delAssets", post(toonflow::delete_asset))
+        .route(
+            "/api/assets/addAudioAssets",
+            post(toonflow_audio::add_audio_assets),
+        )
+        .route(
+            "/api/assets/updateAudioAssets",
+            post(toonflow_audio::update_audio_assets),
+        )
+        .route(
+            "/api/artStyle/extractStylePrompt",
+            post(toonflow_resources::extract_style_prompt),
+        )
+        .route(
+            "/api/production/assets/updateAssetsUrl",
+            post(toonflow_image_workflow::update_asset_url),
+        )
+        .route(
+            "/api/production/assets/deleteAssetsDireve",
+            post(toonflow_image_workflow::delete_derived_asset),
+        )
+        .route(
+            "/api/modelSelect/getModelList",
+            post(toonflow_resources::model_list),
+        )
+        .route(
+            "/api/modelSelect/getModelDetail",
+            post(toonflow_resources::model_detail),
+        )
+        .route("/api/other/getVersion", get(toonflow_resources::version))
         .route("/api/production/getFlowData", post(toonflow::get_flow_data))
         .route(
             "/api/production/saveFlowData",
@@ -843,6 +1027,11 @@ pub fn routes(state: ToonState) -> Router {
         .route("/novel/getNovelData", post(toonflow::all_novel))
         .route("/novel/updateNovel", post(toonflow::update_novel))
         .route("/novel/delNovel", post(toonflow::delete_novel))
+        .route("/novel/getNovelIndex", post(toonflow::novel_index))
+        .route(
+            "/novel/batchDeleteNovel",
+            post(toonflow::batch_delete_novel),
+        )
         .route(
             "/novel/event/generateEvents",
             post(toonflow_novel_events::generate),
@@ -864,11 +1053,46 @@ pub fn routes(state: ToonState) -> Router {
         .route("/script/getScrptApi", post(toonflow::list_scripts))
         .route("/script/updateScript", post(toonflow::update_script))
         .route("/script/delScript", post(toonflow::delete_scripts))
+        .route("/script/getAiRegex", post(toonflow_script_ai::ai_regex))
+        .route(
+            "/script/exportScript",
+            post(toonflow_script_ai::export_scripts),
+        )
         .route("/assets/getAssetsApi", post(toonflow::list_assets))
         .route("/assets/saveAssets", post(toonflow::save_asset))
         .route("/assets/addAssets", post(toonflow::save_asset))
         .route("/assets/updateAssets", post(toonflow::save_asset))
         .route("/assets/batchDelete", post(toonflow::delete_assets))
+        .route("/assets/delAssets", post(toonflow::delete_asset))
+        .route(
+            "/assets/addAudioAssets",
+            post(toonflow_audio::add_audio_assets),
+        )
+        .route(
+            "/assets/updateAudioAssets",
+            post(toonflow_audio::update_audio_assets),
+        )
+        .route(
+            "/artStyle/extractStylePrompt",
+            post(toonflow_resources::extract_style_prompt),
+        )
+        .route(
+            "/production/assets/updateAssetsUrl",
+            post(toonflow_image_workflow::update_asset_url),
+        )
+        .route(
+            "/production/assets/deleteAssetsDireve",
+            post(toonflow_image_workflow::delete_derived_asset),
+        )
+        .route(
+            "/modelSelect/getModelList",
+            post(toonflow_resources::model_list),
+        )
+        .route(
+            "/modelSelect/getModelDetail",
+            post(toonflow_resources::model_detail),
+        )
+        .route("/other/getVersion", get(toonflow_resources::version))
         .route("/production/getFlowData", post(toonflow::get_flow_data))
         .route("/agents/tools/execute", post(toonflow_agent_tools::execute))
         .route(

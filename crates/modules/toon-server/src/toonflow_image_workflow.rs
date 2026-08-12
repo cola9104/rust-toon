@@ -71,6 +71,125 @@ fn storyboard_image_size(quality: &str, ratio: &str) -> String {
 pub struct FlowId {
     id: i64,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAssetUrlRequest {
+    id: i64,
+    url: String,
+    flow_id: i64,
+}
+
+pub async fn update_asset_url(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<UpdateAssetUrlRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if request.url.trim().is_empty() {
+        return Err(AppError::bad_request("url 不能为空"));
+    }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to update asset url"))?;
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1)")
+            .bind(request.id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to load asset"))?;
+    if !exists {
+        return Err(AppError::not_found("资源未找到"));
+    }
+    let image_id = chrono::Utc::now().timestamp_micros();
+    sqlx::query(
+        "INSERT INTO toonflow.images(id,file_path,state,assets_id) VALUES($1,$2,'已完成',$3)",
+    )
+    .bind(image_id)
+    .bind(request.url)
+    .bind(request.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to save asset image"))?;
+    sqlx::query("UPDATE toonflow.assets SET flow_id=$2,image_id=$3 WHERE id=$1")
+        .bind(request.id)
+        .bind(request.flow_id)
+        .bind(image_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to bind asset image"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit asset image"))?;
+    Ok(Json(ApiResponse::with_message(
+        json!({"imageId":image_id}),
+        "更新资产图片成功",
+    )))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteDerivedAssetRequest {
+    id: i64,
+    project_id: i64,
+}
+
+pub async fn delete_derived_asset(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<DeleteDerivedAssetRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    require(&user, "toon:project:update")?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to delete derived asset"))?;
+    let flow_id: Option<i64> = sqlx::query_scalar(
+        "SELECT flow_id FROM toonflow.assets WHERE id=$1 AND project_id=$2 FOR UPDATE",
+    )
+    .bind(request.id)
+    .bind(request.project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to load derived asset"))?
+    .flatten();
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1 AND project_id=$2)",
+    )
+    .bind(request.id)
+    .bind(request.project_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to load derived asset"))?;
+    if !exists {
+        return Err(AppError::not_found("资源未找到"));
+    }
+    sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE asset_id=$1")
+        .bind(request.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to unlink derived asset"))?;
+    sqlx::query("DELETE FROM toonflow.assets WHERE id=$1 AND project_id=$2")
+        .bind(request.id)
+        .bind(request.project_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to delete derived asset"))?;
+    if let Some(flow_id) = flow_id {
+        sqlx::query("DELETE FROM toonflow.image_flows WHERE id=$1")
+            .bind(flow_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to delete asset flow"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit derived asset deletion"))?;
+    Ok(Json(ApiResponse::with_message((), "删除衍生资产成功")))
+}
 pub async fn get_flow(
     user: CurrentUser,
     State(state): State<ToonState>,

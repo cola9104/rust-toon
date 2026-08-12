@@ -24,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
 
     let database = connect(&DatabaseConfig::from_env()?).await?;
     migrate(&database).await?;
+    rust_toon_toon_server::repair_interrupted_state(&database).await?;
     let redis = connect_redis().await;
     let tokens = TokenService::new(SecurityConfig::from_env()?);
     let system_state = rust_toon_system_server::SystemState::with_cache(

@@ -5,12 +5,18 @@ use crate::{
     toonflow_character_identity::{normalize_age_stage, normalize_role_name},
     toonflow_prompt_store,
 };
-use axum::{Json, extract::State};
+use axum::{
+    Json,
+    body::Body,
+    extract::State,
+    http::{Response, header},
+};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::io::{Cursor, Write};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -444,4 +450,78 @@ pub async fn poll(
             .map(|row| json!({"id":row.0,"extractState":row.1,"errorReason":row.2,"appearanceCount":row.3}))
             .collect(),
     )))
+}
+
+#[derive(Deserialize)]
+pub struct AiRegexRequest {
+    content: String,
+}
+
+pub async fn ai_regex(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<AiRegexRequest>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    require(&user, "toon:project:update")?;
+    let prompt = "你是正则表达式专家。分析剧本文本的集/章节分隔模式，返回 JavaScript 正则表达式字符串。正则必须有两个捕获组：编号和标题。只返回 /表达式/g；没有明显模式则返回空字符串。";
+    let sample = request.content.chars().take(2000).collect::<String>();
+    let result = ai_client::text(&state.pool, "universalAi", prompt, &sample)
+        .await
+        .map_err(AppError::bad_request)?;
+    Ok(Json(ApiResponse::new(result.trim().to_string())))
+}
+
+#[derive(Deserialize)]
+pub struct ExportScriptRequest {
+    id: Vec<i64>,
+}
+
+pub async fn export_scripts(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ExportScriptRequest>,
+) -> Result<Response<Body>, AppError> {
+    require(&user, "toon:project:read")?;
+    if request.id.is_empty() {
+        return Err(AppError::bad_request("请先选择剧本"));
+    }
+    let scripts: Vec<(String, String)> =
+        sqlx::query_as("SELECT name,content FROM toonflow.scripts WHERE id=ANY($1) ORDER BY id")
+            .bind(request.id)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to export scripts"))?;
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (index, (name, content)) in scripts.into_iter().enumerate() {
+        let safe_name = name
+            .chars()
+            .map(|character| {
+                if "\\/:*?\"<>|".contains(character) {
+                    '_'
+                } else {
+                    character
+                }
+            })
+            .collect::<String>();
+        archive
+            .start_file(format!("{}-{}.txt", index + 1, safe_name), options)
+            .map_err(|_| AppError::internal("failed to create script archive"))?;
+        archive
+            .write_all(content.as_bytes())
+            .map_err(|_| AppError::internal("failed to write script archive"))?;
+    }
+    let bytes = archive
+        .finish()
+        .map_err(|_| AppError::internal("failed to finish script archive"))?
+        .into_inner();
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/zip")
+        .header(
+            header::CONTENT_DISPOSITION,
+            "attachment; filename=scripts.zip",
+        )
+        .body(Body::from(bytes))
+        .map_err(|_| AppError::internal("failed to build script archive response"))
 }

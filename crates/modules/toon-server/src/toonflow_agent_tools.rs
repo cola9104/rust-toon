@@ -9,7 +9,30 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    collections::HashMap,
+    sync::{LazyLock, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+static FLOW_DATA_CACHE: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn changed_flow_data(isolation_key: &str, key: &str, value: Value) -> Value {
+    let cache_key = format!("{isolation_key}:{key}");
+    let serialized = value.to_string();
+    let mut cache = FLOW_DATA_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cache
+        .get(&cache_key)
+        .is_some_and(|previous| previous == &serialized)
+    {
+        return json!(format!("{key} 数据未变化，无需更新"));
+    }
+    cache.insert(cache_key, serialized);
+    value
+}
 
 const STORYBOARD_TABLE_AGENT_TOOLS: &[&str] = &["get_flowData", "set_flowData"];
 
@@ -89,6 +112,8 @@ pub use crate::toonflow_agent_plan::{get_plan, set_plan, update_plan};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ToolRequest {
     pub(crate) agent_type: String,
+    #[serde(default)]
+    pub(crate) isolation_key: String,
     pub(crate) project_id: i64,
     pub(crate) script_id: Option<i64>,
     pub(crate) tool_name: String,
@@ -200,7 +225,7 @@ pub(crate) async fn execute_inner(
     state: &ToonState,
     request: &ToolRequest,
 ) -> Result<Value, AppError> {
-    if request.tool_name == "use_skill" {
+    if request.tool_name == "use_skill" || request.tool_name == "read_skill_file" {
         let path = request
             .arguments
             .get("path")
@@ -227,18 +252,30 @@ pub(crate) async fn execute_inner(
                 .get("keyword")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            let agent_type = &request.agent_type;
-            let isolation_key = toonflow_agent_tool_record::memory_isolation_key(
-                &request.agent_type,
-                request.project_id,
-                request.script_id,
-            );
-            let mems = toonflow_agent_runtime::relevant_memories(
+            let isolation_key = if request.isolation_key.trim().is_empty() {
+                toonflow_agent_tool_record::memory_isolation_key(
+                    &request.agent_type,
+                    request.project_id,
+                    request.script_id,
+                )
+            } else {
+                request.isolation_key.clone()
+            };
+            let judge_key = if request.agent_type == "scriptAgent" {
+                "scriptAgent:decisionAgent"
+            } else {
+                "productionAgent:decisionAgent"
+            };
+            let limit =
+                toonflow_agent_runtime::setting_usize(&state.pool, "deepRetrieveSummaryLimit", 5)
+                    .await;
+            let mems = toonflow_agent_runtime::deep_retrieve(
                 &state.pool,
-                agent_type,
+                &request.agent_type,
                 &isolation_key,
                 keyword,
-                5,
+                judge_key,
+                limit,
             )
             .await
             .map_err(|_| AppError::internal("deepRetrieve 失败"))?;
@@ -350,7 +387,8 @@ pub(crate) async fn execute_inner(
                 }
                 let episode = script_episode_number(name);
                 let matching = existing.iter().position(|(_, existing_name)| {
-                    episode.is_some() && script_episode_number(existing_name) == episode
+                    existing_name == name
+                        || (episode.is_some() && script_episode_number(existing_name) == episode)
                 });
                 let id = if let Some(position) = matching {
                     let (id, _) = existing.remove(position);
@@ -550,6 +588,23 @@ pub(crate) async fn execute_inner(
                 return Err(AppError::bad_request("子 Agent 工具调用超过最大轮数"));
             }
 
+            let memory_role = if agent_key.ends_with(":supervisionAgent") {
+                "assistant:supervision".to_string()
+            } else {
+                format!(
+                    "assistant:execution:{}",
+                    agent_key.rsplit(':').next().unwrap_or(agent_key)
+                )
+            };
+            toonflow_agents::add_memory(
+                state,
+                &request.agent_type,
+                &request.isolation_key,
+                &memory_role,
+                &toonflow_agent_runtime::strip_xml_tags(&output),
+            )
+            .await?;
+
             // Complete sub-agent message bubble
             if let Some((mid, cid, emitter)) = &sub_msg {
                 emitter.text_delta(mid, cid, &output);
@@ -582,19 +637,21 @@ pub(crate) async fn execute_inner(
                 )
                 .await
                 .map_err(|_| AppError::internal("failed to build production asset context"))?;
-                return Ok(if key == "script" {
+                let value = if key == "script" {
                     json!(script)
                 } else {
                     assets
-                });
+                };
+                return Ok(changed_flow_data(&request.isolation_key, key, value));
             }
             let data:Option<Value>=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get flow data"))?;
             let data = data.unwrap_or_else(|| json!({}));
-            Ok(if key.is_empty() {
+            let value = if key.is_empty() {
                 data
             } else {
                 data.get(key).cloned().unwrap_or(Value::Null)
-            })
+            };
+            Ok(changed_flow_data(&request.isolation_key, key, value))
         }
         ("productionAgent", "get_video_workbench") => {
             let script_id = request
@@ -806,7 +863,12 @@ pub(crate) async fn execute_inner(
                     "productionAgent:directorPlanAgent",
                     "导演规划",
                     Some(("scriptPlan", "scriptPlan")),
-                    &["get_flowData", "set_flowData", "use_skill"],
+                    &[
+                        "get_flowData",
+                        "set_flowData",
+                        "use_skill",
+                        "read_skill_file",
+                    ],
                 ),
                 "run_sub_agent_storyboard_gen" => (
                     "productionAgent:storyboardGenAgent",
@@ -829,6 +891,7 @@ pub(crate) async fn execute_inner(
                         "add_flowData_storyboard",
                         "update_storyboard",
                         "use_skill",
+                        "read_skill_file",
                     ],
                 ),
                 "run_sub_agent_storyboard_table" => (
@@ -1327,6 +1390,22 @@ pub(crate) async fn execute_inner(
                     sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,$2,'productionAgent',$3,$4,$4) ON CONFLICT(project_id,episodes_id,key) DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(script_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save production sub agent result"))?;
                 }
             }
+            let memory_role = if agent_key.ends_with(":supervisionAgent") {
+                "assistant:supervision".to_string()
+            } else {
+                format!(
+                    "assistant:execution:{}",
+                    agent_key.rsplit(':').next().unwrap_or(agent_key)
+                )
+            };
+            toonflow_agents::add_memory(
+                state,
+                &request.agent_type,
+                &request.isolation_key,
+                &memory_role,
+                &toonflow_agent_runtime::strip_xml_tags(&output),
+            )
+            .await?;
             if agent_key == "productionAgent:storyboardTableAgent" {
                 let supervision_key = "productionAgent:supervisionAgent";
                 let supervision_skill =
@@ -1345,6 +1424,14 @@ pub(crate) async fn execute_inner(
                     request.script_id,
                     &["get_flowData"],
                 ))
+                .await?;
+                toonflow_agents::add_memory(
+                    state,
+                    &request.agent_type,
+                    &request.isolation_key,
+                    "assistant:supervision",
+                    &toonflow_agent_runtime::strip_xml_tags(&audit),
+                )
                 .await?;
                 let reviewed_content = format!(
                     "{output}\n\n---\n\n## 自动复审结果（基于修复后的最新分镜表）\n{audit}"

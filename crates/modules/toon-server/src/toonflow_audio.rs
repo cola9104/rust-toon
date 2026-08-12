@@ -1,5 +1,6 @@
 use crate::{ToonState, ai_client, shared::require};
 use axum::{Json, extract::State};
+use base64::Engine as _;
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
@@ -53,6 +54,206 @@ pub struct DubbingRequest {
     #[serde(default = "default_voice")]
     voice: String,
     model: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioItemRequest {
+    id: Option<i64>,
+    src: Option<String>,
+    base64: Option<String>,
+    prompt: String,
+    #[serde(alias = "description")]
+    describe: String,
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AddAudioAssetsRequest {
+    name: String,
+    #[serde(alias = "description")]
+    describe: String,
+    project_id: i64,
+    assets_item: Vec<AudioItemRequest>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateAudioAssetsRequest {
+    id: i64,
+    name: String,
+    #[serde(alias = "description")]
+    describe: String,
+    project_id: i64,
+    assets_item: Vec<AudioItemRequest>,
+}
+
+fn decode_audio(data: &str) -> Result<(String, Vec<u8>), AppError> {
+    let (metadata, encoded) = data
+        .split_once(',')
+        .ok_or_else(|| AppError::bad_request("音频 Base64 格式无效"))?;
+    if !metadata.starts_with("data:audio/") || !metadata.ends_with(";base64") {
+        return Err(AppError::bad_request("只支持 data:audio/*;base64 音频"));
+    }
+    let mime = metadata
+        .trim_start_matches("data:audio/")
+        .trim_end_matches(";base64");
+    let extension = match mime {
+        "mpeg" => "mp3",
+        "x-wav" => "wav",
+        "x-aiff" => "aiff",
+        "x-m4a" => "m4a",
+        "x-flac" => "flac",
+        value => value,
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| AppError::bad_request("音频 Base64 无法解码"))?;
+    Ok((extension.to_string(), bytes))
+}
+
+async fn materialize_audio(project_id: i64, item: &mut AudioItemRequest) -> Result<(), AppError> {
+    if let Some(data) = item.base64.as_deref().filter(|value| !value.is_empty()) {
+        let (extension, bytes) = decode_audio(data)?;
+        item.src = Some(
+            crate::toonflow_storage::persist_asset_bytes(project_id, "audio", &extension, bytes)
+                .await
+                .map_err(AppError::bad_request)?,
+        );
+    }
+    if item.id.is_none() && item.src.as_deref().unwrap_or_default().is_empty() {
+        return Err(AppError::bad_request("音频文件不能为空"));
+    }
+    Ok(())
+}
+
+async fn insert_audio_child(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    parent_id: i64,
+    project_id: i64,
+    item: &AudioItemRequest,
+    offset: i64,
+) -> Result<i64, AppError> {
+    let asset_id = next_id(offset);
+    let image_id = next_id(offset + 500);
+    sqlx::query("INSERT INTO toonflow.assets(id,name,prompt,type,description,parent_asset_id,project_id,start_time) VALUES($1,$2,$3,'audio',$4,$5,$6,$7)")
+        .bind(asset_id).bind(&item.name).bind(&item.prompt).bind(&item.describe).bind(parent_id).bind(project_id).bind(now_ms())
+        .execute(&mut **tx).await.map_err(|_|AppError::internal("failed to add audio asset"))?;
+    sqlx::query("INSERT INTO toonflow.images(id,file_path,type,assets_id,state) VALUES($1,$2,'audio',$3,'已完成')")
+        .bind(image_id).bind(&item.src).bind(asset_id).execute(&mut **tx).await
+        .map_err(|_|AppError::internal("failed to add audio file"))?;
+    sqlx::query("UPDATE toonflow.assets SET image_id=$2 WHERE id=$1")
+        .bind(asset_id)
+        .bind(image_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AppError::internal("failed to link audio file"))?;
+    Ok(asset_id)
+}
+
+pub async fn add_audio_assets(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(mut request): Json<AddAudioAssetsRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:update")?;
+    for item in &mut request.assets_item {
+        materialize_audio(request.project_id, item).await?;
+    }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to add audio assets"))?;
+    let parent_id = next_id(0);
+    sqlx::query("INSERT INTO toonflow.assets(id,name,type,description,project_id,start_time) VALUES($1,$2,'audio',$3,$4,$5)")
+        .bind(parent_id).bind(request.name).bind(request.describe).bind(request.project_id).bind(now_ms())
+        .execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add audio collection"))?;
+    for (index, item) in request.assets_item.iter().enumerate() {
+        insert_audio_child(
+            &mut tx,
+            parent_id,
+            request.project_id,
+            item,
+            index as i64 + 1,
+        )
+        .await?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit audio assets"))?;
+    Ok(Json(ApiResponse::with_message(
+        json!({"id":parent_id}),
+        "新增资产成功",
+    )))
+}
+
+pub async fn update_audio_assets(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(mut request): Json<UpdateAudioAssetsRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:update")?;
+    for item in &mut request.assets_item {
+        materialize_audio(request.project_id, item).await?;
+    }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to update audio assets"))?;
+    let updated = sqlx::query("UPDATE toonflow.assets SET name=$3,description=$4 WHERE id=$1 AND project_id=$2 AND type='audio'")
+        .bind(request.id).bind(request.project_id).bind(request.name).bind(request.describe).execute(&mut *tx).await
+        .map_err(|_|AppError::internal("failed to update audio collection"))?;
+    if updated.rows_affected() == 0 {
+        return Err(AppError::not_found("音频资产不存在"));
+    }
+    let incoming = request
+        .assets_item
+        .iter()
+        .filter_map(|item| item.id)
+        .collect::<Vec<_>>();
+    sqlx::query("DELETE FROM toonflow.assets WHERE parent_asset_id=$1 AND NOT(id=ANY($2))")
+        .bind(request.id)
+        .bind(&incoming)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to remove audio items"))?;
+    for (index, item) in request.assets_item.iter().enumerate() {
+        if let Some(id) = item.id {
+            let result=sqlx::query("UPDATE toonflow.assets SET name=$4,prompt=$5,description=$6 WHERE id=$1 AND parent_asset_id=$2 AND project_id=$3")
+                .bind(id).bind(request.id).bind(request.project_id).bind(&item.name).bind(&item.prompt).bind(&item.describe)
+                .execute(&mut *tx).await.map_err(|_|AppError::internal("failed to update audio item"))?;
+            if result.rows_affected() == 0 {
+                return Err(AppError::bad_request("音频子资产不属于当前资产"));
+            }
+            if item.src.is_some() {
+                sqlx::query("UPDATE toonflow.images SET file_path=$2 WHERE assets_id=$1")
+                    .bind(id)
+                    .bind(&item.src)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to update audio file"))?;
+            }
+        } else {
+            insert_audio_child(
+                &mut tx,
+                request.id,
+                request.project_id,
+                item,
+                index as i64 + 1,
+            )
+            .await?;
+        }
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit audio assets"))?;
+    Ok(Json(ApiResponse::with_message(
+        json!({"id":request.id}),
+        "更新资产成功",
+    )))
 }
 
 fn default_voice() -> String {

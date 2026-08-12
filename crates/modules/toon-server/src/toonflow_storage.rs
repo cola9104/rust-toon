@@ -151,17 +151,61 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     Ok(format!("/toonflow/assets/files/{key}"))
 }
 
+pub async fn persist_asset_bytes(
+    project_id: i64,
+    category: &str,
+    extension: &str,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    ensure_bucket().await?;
+    let safe_extension = extension
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+    let key = format!(
+        "toonflow/{project_id}/assets/{category}/{}.{}",
+        uuid::Uuid::new_v4(),
+        if safe_extension.is_empty() {
+            "bin"
+        } else {
+            &safe_extension
+        }
+    );
+    let upload = signed_request(Method::PUT, Some(&key), bytes).await?;
+    if !upload.status().is_success() {
+        return Err(format!("上传资产到 MinIO 失败：HTTP {}", upload.status()));
+    }
+    Ok(format!("/toonflow/assets/files/{key}"))
+}
+
 async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
     let response = signed_request(Method::GET, Some(key), Vec::new()).await?;
     if !response.status().is_success() {
         return Err(format!("读取 MinIO 图片失败：HTTP {}", response.status()));
     }
-    let content_type = response
+    let mut content_type = response
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
+    if content_type == "application/octet-stream" {
+        content_type = match key
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "mp3" | "mpeg" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "m4a" => "audio/mp4",
+            "flac" => "audio/flac",
+            "aiff" => "audio/aiff",
+            _ => "application/octet-stream",
+        }
+        .to_string();
+    }
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     Ok((content_type, bytes.to_vec()))
 }
