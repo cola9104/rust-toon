@@ -39,4 +39,6 @@ Toonflow-app 仅作为功能、流程、字段与交互语义的参照。前端�
 - 服务端专属能力：Agent WebSocket 支持 `updateContext`、心跳和断线超时；启动时会将被服务重启中断的生成任务标记为失败。
 - AI 错误对齐：上游 HTTP/网络错误保留 `code`、`category`、`status`、响应摘要与 `retryable`，HTTP 错误响应写入 `data`；Agent WebSocket 在兼容 `ext.error` 文案的同时提供 `errorCode`、`errorCategory`、`status` 和 `responseData`。
 - 剧本保存保证：数据库通过 `(project_id, name)` 唯一索引保证同项目剧本名称唯一，Agent 保存使用 `ON CONFLICT` 原子 upsert；升级时历史重名项保留为带 ID 的历史副本。
+- 剧本生成质量：剧本子 Agent 注入已有剧本/最新集/章节上下文，骨架与策略缺失 XML 会明确失败；`save_scripts` 拆分并清洗 `scriptItem`，校验文件头、集号、场号和场景动作；资产提取 JSON 解析失败自动重试一次。
+- 剧本提示词：`getAiRegex` 使用可维护的数据库 prompt，新增 `script/polishScriptPrompt` 将粗略要求润色为符合短剧结构与输出纪律的任务提示词。
 - 桌面端专属端点不移植：`checkUpdate`、`openFolder`、`selectFolder`、`openExternal` 等 Electron/本机文件管理能力。

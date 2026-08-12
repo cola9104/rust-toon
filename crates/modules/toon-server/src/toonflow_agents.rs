@@ -339,6 +339,14 @@ fn thinking_instruction(enabled: bool, level: i32) -> &'static str {
     }
 }
 
+fn pipeline_rule(agent_type: &str) -> &'static str {
+    if agent_type == "scriptAgent" {
+        "\n\n## 流水线铁律\n1. 阶段必须串行：故事骨架 → 改编策略 → 剧本编写，禁止跳过或合并\n2. 阶段1故事骨架、阶段2改编策略完成后必须分别调用 run_supervision_agent 审核，并把审核报告展示给用户\n3. 用户确认阶段1/2审核结果后才能进入下一阶段\n4. 阶段3不调用监督层：必须按集序为每一集单独调用 run_sub_agent_script，每次只生成一集；全部集数完成后统一调用 save_scripts 写入，未保存不得宣称完成"
+    } else {
+        ""
+    }
+}
+
 fn parse_tool_calls(text: &str) -> Vec<(String, Value)> {
     let mut calls = Vec::new();
     let mut rest = text;
@@ -722,10 +730,11 @@ async fn run_with_tools(
         )
     };
     let complete_system = format!(
-        "{system}\n\n{}{}\n{}",
+        "{system}\n\n{}{}\n{}{}",
         tool_guide(&request.agent_type),
         skill_guide,
-        thinking_instruction(request.think, request.think_level)
+        thinking_instruction(request.think, request.think_level),
+        pipeline_rule(&request.agent_type)
     );
     match run_native_tools(state, request, agent_key, &complete_system, run_id).await {
         Ok(output) => return Ok(output),
@@ -874,11 +883,7 @@ pub(crate) async fn run_with_emitter(
         )
     };
 
-    let pipeline_rule = if request.agent_type == "scriptAgent" {
-        "\n\n## 流水线铁律\n1. 阶段必须串行：故事骨架 → 改编策略 → 剧本编写，禁止跳过或合并\n2. 每阶段完成后必须调用 run_supervision_agent 审核，审核报告展示给用户\n3. 用户确认后才能进入下一阶段\n4. 阶段3剧本编写：必须为每一集单独调用 run_sub_agent_script，每调用一次只生成一集。全部集数完成后统一调用 save_scripts 写入。禁止提前结束，必须生成完所有集数。"
-    } else {
-        ""
-    };
+    let pipeline_rule = pipeline_rule(&request.agent_type);
     let system = format!(
         "{skill}\n\n{context}\n{memory}\n{}{}\n{}{pipeline_rule}",
         tool_guide(&request.agent_type),

@@ -18,6 +18,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::io::{Cursor, Write};
 
+const AI_REGEX_FALLBACK: &str = r#"你是一个正则表达式专家。用户会提供一段剧本文本，你需要分析其中的集/章节分隔模式，返回一个JavaScript正则表达式字符串。
+
+要求：
+1. 正则必须包含两个捕获组：第一个捕获组匹配集数/章节编号（数字或中文数字），第二个捕获组匹配该集的标题/名称（scriptName）。
+2. 返回格式为 /正则表达式/g，例如：/第\s*([0-9一二三四五六七八九十百千万]+)\s*集\s*([^\n\r]*)/g
+3. 只返回正则表达式字符串本身，不要有任何其他解释文字或markdown格式。
+4. 如果文本中没有明显的章节分隔模式，返回空字符串。"#;
+
+const ASSET_EXTRACTION_FALLBACK: &str = r#"从剧本中提取后续分镜和视频生成需要保持视觉一致的基础资产与人物造型。只返回一个 JSON 对象：
+{"newAssets":[{"name":"","desc":"","type":"role","scriptIds":[1]}],"existingAssetRefs":[{"name":"","desc":"","type":"role","scriptIds":[1]}],"appearances":[{"roleName":"","name":"","scenes":["场1"],"costumePrompt":"","description":"","scriptId":1}]}
+分类只能是 role、scene、tool、costume。role desc 必须是至少40字的稳定可视外貌，包含性别呈现、外观年龄、五官、发型发色、肤色、身高体型和气质，不得写服装、动作或关系摘要。年龄差异写入 ageStage，仅允许 child、teen、young_adult、adult、middle_aged、senior。appearances 必须逐场覆盖每个有名角色，costumePrompt 完整描述上装、下装、鞋履、配色、面料、层次和配饰。已有资产放 existingAssetRefs，新资产放 newAssets，scriptIds 必须来自输入。
+帽子、制服、衣裤、裙装、鞋靴、眼镜、口罩、手套、首饰、护甲等穿戴物一律归为 costume，不得归为 tool。被明确命名、剧情强调、需要特写或需要单独生成图片的穿戴物必须创建独立 costume 资产；普通未强调服装只保存在 appearances。禁止 Markdown。"#;
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtractRequest {
@@ -206,21 +219,35 @@ async fn extract_group(
         .map(|row| format!("===== 剧本ID:{} {} =====\n{}", row.0, row.1, row.2))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let system_prompt = toonflow_prompt_store::load(
-        pool,
-        "script_asset_extraction",
-        "提取 role/scene/tool 基础资产，并逐场输出每个有名角色的 appearances。基础角色名必须使用统一身份名：童年王闲、少年王闲、成年王闲都必须写为 roleName=王闲，不得创建多个基础角色；role 描述只写不随年龄变化的身份特征，不得写年龄、身高、童年或成年外貌。年龄差异写入 appearance.ageStage，仅允许 child、teen、young_adult、adult、middle_aged、senior，剧本未明确年龄阶段时留空。role 不得包含服装，appearance 必须包含 roleName、name、ageStage、scenes、costumePrompt、description、scriptId。只输出约定 JSON。",
-    )
-    .await;
-    let output = ai_client::project_text(
-        pool,
-        "universalAi",
-        project_id,
-        &system_prompt,
-        &format!("已有资产：{existing}\n\n{content}"),
-    )
-    .await?;
-    let result = parse_result(&output)?;
+    let system_prompt =
+        toonflow_prompt_store::load(pool, "script_asset_extraction", ASSET_EXTRACTION_FALLBACK)
+            .await;
+    let user_prompt = format!("已有资产：{existing}\n\n{content}");
+    let mut parse_error = String::new();
+    let mut result = None;
+    for attempt in 0..2 {
+        let repair = if attempt == 0 {
+            String::new()
+        } else {
+            format!("\n\n上一轮 JSON 解析失败：{parse_error}。请修正并只输出完整 JSON 对象。")
+        };
+        let output = ai_client::project_text(
+            pool,
+            "universalAi",
+            project_id,
+            &format!("{system_prompt}{repair}"),
+            &user_prompt,
+        )
+        .await?;
+        match parse_result(&output) {
+            Ok(parsed) => {
+                result = Some(parsed);
+                break;
+            }
+            Err(error) => parse_error = error,
+        }
+    }
+    let result = result.ok_or_else(|| format!("AI 资产提取结果连续两次解析失败：{parse_error}"))?;
     let allowed = ["role", "scene", "tool", "costume"];
     let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
     sqlx::query("DELETE FROM toonflow.script_assets WHERE script_id=ANY($1)")
@@ -463,12 +490,52 @@ pub async fn ai_regex(
     Json(request): Json<AiRegexRequest>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     require(&user, "toon:project:update")?;
-    let prompt = "你是正则表达式专家。分析剧本文本的集/章节分隔模式，返回 JavaScript 正则表达式字符串。正则必须有两个捕获组：编号和标题。只返回 /表达式/g；没有明显模式则返回空字符串。";
+    let prompt =
+        toonflow_prompt_store::load(&state.pool, "script_ai_regex", AI_REGEX_FALLBACK).await;
     let sample = request.content.chars().take(2000).collect::<String>();
-    let result = ai_client::text(&state.pool, "universalAi", prompt, &sample)
+    let result = ai_client::text(&state.pool, "universalAi", &prompt, &sample)
         .await
         .map_err(AppError::bad_request)?;
     Ok(Json(ApiResponse::new(result.trim().to_string())))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolishScriptPromptRequest {
+    project_id: i64,
+    #[serde(alias = "content", alias = "requirement")]
+    prompt: String,
+}
+
+pub async fn polish_script_prompt(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<PolishScriptPromptRequest>,
+) -> Result<Json<ApiResponse<String>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if request.prompt.trim().is_empty() {
+        return Err(AppError::bad_request("剧本要求不能为空"));
+    }
+    let system = toonflow_prompt_store::load(
+        &state.pool,
+        "script_prompt_polish",
+        "把用户的粗略要求润色为可直接交给剧本 Agent 的结构化任务提示词。明确集数、每集时长、场号、场景、人物动作、台词和输出纪律。场景标题使用“集号-场号 场景名 日/内”，动作描述以△开头。不代写剧本，只输出润色后的提示词。",
+    )
+    .await;
+    let output = ai_client::project_text(
+        &state.pool,
+        "universalAi",
+        request.project_id,
+        &system,
+        request.prompt.trim(),
+    )
+    .await
+    .map_err(AppError::bad_request)?;
+    let output = output.trim().to_string();
+    if output.is_empty() {
+        return Err(AppError::bad_request("AI 未返回润色后的剧本提示词"));
+    }
+    Ok(Json(ApiResponse::new(output)))
 }
 
 #[derive(Deserialize)]

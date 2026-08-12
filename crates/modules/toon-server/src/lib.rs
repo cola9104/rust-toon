@@ -305,8 +305,14 @@ mod agent_memory_database_tests {
             .unwrap(),
         );
         let state = ToonState::new(pool.clone(), tokens);
-        let first_version = "完整剧本第一版正文。".repeat(40);
-        let second_version = "完整剧本第二版正文。".repeat(40);
+        let first_version = format!(
+            "1-1 客厅 日/内\n人物：甲\n△甲走进客厅。\n{}",
+            "完整剧本第一版正文。".repeat(40)
+        );
+        let second_version = format!(
+            "1-1 客厅 日/内\n人物：甲\n△甲走进客厅。\n{}",
+            "完整剧本第二版正文。".repeat(40)
+        );
         for content in [&first_version, &second_version] {
             toonflow_agent_tools::execute_inner(
                 &state,
@@ -940,6 +946,10 @@ pub fn routes(state: ToonState) -> Router {
         .route("/api/script/delScript", post(toonflow::delete_scripts))
         .route("/api/script/getAiRegex", post(toonflow_script_ai::ai_regex))
         .route(
+            "/api/script/polishScriptPrompt",
+            post(toonflow_script_ai::polish_script_prompt),
+        )
+        .route(
             "/api/script/exportScript",
             post(toonflow_script_ai::export_scripts),
         )
@@ -1054,6 +1064,10 @@ pub fn routes(state: ToonState) -> Router {
         .route("/script/updateScript", post(toonflow::update_script))
         .route("/script/delScript", post(toonflow::delete_scripts))
         .route("/script/getAiRegex", post(toonflow_script_ai::ai_regex))
+        .route(
+            "/script/polishScriptPrompt",
+            post(toonflow_script_ai::polish_script_prompt),
+        )
         .route(
             "/script/exportScript",
             post(toonflow_script_ai::export_scripts),

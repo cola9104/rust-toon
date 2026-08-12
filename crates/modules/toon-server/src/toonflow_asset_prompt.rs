@@ -1,10 +1,24 @@
 pub(crate) fn polish_system_prompt(
     manual: &str,
     extra: &str,
-    _asset_type: &str,
-    _derivative: bool,
+    asset_type: &str,
+    derivative: bool,
 ) -> String {
-    format!("{manual}\n{extra}")
+    let type_manual = match asset_type {
+        "role" if derivative => "仅润色当前服装/形态方案；保持基础人物身份、五官、发型、体型不变。",
+        "role" => {
+            "按人物视觉手册组织稳定外貌，覆盖五官、发型发色、肤色、年龄、身高体型与气质；不要写动作和场景。"
+        }
+        "scene" => {
+            "按场景视觉手册组织空间结构、时代地域、材质、光线、天气、色调与前中后景；禁止人物。"
+        }
+        "tool" => {
+            "按道具视觉手册组织造型、比例、材质、颜色、工艺、磨损与关键细节；禁止人物和使用动作。"
+        }
+        "costume" => "按服装视觉手册组织上装、下装、鞋履、配色、面料、层次、纹样和配饰；禁止人物。",
+        _ => "只输出可用于资产生成的纯视觉描述。",
+    };
+    format!("{manual}\n\n## 当前资产类型规则\n{type_manual}\n\n{extra}")
 }
 
 pub(crate) fn polish_user_prompt(label: &str, name: &str, description: &str) -> String {

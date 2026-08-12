@@ -38,12 +38,18 @@ const STORYBOARD_TABLE_AGENT_TOOLS: &[&str] = &["get_flowData", "set_flowData"];
 
 #[cfg(test)]
 mod memory_tool_tests {
-    use super::STORYBOARD_TABLE_AGENT_TOOLS;
+    use super::{STORYBOARD_TABLE_AGENT_TOOLS, required_tagged};
 
     #[test]
     fn storyboard_table_agent_can_read_and_persist_its_document() {
         assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"get_flowData"));
         assert!(STORYBOARD_TABLE_AGENT_TOOLS.contains(&"set_flowData"));
+    }
+
+    #[test]
+    fn missing_workspace_xml_is_returned_as_an_actionable_error() {
+        let error = required_tagged("没有标签", "storySkeleton").unwrap_err();
+        assert!(error.to_string().contains("未输出 <storySkeleton> 标签"));
     }
 }
 
@@ -60,6 +66,22 @@ fn tagged(text: &str, tag: &str) -> Option<String> {
     let start = text.find(&open)? + open.len();
     let end = text[start..].find(&close)? + start;
     Some(text[start..end].trim().to_string())
+}
+
+fn required_tagged(text: &str, tag: &str) -> Result<String, AppError> {
+    tagged(text, tag).ok_or_else(|| {
+        AppError::bad_request(format!(
+            "子 Agent 未输出 <{tag}> 标签，请按要求重新派发该阶段任务"
+        ))
+    })
+}
+
+fn script_format_instruction() -> &'static str {
+    "\n\n你必须只使用如下 XML 格式输出，不得添加其他 XML 标签：\n<scriptItem name=\"剧本名称\">剧本完整内容</scriptItem>。每集一个 scriptItem。"
+}
+
+fn workspace_format_instruction(tag: &str, label: &str) -> String {
+    format!("\n\n你必须使用如下 XML 格式写入工作区：\n<{tag}>{label}内容</{tag}>")
 }
 
 async fn role_names_without_appearances(
@@ -352,13 +374,14 @@ pub(crate) async fn execute_inner(
             if scripts.is_empty() {
                 return Err(AppError::bad_request("剧本列表不能为空"));
             }
+            let normalized = normalize_script_items(scripts)?;
             let mut tx = state
                 .pool
                 .begin()
                 .await
                 .map_err(|_| AppError::internal("failed to begin script save"))?;
             let timestamp = now_ms();
-            let mut saved = Vec::with_capacity(scripts.len());
+            let mut saved = Vec::with_capacity(normalized.len());
             let mut existing = sqlx::query_as::<_, (i64, String)>(
                 "SELECT id,name FROM toonflow.scripts WHERE project_id=$1 ORDER BY create_time DESC,id DESC",
             )
@@ -366,21 +389,8 @@ pub(crate) async fn execute_inner(
             .fetch_all(&mut *tx)
             .await
             .map_err(|_| AppError::internal("failed to load existing scripts"))?;
-            for (index, script) in scripts.iter().enumerate() {
-                let name = script
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .trim();
-                let content = script
-                    .get("content")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .trim();
-                if name.is_empty() || content.is_empty() {
-                    return Err(AppError::bad_request("剧本名称和内容不能为空"));
-                }
-                if let Err(reason) = validate_generated_script(content) {
+            for (index, (name, content)) in normalized.iter().enumerate() {
+                if let Err(reason) = validate_script_for_episode(name, content) {
                     return Err(AppError::bad_request(format!(
                         "剧本《{name}》未完整生成：{reason}。请重新调用剧本子 Agent 生成完整正文后再保存"
                     )));
@@ -499,9 +509,16 @@ pub(crate) async fn execute_inner(
                     limit + 1
                 ))
                 .unwrap_or_default();
+            let format_instruction = match tag {
+                Some(tag) => workspace_format_instruction(tag, label),
+                None if agent_key == "scriptAgent:scriptAgent" => {
+                    script_format_instruction().to_string()
+                }
+                _ => String::new(),
+            };
             let full_system = format!(
                 "{system}\n\n## 当前项目\n{project_hint}\n\n你是 Toonflow 的{label}子 Agent。请使用工具读取所需数据，然后完成任务并输出要求的 XML 格式内容。{supervision_scope}"
-            );
+            ) + &format_instruction;
 
             // Sub-agent read-only tool definitions
             let sub_tools: Vec<Value> = vec![
@@ -512,10 +529,33 @@ pub(crate) async fn execute_inner(
             ];
 
             // Run sub-agent with native function calling
-            let mut messages = vec![
-                json!({"role":"system","content":full_system}),
-                json!({"role":"user","content":prompt}),
-            ];
+            let mut messages = vec![json!({"role":"system","content":full_system})];
+            if agent_key == "scriptAgent:scriptAgent" {
+                let scripts: Vec<(i64, String)> = sqlx::query_as(
+                    "SELECT id,name FROM toonflow.scripts WHERE project_id=$1 ORDER BY create_time,id",
+                )
+                .bind(request.project_id)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|_| AppError::internal("failed to load existing script context"))?;
+                let chapter_count: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM toonflow.novels WHERE project_id=$1")
+                        .bind(request.project_id)
+                        .fetch_one(&state.pool)
+                        .await
+                        .map_err(|_| AppError::internal("failed to load novel chapter count"))?;
+                let list = scripts
+                    .iter()
+                    .map(|(id, name)| format!("{id}:{}", name.replace([',', ':'], "")))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let latest = scripts
+                    .last()
+                    .map(|(id, _)| id.to_string())
+                    .unwrap_or_else(|| "无".into());
+                messages.push(json!({"role":"assistant","content":format!("## 可用剧本（ID:名称）\n{list}\n最新一集 ID：{latest}\n章节数量：{chapter_count}章")}));
+            }
+            messages.push(json!({"role":"user","content":format!("{prompt}{format_instruction}")}));
             let mut output = String::new();
             for _round in 0..24 {
                 let raw = ai_client::project_text_tools(
@@ -618,11 +658,10 @@ pub(crate) async fn execute_inner(
                 emitter.update_message(mid, "complete", None);
             }
             if let Some(tag) = tag {
-                if let Some(content) = tagged(&output, tag) {
-                    let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'").bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load script workspace"))?.unwrap_or_else(||json!({"storySkeleton":"","adaptationStrategy":""}));
-                    data[tag] = json!(content);
-                    sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,'scriptAgent',$2,$3,$3) ON CONFLICT(project_id,key) WHERE episodes_id IS NULL DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save sub agent result"))?;
-                }
+                let content = required_tagged(&output, tag)?;
+                let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'").bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load script workspace"))?.unwrap_or_else(||json!({"storySkeleton":"","adaptationStrategy":""}));
+                data[tag] = json!(content);
+                sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,'scriptAgent',$2,$3,$3) ON CONFLICT(project_id,key) WHERE episodes_id IS NULL DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save sub agent result"))?;
             }
             Ok(json!({"agent":agent_key,"content":output}))
         }

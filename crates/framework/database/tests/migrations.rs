@@ -14,7 +14,18 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 18);
+    assert_eq!(applied, 19);
+
+    for source_key in ["script_ai_regex", "script_prompt_polish"] {
+        let seeded: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM toonflow.prompts WHERE source_key=$1 AND data<>'')",
+        )
+        .bind(source_key)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect script prompt seed");
+        assert!(seeded, "expected prompt seed {source_key}");
+    }
 
     let script_name_is_unique: bool = sqlx::query_scalar(
         "SELECT EXISTS(
