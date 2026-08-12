@@ -239,6 +239,13 @@ export function deleteScripts(ids: number[]) {
   return requestClient.post('/toonflow/script/delScript', { ids });
 }
 
+export function exportScripts(ids: number[]) {
+  return requestClient.download<Blob>('/script/exportScript', {
+    method: 'POST',
+    data: { id: ids },
+  });
+}
+
 export function getAssets(projectId: number) {
   return requestClient.post<ToonflowApi.Asset[]>('/toonflow/assets/getAssetsApi', {
     projectId,

@@ -1,0 +1,75 @@
+.toon-page {
+  --toon-ink: #171717;
+  --toon-muted: #737373;
+  --toon-line: #e8e8e8;
+  --toon-panel: #fff;
+  --toon-canvas: #f5f5f3;
+  min-height: 100%;
+  color: var(--toon-ink);
+}
+
+.toon-page .toon-surface {
+  border: 1px solid var(--toon-line);
+  border-radius: 20px;
+  background: var(--toon-panel);
+  box-shadow: 0 14px 40px rgb(0 0 0 / 4%);
+}
+
+.toon-page .toon-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.toon-page .toon-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 760;
+  letter-spacing: -.03em;
+}
+
+.toon-page .toon-subtitle {
+  margin: 5px 0 0;
+  color: var(--toon-muted);
+  font-size: 13px;
+}
+
+.toon-page .toon-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.toon-page .toon-dots {
+  background-color: var(--toon-canvas);
+  background-image: radial-gradient(#c9c9c5 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+.toon-page .toon-primary.ant-btn-primary {
+  border-color: var(--toon-ink);
+  color: #fff;
+  background: var(--toon-ink);
+  box-shadow: none;
+}
+
+.toon-page .toon-primary.ant-btn-primary:hover {
+  border-color: #333;
+  background: #333;
+}
+
+.toon-page .ant-card,
+.toon-page .ant-modal-content {
+  border-radius: 16px;
+}
+
+.toon-page .ant-tag {
+  border-radius: 999px;
+}
+
+@media (max-width: 720px) {
+  .toon-page .toon-header { align-items: flex-start; flex-direction: column; }
+  .toon-page .toon-grid { grid-template-columns: 1fr; }
+}

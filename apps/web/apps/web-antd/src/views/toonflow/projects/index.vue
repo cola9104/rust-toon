@@ -18,7 +18,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
 } from 'ant-design-vue';
 
@@ -32,6 +31,8 @@ import {
 } from '#/api/toonflow';
 
 import '../shared/page-card.css';
+import '../styles/toon-theme.css';
+import ToonCard from '../components/ToonCard.vue';
 
 defineOptions({ name: 'ToonflowProjects' });
 
@@ -74,18 +75,6 @@ const form = reactive<ToonflowApi.SaveProject>({
   mode: 'startEndRequired',
   videoRatio: '16:9',
 });
-
-const columns = [
-  { title: '项目名称', dataIndex: 'name', key: 'name', width: 220 },
-  { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
-  { title: '视觉手册', dataIndex: 'artStyle', key: 'artStyle', width: 140 },
-  { title: '比例', dataIndex: 'videoRatio', key: 'videoRatio', width: 90 },
-  { title: '对话模型', dataIndex: 'chatModel', key: 'chatModel', width: 160 },
-  { title: '图片模型', dataIndex: 'imageModel', key: 'imageModel', width: 160 },
-  { title: '视频模型', dataIndex: 'videoModel', key: 'videoModel', width: 160 },
-  { title: '视频生成模式', dataIndex: 'mode', key: 'mode', width: 160 },
-  { title: '操作', key: 'action', width: 220, fixed: 'right' as const },
-];
 
 function resetForm() {
   Object.assign(form, {
@@ -197,58 +186,37 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 </script>
 
 <template>
-  <Page auto-content-height>
-    <Card :bordered="false" class="toonflow-page-card h-full">
-      <template #title>项目工作台</template>
-      <template #extra>
+  <Page auto-content-height class="toon-page">
+    <Card :bordered="false" class="toonflow-page-card h-full toon-surface">
+      <div class="toon-header">
+        <div><h1 class="toon-title">项目工作台</h1><p class="toon-subtitle">从故事到成片，继续你的创作。</p></div>
         <Space>
           <Button @click="loadProjects">刷新</Button>
-          <Button type="primary" @click="openCreate">新建项目</Button>
+          <Button class="toon-primary" type="primary" @click="openCreate">＋ 新建项目</Button>
         </Space>
-      </template>
+      </div>
 
-      <Table
-        :columns="columns"
-        :data-source="projects"
-        :loading="loading"
-        :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 个项目` }"
-        row-key="id"
-        size="middle"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'name'">
-            <Button class="project-name p-0" type="link" @click="openProject(record)">{{ record.name }}</Button>
-            <div class="project-intro">{{ record.intro || '未填写简介' }}</div>
-          </template>
-          <template v-if="column.key === 'mode'">
-            <Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag>
-          </template>
-          <template v-if="column.key === 'imageModel'">
-            {{ modelLabel(imageModels, record.imageModel) }}
-          </template>
-          <template v-if="column.key === 'chatModel'">
-            {{ modelLabel(chatModels, record.chatModel) }}
-          </template>
-          <template v-if="column.key === 'videoModel'">
-            {{ modelLabel(videoModels, record.videoModel) }}
-          </template>
-          <template v-if="column.key === 'action'">
-            <Space>
-              <Button type="link" @click="openProject(record)">进入</Button>
-              <Button type="link" @click="openEdit(record)">编辑</Button>
-              <Popconfirm
-                title="确认删除该项目及其原文、剧本、分镜数据？"
-                @confirm="handleDelete(record)"
-              >
-                <Button danger type="link">删除</Button>
-              </Popconfirm>
-            </Space>
-          </template>
-        </template>
-        <template #emptyText>
-          <Empty description="暂无项目" />
-        </template>
-      </Table>
+      <div v-if="loading" class="project-loading">正在加载项目…</div>
+      <Empty v-else-if="projects.length === 0" description="暂无项目" />
+      <div v-else class="toon-grid project-grid">
+        <ToonCard v-for="record in projects" :key="record.id" clickable class="project-card" @click="openProject(record)">
+          <div class="project-card__cover toon-dots">
+            <span>{{ record.name.slice(0, 1) }}</span>
+            <Tag>{{ record.videoRatio || '16:9' }}</Tag>
+          </div>
+          <div class="project-card__body">
+            <div class="project-card__heading"><h3>{{ record.name }}</h3><Tag color="orange">{{ record.type || '短剧' }}</Tag></div>
+            <p>{{ record.intro || '还没有项目简介，进入项目开始创作。' }}</p>
+            <div class="project-card__tags"><Tag>{{ record.artStyle || '默认视觉' }}</Tag><Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag></div>
+            <div class="project-card__models"><span>对话 · {{ modelLabel(chatModels, record.chatModel) }}</span><span>图像 · {{ modelLabel(imageModels, record.imageModel) }}</span><span>视频 · {{ modelLabel(videoModels, record.videoModel) }}</span></div>
+            <div class="project-card__actions" @click.stop>
+              <Button type="link" @click="openProject(record)">进入创作</Button>
+              <Button type="text" @click="openEdit(record)">编辑</Button>
+              <Popconfirm title="确认删除该项目及其原文、剧本、分镜数据？" @confirm="handleDelete(record)"><Button danger type="text">删除</Button></Popconfirm>
+            </div>
+          </div>
+        </ToonCard>
+      </div>
     </Card>
 
     <Modal
@@ -327,4 +295,12 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.project-loading { display: grid; min-height: 280px; color: #737373; place-items: center; }
+.project-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important; }
+.project-card { padding: 0 !important; overflow: hidden; }
+.project-card__cover { position: relative; display: grid; height: 138px; place-items: center; }
+.project-card__cover > span { display: grid; width: 58px; height: 58px; border-radius: 18px; color: #fff; background: #171717; font-size: 26px; font-weight: 750; place-items: center; }
+.project-card__cover > .ant-tag { position: absolute; top: 12px; right: 12px; margin: 0; background: rgb(255 255 255 / 88%); }
+.project-card__body { padding: 17px; }.project-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.project-card__heading h3 { overflow: hidden; margin: 0; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }.project-card__body > p { height: 40px; overflow: hidden; margin: 9px 0 12px; color: #737373; font-size: 12px; line-height: 20px; }
+.project-card__tags { display: flex; flex-wrap: wrap; gap: 5px; }.project-card__models { display: grid; margin-top: 14px; color: #8a8a8a; font-size: 11px; gap: 4px; }.project-card__actions { display: flex; justify-content: flex-end; margin: 13px -8px -7px; border-top: 1px solid #f0f0f0; padding-top: 8px; }
 </style>

@@ -70,6 +70,9 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   batchDeleteStoryboards: [ids: number[]];
+  batchGenerateVideoPrompts: [tracks: any[]];
+  batchGenerateVideos: [tracks: any[]];
+  batchDownloadVideos: [tracks: any[]];
   cancelStoryboards: [];
   cancelNode: [nodeId: string];
   cancelTrackVideo: [video: any];
@@ -80,6 +83,7 @@ const emit = defineEmits<{
   exportStoryboardImages: [ids: number[]];
   exportVideo: [];
   generateStoryboards: [ids: number[], compulsory: boolean];
+  generateDerivedAsset: [asset: ToonflowApi.Asset];
   insertStoryboardAfter: [storyboard: ToonflowApi.Storyboard];
   generateTrackVideo: [track: any];
   generateVideoPrompt: [track: any];
@@ -422,7 +426,7 @@ onBeforeUnmount(() => {
                 {{ assets.length ? '资产已载入' : '等待 Agent 分析' }}
               </Tag>
             </header>
-            <ProductionAssetStrip :assets="assets" @edit="emit('editAsset', $event)" />
+            <ProductionAssetStrip :assets="assets" @edit="emit('editAsset', $event)" @generate="emit('generateDerivedAsset', $event)" />
           </section>
         </section>
       </template>
@@ -653,6 +657,9 @@ onBeforeUnmount(() => {
         :video-model="videoModel"
         :video-ratio="videoRatio"
         @close="workbenchOpen = false"
+        @batch-generate-prompts="emit('batchGenerateVideoPrompts', $event)"
+        @batch-generate-videos="emit('batchGenerateVideos', $event)"
+        @batch-download="emit('batchDownloadVideos', $event)"
         @cancel-video="emit('cancelTrackVideo', $event)"
         @delete-video="emit('deleteTrackVideo', $event)"
         @generate-prompt="emit('generateVideoPrompt', $event)"

@@ -5,6 +5,7 @@ import { AiModelTypeEnum } from '@vben/constants';
 
 import {
   Button,
+  Checkbox,
   Empty,
   Input,
   InputNumber,
@@ -41,6 +42,9 @@ const emit = defineEmits<{
   selectVideo: [track: any, video: any];
   exportStoryboardImages: [ids: number[]];
   exportVideo: [];
+  batchGeneratePrompts: [tracks: any[]];
+  batchGenerateVideos: [tracks: any[]];
+  batchDownload: [tracks: any[]];
   close: [];
 }>();
 
@@ -53,6 +57,7 @@ const activeEditorIndex = ref(0);
 const playingSequence = ref(false);
 const editorVolume = ref(100);
 const editorPlayer = ref<HTMLVideoElement>();
+const selectedTrackIds = ref<number[]>([]);
 
 const activeTrack = computed(() =>
   props.tracks.find((track) => track.id === activeTrackId.value) ?? props.tracks[0],
@@ -80,6 +85,14 @@ const activePreviewVideo = computed(() => {
     ?? videos.find((video: any) => video.src);
 });
 const referenceAssets = computed(() => props.assets.filter((asset) => previewUrl(asset)));
+const selectedTracks = computed(() => props.tracks.filter((track) => selectedTrackIds.value.includes(track.id)));
+
+function toggleTrack(id: number, checked: boolean) {
+  selectedTrackIds.value = checked ? [...new Set([...selectedTrackIds.value, id])] : selectedTrackIds.value.filter((value) => value !== id);
+}
+function toggleAllTracks() {
+  selectedTrackIds.value = selectedTrackIds.value.length === props.tracks.length ? [] : props.tracks.map((track) => track.id);
+}
 
 function generation(track: any) {
   syncAssetReferences(track);
@@ -223,7 +236,7 @@ onMounted(async () => {
                       <img v-if="media.fileType === 'image' && mediaUrl(media)" :src="mediaUrl(media)" :alt="mediaName(media, Number(index))" class="media-image" />
                       <div v-else-if="media.fileType === 'audio'" class="audio-preview">♪</div>
                       <div v-else class="empty-media">暂无图片</div>
-                      <span class="media-order">{{ Number(index) + 1 }}</span><span class="media-source">{{ media.sources === 'storyboard' ? '分镜' : '资产' }}</span>
+                      <span class="media-order">{{ Number(index) + 1 }}</span><span class="media-source">{{ Number(index) === 0 ? 'P1 首帧' : Number(index) === activeTrack.medias.length - 1 ? 'P2 尾帧' : media.sources === 'storyboard' ? '分镜' : '参考' }}</span>
                     </div>
                   </article>
                 </div>
@@ -255,8 +268,8 @@ onMounted(async () => {
           </section>
 
           <section class="track-filmstrip setting-block">
-            <div class="section-heading"><div><b>视频轨道</b><span>横向切换轨道</span></div><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div>
-            <div class="track-strip"><button v-for="(track,index) in tracks" :key="track.id" :class="{active:activeTrack.id===track.id}" @click="activateTrack(track)"><img v-if="mediaUrl(track.medias?.[0])" :src="mediaUrl(track.medias[0])" /><span>轨道 {{ index + 1 }} · {{ track.duration || 5 }}s</span></button></div>
+            <div class="section-heading"><div><b>视频轨道</b><span>{{ selectedTracks.length }} 项已选</span></div><div class="batch-track-actions"><Button size="small" @click="toggleAllTracks">全选</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGeneratePrompts', selectedTracks)">批量生成提示词</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGenerateVideos', selectedTracks)">批量生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">批量下载</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
+            <div class="track-strip"><button v-for="(track,index) in tracks" :key="track.id" :class="{active:activeTrack.id===track.id}" @click="activateTrack(track)"><Checkbox class="track-check" :checked="selectedTrackIds.includes(track.id)" @click.stop @change="toggleTrack(track.id,$event.target.checked)" /><img v-if="mediaUrl(track.medias?.[0])" :src="mediaUrl(track.medias[0])" /><span>轨道 {{ index + 1 }} · {{ track.duration || 5 }}s</span></button></div>
           </section>
         </template>
         <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="分镜生成后进入视频工作台" />
@@ -386,6 +399,7 @@ onMounted(async () => {
 .track-strip { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 7px; }.track-strip button { position: relative; display: grid; width: 164px; flex: 0 0 164px; overflow: hidden; padding: 5px; border: 2px solid transparent; border-radius: 8px; color: var(--ant-color-text-secondary); background: var(--ant-color-fill-tertiary); cursor: pointer; gap: 5px; }.track-strip button.active { border-color: var(--ant-color-primary); }.track-strip img { width: 100%; height: 92px; border-radius: 5px; object-fit: contain; background: #111827; }.track-strip span { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .generation-page > .history-section, .generation-page > .track-filmstrip { border-right: 0; border-left: 0; border-radius: 0; }
 .generation-page > .history-section { border-bottom: 0; }
+.batch-track-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:6px}.track-strip button .track-check{position:absolute;z-index:2;top:9px;left:9px;padding:4px;border-radius:5px;background:rgb(255 255 255 / 92%)}
 .asset-picker { display: grid; max-height: 65vh; overflow-y: auto; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }.asset-picker button { position: relative; display: grid; overflow: hidden; padding: 6px; border: 1px solid var(--ant-color-border-secondary); border-radius: 8px; background: var(--ant-color-bg-container); cursor: pointer; gap: 6px; }.asset-picker button:hover { border-color: var(--ant-color-primary); }.asset-picker img { width: 100%; height: 112px; object-fit: contain; background: var(--ant-color-fill-secondary); }.asset-picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.asset-picker b { position: absolute; top: 10px; right: 10px; display: grid; width: 24px; height: 24px; border-radius: 50%; color: #fff; background: var(--ant-color-primary); place-items: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 900px) { .toonflow-workbench { grid-template-columns: 1fr; }.track-sidebar { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--ant-color-border-secondary); }.sidebar-title { display: none; }.track-tab { width: 190px; flex: 0 0 190px; }.track-workspace { padding: 12px; } }

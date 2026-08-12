@@ -15,18 +15,13 @@ import {
   Form,
   Input,
   InputNumber,
-  List,
   Modal,
-  Popconfirm,
   Row,
   Select,
   Space,
   Statistic,
-  Table,
-  Tabs,
   Tag,
   Typography,
-  Upload,
   message,
 } from 'ant-design-vue';
 
@@ -34,6 +29,8 @@ import {
   addNovel,
   addScript,
   addStoryboard,
+  batchGenerateVideoPrompts,
+  batchGenerateVideos,
   batchDeleteStoryboards,
   cancelWorkflowRun,
   cancelWorkflowNodeRun,
@@ -43,6 +40,7 @@ import {
   deleteScripts,
   deleteTrackVideo,
   downloadStoryboardPreview,
+  exportScripts,
   exportFinalVideo,
   executeAgentTool,
   editStoryboardInfo,
@@ -96,9 +94,15 @@ import {
 import AgentChat from './AgentChat.vue';
 import ImageFlowEditor from './ImageFlowEditor.vue';
 import ProductionFlowCanvas from './ProductionFlowCanvas.vue';
+import NovelPanel from './detail/NovelPanel.vue';
+import ProductionPanel from './detail/ProductionPanel.vue';
+import ScriptChatPanel from './detail/ScriptChatPanel.vue';
+import ScriptLibraryPanel from './detail/ScriptLibraryPanel.vue';
 import { normalizeProductionWorkflow } from './production-workflow';
 import { assetFileUrl } from '../assets/asset-types';
+import StageNav from '../components/StageNav.vue';
 import '../shared/page-card.css';
+import '../styles/toon-theme.css';
 
 defineOptions({ name: 'ToonflowProjectDetail' });
 
@@ -107,6 +111,13 @@ const router = useRouter();
 const projectId = computed(() => Number(route.params.id));
 
 const activeTab = ref('novel');
+const stages = [
+  { key: 'novel', label: '原文', hint: '导入与事件提取', icon: '文' },
+  { key: 'script-agent', label: '剧本创作', hint: '与编剧 Agent 协作', icon: '写' },
+  { key: 'script', label: '剧本与资产', hint: '管理剧本和角色', icon: '库' },
+  { key: 'production', label: '分镜制作', hint: '画布与视频工作台', icon: '制' },
+];
+const activePanelComponent = computed(() => ({ novel: NovelPanel, 'script-agent': ScriptChatPanel, script: ScriptLibraryPanel, production: ProductionPanel }[activeTab.value] || NovelPanel));
 const loading = ref(false);
 const project = ref<ToonflowApi.Project>();
 const imageQuality = computed(() =>
@@ -278,11 +289,6 @@ interface ChatContentBlock { type: string; id: string; data: any; status: string
 interface ChatMessage { id: string; role: 'assistant' | 'system' | 'user'; name?: string; status: string; datetime: string; content: ChatContentBlock[] }
 const scriptChatMessages = ref<ChatMessage[]>([]);
 const productionChatMessages = ref<ChatMessage[]>([]);
-const activeAgentMessages = computed(() =>
-  agentType.value === 'productionAgent'
-    ? productionChatMessages.value
-    : scriptChatMessages.value,
-);
 const agentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
 const productionAgentChatRef = ref<InstanceType<typeof AgentChat> | null>(null);
 const productionFlowCanvasRef = ref<InstanceType<typeof ProductionFlowCanvas> | null>(null);
@@ -304,6 +310,9 @@ const scriptForm = reactive({
   content: '',
   assets: [] as number[],
 });
+const scriptSearch = ref('');
+const selectedScriptIds = reactive(new Set<number>());
+const scriptUploadInput = ref<HTMLInputElement>();
 
 const storyboardForm = reactive({
   id: undefined as number | undefined,
@@ -329,6 +338,10 @@ const orderedScripts = computed(() =>
       left.createTime - right.createTime,
   ),
 );
+const visibleScripts = computed(() => {
+  const keyword = scriptSearch.value.trim().toLocaleLowerCase();
+  return orderedScripts.value.filter((script) => !keyword || [script.name, script.content, ...script.relatedAssets.map((asset) => asset.name)].some((value) => value.toLocaleLowerCase().includes(keyword)));
+});
 
 const scriptOptions = computed(() =>
   orderedScripts.value.map((item) => ({ label: item.name, value: item.id })),
@@ -586,6 +599,52 @@ async function removeScript(script: any) {
   await loadFlow();
 }
 
+function toggleScript(id: number, checked: boolean) {
+  checked ? selectedScriptIds.add(id) : selectedScriptIds.delete(id);
+}
+
+function toggleAllScripts() {
+  const ids = visibleScripts.value.map((script) => script.id);
+  const shouldSelect = ids.some((id) => !selectedScriptIds.has(id));
+  ids.forEach((id) => shouldSelect ? selectedScriptIds.add(id) : selectedScriptIds.delete(id));
+}
+
+async function batchRemoveScripts() {
+  const ids = [...selectedScriptIds];
+  if (!ids.length) return;
+  await deleteScripts(ids);
+  selectedScriptIds.clear();
+  await Promise.all([loadScripts(), loadFlow()]);
+  message.success(`已删除 ${ids.length} 个剧本`);
+}
+
+async function batchExtractScriptAssets() {
+  const ids = [...selectedScriptIds];
+  if (!ids.length) return;
+  const result = await extractScriptAssets(projectId.value, ids);
+  message.success(`已提交 ${ids.length} 个剧本的资产提取任务 #${result.taskId}`);
+}
+
+async function batchExportScripts() {
+  const ids = [...selectedScriptIds];
+  if (!ids.length) return;
+  const blob = await exportScripts(ids);
+  downloadFileFromBlob({ fileName: `${project.value?.name || 'scripts'}-剧本.zip`, source: blob });
+}
+
+async function importScriptFiles(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files || []);
+  input.value = '';
+  if (!files.length) return;
+  for (const [index, file] of files.entries()) {
+    const content = await file.text();
+    await addScript({ projectId: projectId.value, name: file.name.replace(/\.(?:md|txt)$/i, '') || `剧本 ${index + 1}`, content, assets: [] });
+  }
+  await loadScripts();
+  message.success(`已导入 ${files.length} 个剧本`);
+}
+
 async function extractAssetsFromScript(script: ToonflowApi.Script) {
   const result = await extractScriptAssets(projectId.value, [script.id]);
   message.success(`资产提取任务 ${result.taskId} 已提交，可在任务中心查看`);
@@ -604,6 +663,43 @@ async function extractAssetsFromScript(script: ToonflowApi.Script) {
     return;
   }
   message.warning('资产提取仍在处理中，请稍后刷新查看');
+}
+
+async function generateDerivedAsset(asset: ToonflowApi.Asset) {
+  if (!selectedScriptId.value) return message.warning('请先选择制作剧本');
+  await executeAgentTool({ agentType: 'productionAgent', projectId: projectId.value, scriptId: selectedScriptId.value, toolName: 'generate_deriveAsset', arguments: { ids: [asset.id], concurrentCount: 1 } });
+  message.success(`“${asset.name}”已进入生成队列`);
+  scheduleProductionAssetRefresh();
+}
+
+async function generateSelectedVideoPrompts(tracks: any[]) {
+  if (!project.value?.videoModel) return message.warning('请先配置项目视频模型');
+  await batchGenerateVideoPrompts({ projectId: projectId.value, trackData: tracks.map((track) => ({ trackId: track.id, info: track.medias || [] })), mode: videoMode.value, model: project.value.videoModel, concurrentCount: 5 });
+  message.success(`已提交 ${tracks.length} 条提示词任务`);
+  window.setTimeout(loadFlow, 2500);
+}
+
+async function generateSelectedVideos(tracks: any[]) {
+  if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先选择剧本并配置视频模型');
+  const first = tracks[0]?.generation || {};
+  await batchGenerateVideos({ projectId: projectId.value, scriptId: selectedScriptId.value, trackData: tracks.map((track) => ({ trackId: track.id, uploadData: track.medias || [], prompt: track.prompt || '', duration: track.generation?.duration || track.duration || 5 })), model: first.model || project.value.videoModel, mode: first.mode || videoMode.value, resolution: first.resolution || '1080p', audio: Boolean(first.audio) });
+  message.success(`已提交 ${tracks.length} 个视频生成任务`);
+  window.setTimeout(loadFlow, 2500);
+}
+
+function downloadSelectedVideos(tracks: any[]) {
+  let count = 0;
+  tracks.forEach((track, index) => {
+    const videos = track.videoList || [];
+    const video = videos.find((item: any) => item.id === track.selectVideoId && item.src) || videos.find((item: any) => item.src);
+    if (!video?.src) return;
+    const link = document.createElement('a');
+    link.href = assetFileUrl(video.src);
+    link.download = `track-${index + 1}.mp4`;
+    link.click();
+    count += 1;
+  });
+  count ? message.success(`已开始下载 ${count} 个视频`) : message.warning('选中的轨道暂无可下载视频');
 }
 
 async function loadAgentMemory() {
@@ -1573,6 +1669,38 @@ async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loa
 async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,uploadData:track.medias??[]});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
+const panelContext = reactive({
+  projectId, project, imageQuality, videoMode, novels, novelColumns, importNovelFile,
+  openNovel, extractAllNovelEvents, formatEventDisplay, extractNovelEvents, removeNovel,
+  scriptChatMessages, onAgentToolResult, resetAgentWorkspace, openScriptGeneration,
+  saveAgentWorkspace, workspaceActiveTab, workspaceTabs, renderMarkdown,
+  assets, visibleScripts, scriptSearch, selectedScriptIds, openScript, importScriptFiles,
+  toggleAllScripts, batchExportScripts, batchExtractScriptAssets, batchRemoveScripts,
+  toggleScript, extractAssetsFromScript, removeScript,
+  selectedScriptId, scriptOptions, productionAssets, flowText, selectedScript, storyboards,
+  storyboardBusy, storyboardProgressCurrent, storyboardProgressTotal, storyboardNodeRunState,
+  videoTracks, workflowNodeRuns, rebuildingStoryboardPanel, productionAgentCollapsed,
+  productionAgentActivity, productionChatMessages, trackBindingOpen, trackBindingTarget,
+  trackBindingStoryboardIds, changeProductionScript, loadFlow, saveFlowText,
+  rebuildStoryboardPanel, openStoryboard, previewAllStoryboardImages,
+  cancelProductionWorkflowNode, cancelVideo, cancelStoryboardWorkflow, removeVideo,
+  batchDeleteSelectedStoryboards, generateSelectedVideoPrompts, generateSelectedVideos,
+  downloadSelectedVideos, openAssetImageFlow, openStoryboardImageFlow,
+  downloadSelectedStoryboardImages, exportVideo, generateStoryboards, generateDerivedAsset,
+  generateVideo, createVideoPrompt, beginInsertStoryboard, openVideoTrack, retryVideo,
+  retryStoryboardWorkflow, retryProductionWorkflowNode, runProductionWorkflowNode,
+  runProductionWorkflowSequence, deleteStoryboard, saveStoryboardOrder,
+  saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, chooseVideo,
+  updateProductionFlowSection, resetProductionAgent, onProductionAgentActivity,
+  clearProductionAgentMemory, previewProductionFlowSection, confirmTrackBinding,
+  openAssets: () => router.push({ path: '/toonflow/assets', query: { projectId: projectId.value } }),
+  chooseScriptFiles: () => scriptUploadInput.value?.click(),
+  setScriptUploadInput: (element: HTMLInputElement | null) => { scriptUploadInput.value = element ?? undefined; },
+  setAgentChatRef: (instance: InstanceType<typeof AgentChat> | null) => { agentChatRef.value = instance; },
+  setProductionAgentChatRef: (instance: InstanceType<typeof AgentChat> | null) => { productionAgentChatRef.value = instance; },
+  setProductionFlowCanvasRef: (instance: InstanceType<typeof ProductionFlowCanvas> | null) => { productionFlowCanvasRef.value = instance; },
+});
+
 watch(selectedScriptId, () => {
   if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   workflowRunPollTimer = undefined;
@@ -1602,11 +1730,11 @@ watch(projectId, () => loadAll());
 </script>
 
 <template>
-  <Page auto-content-height>
+  <Page auto-content-height class="toon-page">
     <Card
       :bordered="false"
       :loading="loading"
-      class="toonflow-page-card h-full"
+      class="toonflow-page-card h-full toon-surface"
     >
       <template #title>
         <Space>
@@ -1626,292 +1754,8 @@ watch(projectId, () => loadAll());
         <Col :span="6"><Card size="small"><Statistic title="视频" :value="statistics.videoCount" /></Card></Col>
       </Row>
 
-      <Tabs v-model:active-key="activeTab">
-        <Tabs.TabPane key="novel" tab="原文">
-          <div class="tab-tools">
-            <Space>
-              <Upload accept=".txt,.md,text/plain,text/markdown" :before-upload="importNovelFile" :show-upload-list="false">
-                <Button type="primary">导入文件</Button>
-              </Upload>
-              <Button @click="openNovel()">手动导入</Button>
-              <Button @click="extractAllNovelEvents">提取全部待处理事件</Button>
-            </Space>
-          </div>
-          <Table
-            class="novel-table"
-            :columns="novelColumns"
-            :data-source="novels"
-            :scroll="{ x: 1408 }"
-            :pagination="{ pageSize: 10, showSizeChanger: true, pageSizeOptions: ['5', '10', '20', '50'], showTotal: (total: number) => `共 ${total} 章` }"
-            row-key="id"
-            size="small"
-          >
-            <template #bodyCell="{ column, record }">
-              <template v-if="column.dataIndex === 'eventState'">
-                <Tag :color="record.eventState === 1 ? 'green' : record.eventState === -1 ? 'red' : 'default'">
-                  {{ record.eventState === 1 ? '已提取' : record.eventState === -1 ? '失败' : '待提取' }}
-                </Tag>
-              </template>
-              <template v-if="column.dataIndex === 'chapterData'">
-                <span class="novel-cell-text" :title="record.chapterData || ''">
-                  {{ record.chapterData || '暂无正文' }}
-                </span>
-              </template>
-              <template v-if="column.dataIndex === 'event'">
-                <span class="novel-cell-text" :title="formatEventDisplay(record.event)">
-                  {{ formatEventDisplay(record.event) || '尚未提取事件' }}
-                </span>
-              </template>
-              <template v-if="column.key === 'action'">
-                <Space :size="4" class="novel-actions">
-                  <Button size="small" type="link" @click="openNovel(record)">编辑</Button>
-                  <Button size="small" type="link" @click="extractNovelEvents(record)">提取事件</Button>
-                  <Popconfirm title="确认删除章节？" @confirm="removeNovel(record)">
-                    <Button danger size="small" type="link">删除</Button>
-                  </Popconfirm>
-                </Space>
-              </template>
-            </template>
-          </Table>
-        </Tabs.TabPane>
-
-        <Tabs.TabPane key="script-agent" tab="剧本创作">
-          <Row :gutter="16">
-            <Col :span="8">
-              <AgentChat ref="agentChatRef" agent-type="scriptAgent" :project-id="projectId" :messages="scriptChatMessages" @tool-result="onAgentToolResult" />
-            </Col>
-            <Col :span="16">
-              <Card class="workspace-card" size="small" title="剧本创作工作区">
-                <template #extra><Space><Popconfirm title="确认清除剧本 Agent 的对话和工作区？" @confirm="resetAgentWorkspace"><Button>重新开始</Button></Popconfirm><Button @click="openScriptGeneration">开始创作</Button><Button type="primary" @click="saveAgentWorkspace">保存工作区</Button></Space></template>
-                <Tabs v-model:active-key="workspaceActiveTab" size="small">
-                  <Tabs.TabPane v-for="tab in workspaceTabs" :key="tab.key" :tab="tab.label">
-                    <div v-if="!tab.content" class="workspace-placeholder">剧本 Agent 将在此展示{{ tab.label }}...</div>
-                    <div v-else class="workspace-output" v-html="renderMarkdown(tab.content)"></div>
-                  </Tabs.TabPane>
-                </Tabs>
-              </Card>
-            </Col>
-          </Row>
-        </Tabs.TabPane>
-
-        <Tabs.TabPane key="script" tab="剧本与资产">
-              <Card size="small" title="剧本与基础资产">
-                <template #extra>
-                  <Space>
-                    <Button
-                      size="small"
-                      @click="router.push({ path: '/toonflow/assets', query: { projectId } })"
-                    >
-                      打开基础资产库（{{ assets.length }}）
-                    </Button>
-                    <Button size="small" @click="openScript()">手动新增</Button>
-                  </Space>
-                </template>
-                <List :data-source="scripts" item-layout="vertical">
-                  <template #renderItem="{ item }">
-                    <List.Item>
-                      <template #actions>
-                        <Button type="link" @click="openScript(item)">编辑</Button>
-                        <Button type="link" @click="extractAssetsFromScript(item)">AI 提取资产</Button>
-                        <Popconfirm title="确认删除剧本？" @confirm="removeScript(item)">
-                          <Button danger type="link">删除</Button>
-                        </Popconfirm>
-                      </template>
-                      <List.Item.Meta :description="`${item.content.length} 字`" :title="item.name" />
-                      <div class="script-preview">{{ item.content }}</div>
-                    </List.Item>
-                  </template>
-                </List>
-              </Card>
-        </Tabs.TabPane>
-
-        <Tabs.TabPane key="production" tab="分镜制作">
-          <Row :gutter="16" class="production-layout">
-            <Col :span="24">
-              <Space class="production-tools mb-3" wrap>
-                <Select
-                  :value="selectedScriptId"
-                  :options="scriptOptions"
-                  placeholder="选择剧本"
-                  style="width: 240px"
-                  @change="changeProductionScript"
-                />
-                <Button @click="loadFlow">刷新制作数据</Button>
-                <Button type="primary" @click="saveFlowText">保存分镜工作区</Button>
-                <Button
-                  :loading="rebuildingStoryboardPanel"
-                  @click="rebuildStoryboardPanel"
-                >
-                  {{ storyboards.length ? 'Agent 修复分镜面板' : 'Agent 生成分镜面板' }}
-                </Button>
-                <Button @click="openStoryboard()">新增分镜</Button>
-                <Button @click="previewAllStoryboardImages">合成预览</Button>
-                <Button v-if="productionAgentCollapsed" @click="productionAgentCollapsed = false">展开 Agent</Button>
-              </Space>
-              <ProductionFlowCanvas
-                ref="productionFlowCanvasRef"
-                :assets="productionAssets"
-                :flow-text="flowText"
-                :image-model="project?.imageModel"
-                :image-quality="imageQuality"
-                :script="selectedScript"
-                :storyboard-busy="storyboardBusy"
-                :storyboard-progress-current="storyboardProgressCurrent"
-                :storyboard-progress-total="storyboardProgressTotal"
-                :storyboard-run-state="storyboardNodeRunState"
-                :storyboards="storyboards"
-                :video-mode="videoMode"
-                :video-model="project?.videoModel"
-                :video-ratio="project?.videoRatio"
-                :video-tracks="videoTracks"
-                :workflow-node-runs="workflowNodeRuns"
-                @cancel-node="cancelProductionWorkflowNode"
-                @cancel-track-video="cancelVideo"
-                @cancel-storyboards="cancelStoryboardWorkflow"
-                @delete-track-video="removeVideo"
-                @batch-delete-storyboards="batchDeleteSelectedStoryboards"
-                @edit-asset="openAssetImageFlow"
-                @edit-storyboard="openStoryboard"
-                @edit-storyboard-image="openStoryboardImageFlow"
-                @export-storyboard-images="downloadSelectedStoryboardImages"
-                @export-video="exportVideo"
-                @generate-storyboards="generateStoryboards"
-                @generate-track-video="generateVideo"
-                @generate-video-prompt="createVideoPrompt"
-                @insert-storyboard-after="beginInsertStoryboard"
-                @open-video-track="openVideoTrack"
-                @retry-track-video="retryVideo"
-                @retry-storyboards="retryStoryboardWorkflow"
-                @retry-node="retryProductionWorkflowNode"
-                @run-node="runProductionWorkflowNode"
-                @run-sequence="runProductionWorkflowSequence"
-                @remove-storyboard="deleteStoryboard"
-                @reorder-storyboards="saveStoryboardOrder"
-                @save-positions="saveProductionCanvasPositions"
-                @save-workflow="saveProductionWorkflow"
-                @save-video-prompt="saveTrackPrompt"
-                @select-track-video="chooseVideo"
-                @update-flow-section="updateProductionFlowSection"
-              />
-            </Col>
-            <Col v-if="!productionAgentCollapsed" :span="24" class="production-agent-panel">
-              <Card class="production-agent-card" size="small" title="分镜制作 Agent">
-                <template #extra>
-                  <Space>
-                    <Tag color="blue">{{ productionAgentActivity }}</Tag>
-                    <Button size="small" @click="productionAgentCollapsed = true">折叠</Button>
-                    <Button size="small" @click="resetProductionAgent">重新开始</Button>
-                  </Space>
-                </template>
-                <div class="production-agent-context">
-                  <Tag color="green">读取剧本与基础资产</Tag>
-                </div>
-                <AgentChat
-                  ref="productionAgentChatRef"
-                  agent-type="productionAgent"
-                  :project-id="projectId"
-                  :script-id="selectedScriptId"
-                  :messages="productionChatMessages"
-                  starter-label="开始制作视频"
-                  starter-prompt="立即读取当前已有剧本和人物基础资产，从「人物衍生资产分析」开始制作。人物父资产都是白色基础内衣底模，必须逐一检查当前剧本中的每个角色，并为每个出场角色写入至少一套符合其身份和剧情的正式服装衍生；另行补充剧本明确出现的换装、重伤、变身或稳定形态变化。请直接调用 run_sub_agent_derive_assets 实际写入，不要重新生成剧本，不要只汇报状态，也不要在执行前询问是否开始。完成后展示衍生清单并暂停等待我确认生成。"
-                  @activity="onProductionAgentActivity"
-                  @clear-memory="clearProductionAgentMemory"
-                  @tool-result="onAgentToolResult"
-                  @workspace-preview="previewProductionFlowSection"
-                />
-              </Card>
-            </Col>
-          </Row>
-          <Modal v-model:open="trackBindingOpen" :title="`调整轨道 ${trackBindingTarget?.id ?? ''} 的分镜`" width="720px" @ok="confirmTrackBinding">
-            <p class="mb-3 text-gray-500">选中的分镜会从原轨道移入当前轨道，可多选。</p>
-            <Select
-              v-model:value="trackBindingStoryboardIds"
-              mode="multiple"
-              option-filter-prop="label"
-              :options="storyboards.map((item:any)=>({ value:item.id, label:`${item.index ?? '-'} · ${item.videoDesc || item.prompt || `分镜 ${item.id}`}` }))"
-              placeholder="选择要移入该轨道的分镜"
-              style="width:100%"
-            />
-          </Modal>
-        </Tabs.TabPane>
-
-        <Tabs.TabPane v-if="false" key="agent" tab="Agent 工作台">
-          <Card size="small" title="Agent 工作台">
-            <template #title>
-              <Space>
-                <Select
-                  v-model:value="agentType"
-                  :options="[
-                    { label: '剧本 Agent', value: 'scriptAgent' },
-                    { label: '生产 Agent', value: 'productionAgent' },
-                  ]"
-                  style="width: 180px"
-                  @change="loadAgentMemory"
-                />
-                <Select
-                  v-if="agentType === 'productionAgent'"
-                  v-model:value="selectedScriptId"
-                  :options="scriptOptions"
-                  placeholder="选择生产剧本"
-                  style="width: 220px"
-                  @change="loadAgentMemory"
-                />
-              </Space>
-            </template>
-            <template #extra>
-              <Space>
-                <Popconfirm title="确认清除所有对话和工作区内容？" @confirm="resetAgentWorkspace">
-                  <Button>重新开始</Button>
-                </Popconfirm>
-                <Button type="primary" @click="openScriptGeneration">AI 生成剧本</Button>
-              </Space>
-            </template>
-
-            <Row :gutter="16">
-              <Col :span="agentType === 'scriptAgent' ? 8 : 24">
-                <AgentChat
-                  ref="agentChatRef"
-                  :agent-type="agentType"
-                  :project-id="projectId"
-                  :script-id="agentType === 'productionAgent' ? selectedScriptId : undefined"
-                  :messages="activeAgentMessages"
-                  @tool-result="onAgentToolResult"
-                />
-              </Col>
-              <Col v-if="agentType === 'scriptAgent'" :span="16">
-                <Card size="small" class="workspace-card">
-                  <template #extra>
-                    <Button type="primary" size="small" @click="saveAgentWorkspace">保存工作区</Button>
-                  </template>
-                  <!-- Pipeline progress -->
-                  <div class="pipeline-bar">
-                    <div
-                      v-for="(stage, i) in pipelineStages"
-                      :key="stage.key"
-                      class="pipeline-step"
-                      :class="[stage.status, { last: i === pipelineStages.length - 1 }]"
-                    >
-                      <span class="pipeline-dot">{{ stage.status === 'completed' ? '✓' : stage.status === 'active' ? '●' : stage.status === 'review' ? '🔍' : '○' }}</span>
-                      <span class="pipeline-label">{{ stage.label }}</span>
-                      <span v-if="i < pipelineStages.length - 1" class="pipeline-line" />
-                    </div>
-                  </div>
-                  <Tabs v-model:activeKey="workspaceActiveTab" size="small">
-                    <Tabs.TabPane v-for="tab in workspaceTabs" :key="tab.key" :tab="tab.label">
-                      <div class="workspace-pane">
-                        <div v-if="!tab.content" class="workspace-placeholder">
-                          Agent 将在此展示{{ tab.label }}...
-                        </div>
-                        <div v-else class="workspace-output" v-html="renderMarkdown(tab.content)" />
-                      </div>
-                    </Tabs.TabPane>
-                  </Tabs>
-                </Card>
-              </Col>
-            </Row>
-          </Card>
-        </Tabs.TabPane>
-      </Tabs>
+      <StageNav v-model="activeTab" :stages="stages" />
+      <component :is="activePanelComponent" :context="panelContext" />
     </Card>
 
     <Modal v-model:open="novelModalOpen" title="章节" width="820px" @ok="saveNovel">
@@ -2019,4 +1863,4 @@ watch(projectId, () => loadAll());
   </Page>
 </template>
 
-<style scoped src="./project-detail.css"></style>
+<style src="./project-detail.css"></style>

@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   edit: [asset: ToonflowApi.Asset];
+  generate: [asset: ToonflowApi.Asset];
 }>();
 
 const assetRows = computed(() =>
@@ -141,6 +142,14 @@ function assetSummary(asset: ToonflowApi.Asset) {
                 >
                   {{ assetSummary(derived) }}
                 </div>
+                <button
+                  v-if="!derived.imageFilePath && derived.imageState !== '生成中'"
+                  type="button"
+                  class="production-asset-generate"
+                  @click="emit('generate', derived)"
+                >
+                  直接生成
+                </button>
                 <button
                   type="button"
                   class="production-asset-edit"
@@ -354,7 +363,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
   white-space: nowrap;
 }
 
-.production-asset-edit {
+.production-asset-edit,.production-asset-generate {
   width: 100%;
   margin-top: 7px;
   padding: 3px 6px;
@@ -366,9 +375,10 @@ function assetSummary(asset: ToonflowApi.Asset) {
   cursor: pointer;
 }
 
-.production-asset-edit:hover {
+.production-asset-edit:hover,.production-asset-generate:hover {
   border-color: var(--ant-color-primary);
 }
+.production-asset-generate { color: #d46b08; }
 
 .production-asset-connector {
   position: relative;

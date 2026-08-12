@@ -50,6 +50,8 @@ const targetOptions = [
   { label: '场景', value: 'scene' },
   { label: '道具', value: 'tool' },
 ];
+const ratioOptions = ['16:9', '9:16', '1:1', '4:3'].map((value) => ({ label: value, value }));
+const resolutionOptions = ['1K', '2K', '4K'].map((value) => ({ label: value, value }));
 
 function chooseUpload(nodeId: string) {
   uploadNodeId.value = nodeId;
@@ -129,6 +131,11 @@ function onUpload(event: Event) {
           <div v-else class="empty">连接参考图和编辑指令后执行</div>
           <Select v-model:value="data.targetType" class="field" :options="targetOptions" />
           <Input.TextArea v-model:value="data.prompt" :rows="3" placeholder="当前节点补充编辑要求（可选）" />
+          <div class="node-parameters">
+            <Input v-model:value="data.model" placeholder="模型（默认项目模型）" />
+            <Select v-model:value="data.ratio" :options="ratioOptions" placeholder="比例" />
+            <Select v-model:value="data.resolution" :options="resolutionOptions" placeholder="分辨率" />
+          </div>
           <Space class="actions">
             <Button size="small" @click="emit('agent', id)">让生产 Agent 规划</Button>
             <Button :loading="loadingNodeId === id" size="small" type="primary" @click="emit('generate', id)">执行此节点</Button>
@@ -155,5 +162,6 @@ function onUpload(event: Event) {
 .empty { display: flex; align-items: center; justify-content: center; padding: 16px; color: #8c8c8c; text-align: center; }
 .field { width: 100%; margin-bottom: 8px; }
 .actions { margin-top: 10px; }
+.node-parameters { display: grid; margin-top: 8px; gap: 6px; grid-template-columns: minmax(0, 1fr) 72px 84px; }
 .hidden { display: none; }
 </style>

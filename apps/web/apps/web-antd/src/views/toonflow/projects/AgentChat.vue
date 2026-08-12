@@ -37,10 +37,14 @@ const emit = defineEmits<{
 const accessStore = useAccessStore();
 const connected = ref(false);
 const connecting = ref(false);
+const restoredNotice = ref(false);
 const thinkEnabled = ref(false);
 const thinkLevel = ref(1);
+const ratings = ref<Record<string, 'bad' | 'good' | undefined>>({});
 
 let ws: WebSocket | null = null;
+let hasConnected = false;
+let restoreTimer: number | undefined;
 const completedToolCalls = new Set<string>();
 const workspacePreviewValues = new Map<string, string>();
 
@@ -83,6 +87,12 @@ function connect() {
   ws.onopen = () => {
     connected.value = true;
     connecting.value = false;
+    if (hasConnected) {
+      restoredNotice.value = true;
+      window.clearTimeout(restoreTimer);
+      restoreTimer = window.setTimeout(() => { restoredNotice.value = false; }, 3000);
+    }
+    hasConnected = true;
   };
 
   ws.onmessage = (event) => {
@@ -232,6 +242,7 @@ function scrollToBottom() {
 }
 
 onBeforeUnmount(() => {
+  window.clearTimeout(restoreTimer);
   disconnect();
 });
 
@@ -283,6 +294,25 @@ function handleStarter() {
   handleSend();
 }
 
+function blockItems(data: any): any[] {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  if (Array.isArray(data?.results)) return data.results;
+  return data ? [data] : [];
+}
+
+function blockUrl(item: any) {
+  return typeof item === 'string' ? item : item?.url || item?.src || item?.fileUrl || '';
+}
+
+function suggestionText(item: any) {
+  return typeof item === 'string' ? item : item?.text || item?.label || item?.content || '';
+}
+
+function useSuggestion(item: any) {
+  inputText.value = suggestionText(item);
+}
+
 // Auto-connect on mount and when agentType/projectId/scriptId changes
 onMounted(() => {
   connect();
@@ -322,6 +352,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
         </a-dropdown>
       </div>
     </div>
+    <div v-if="restoredNotice" class="restored-notice">✓ 已恢复会话</div>
 
     <!-- Messages area -->
     <div ref="chatContainer" class="chat-messages">
@@ -397,6 +428,27 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
               </div>
             </div>
           </details>
+
+          <div v-else-if="block.type === 'image'" class="content-images">
+            <a v-for="(item, index) in blockItems(block.data)" :key="index" :href="blockUrl(item)" target="_blank" rel="noreferrer">
+              <img :src="blockUrl(item)" :alt="item?.name || `生成图片 ${index + 1}`" />
+            </a>
+          </div>
+
+          <div v-else-if="block.type === 'attachment'" class="content-attachments">
+            <a v-for="(item, index) in blockItems(block.data)" :key="index" :href="blockUrl(item)" target="_blank" rel="noreferrer">
+              <span>📎</span><span>{{ item?.name || item?.filename || `附件 ${index + 1}` }}</span><small>{{ item?.size || item?.mimeType || '' }}</small>
+            </a>
+          </div>
+
+          <div v-else-if="block.type === 'suggestion'" class="content-suggestions">
+            <button v-for="(item, index) in blockItems(block.data)" :key="index" type="button" @click="useSuggestion(item)">{{ suggestionText(item) }}</button>
+          </div>
+
+          <div v-else-if="block.type === 'search'" class="content-search">
+            <b>搜索结果</b>
+            <a v-for="(item, index) in blockItems(block.data)" :key="index" :href="blockUrl(item)" target="_blank" rel="noreferrer">{{ item?.title || item?.name || blockUrl(item) }}</a>
+          </div>
         </div>
 
         <!-- Status indicator -->
@@ -405,6 +457,10 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
         </div>
         <div v-else-if="msg.status === 'error'" class="message-error">
           {{ (msg as any).ext?.error || '执行出错' }}
+        </div>
+        <div v-if="msg.role === 'assistant' && msg.status === 'complete'" class="message-rating">
+          <button :class="{ active: ratings[msg.id] === 'good' }" type="button" title="有帮助" @click="ratings[msg.id] = ratings[msg.id] === 'good' ? undefined : 'good'">👍</button>
+          <button :class="{ active: ratings[msg.id] === 'bad' }" type="button" title="需要改进" @click="ratings[msg.id] = ratings[msg.id] === 'bad' ? undefined : 'bad'">👎</button>
         </div>
       </div>
     </div>
@@ -456,6 +512,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   background: #fff;
   border-bottom: 1px solid #f0f0f0;
 }
+.restored-notice { padding: 7px 12px; color: #237804; font-size: 12px; text-align: center; background: #f6ffed; border-bottom: 1px solid #d9f7be; }
 .connection-status.connected .status-dot { background: #52c41a; }
 .connection-status.connecting .status-dot { background: #faad14; }
 .status-dot {
@@ -516,6 +573,11 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
 .message-time { color: #bfbfbf; }
 
 .content-block { margin-top: 4px; }
+.content-images { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); }.content-images img { display: block; width: 100%; max-height: 220px; border-radius: 9px; object-fit: cover; }
+.content-attachments { display: grid; gap: 6px; }.content-attachments a { display: grid; align-items: center; padding: 9px 10px; border: 1px solid #e8e8e8; border-radius: 9px; color: inherit; background: #fafafa; grid-template-columns: 24px minmax(0, 1fr) auto; }.content-attachments small { color: #999; }
+.content-suggestions { display: flex; flex-wrap: wrap; gap: 7px; }.content-suggestions button { padding: 6px 11px; border: 1px solid #d9d9d9; border-radius: 999px; color: #333; background: #fff; cursor: pointer; }.content-suggestions button:hover { border-color: #171717; }
+.content-search { display: grid; gap: 5px; padding: 10px; border-left: 3px solid #171717; background: #fafafa; }.content-search a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-rating { display: flex; justify-content: flex-end; gap: 3px; margin-top: 5px; }.message-rating button { padding: 2px 5px; border: 0; border-radius: 6px; opacity: .45; background: transparent; cursor: pointer; }.message-rating button:hover, .message-rating button.active { opacity: 1; background: #f0f0f0; }
 
 .content-text {
   word-break: break-word;
