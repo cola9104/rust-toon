@@ -14,7 +14,20 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 17);
+    assert_eq!(applied, 18);
+
+    let script_name_is_unique: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname='toonflow'
+             AND tablename='scripts'
+             AND indexname='uq_toonflow_scripts_project_name'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect project script name uniqueness");
+    assert!(script_name_is_unique);
 
     let appearance_age_stage_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='toonflow' AND table_name='character_appearances' AND column_name='age_stage')",

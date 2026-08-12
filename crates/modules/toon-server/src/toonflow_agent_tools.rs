@@ -403,15 +403,21 @@ pub(crate) async fn execute_inner(
                     id
                 } else {
                     let id = timestamp * 1000 + index as i64;
-                    sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time) VALUES($1,$2,$3,$4,$5)")
-                        .bind(id)
-                        .bind(name)
-                        .bind(content)
-                        .bind(request.project_id)
-                        .bind(timestamp)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|_| AppError::internal("failed to save generated script"))?;
+                    let id: i64 = sqlx::query_scalar(
+                        "INSERT INTO toonflow.scripts(id,name,content,project_id,create_time)
+                         VALUES($1,$2,$3,$4,$5)
+                         ON CONFLICT (project_id,name) DO UPDATE
+                         SET content=EXCLUDED.content,extract_state=NULL,error_reason=NULL
+                         RETURNING id",
+                    )
+                    .bind(id)
+                    .bind(name)
+                    .bind(content)
+                    .bind(request.project_id)
+                    .bind(timestamp)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to save generated script"))?;
                     id
                 };
                 saved.push(json!({"id":id,"name":name}));

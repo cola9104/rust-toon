@@ -150,10 +150,13 @@ impl DouBaoMediaProvider {
                 .json(&Self::video_body(config, payload)?),
         )
         .await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        let (status, value) = super::response_json(response, "Seedance 视频任务创建失败").await?;
         if !status.is_success() {
-            return Err(super::api_error(&value, "Seedance 视频任务创建失败"));
+            return Err(super::upstream_error(
+                status,
+                &value,
+                "Seedance 视频任务创建失败",
+            ));
         }
         Self::response(value, None)
     }
@@ -175,10 +178,13 @@ impl DouBaoMediaProvider {
                 .bearer_auth(config.api_key.trim_start_matches("Bearer ")),
         )
         .await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        let (status, value) = super::response_json(response, "Seedance 视频任务查询失败").await?;
         if !status.is_success() {
-            return Err(super::api_error(&value, "Seedance 视频任务查询失败"));
+            return Err(super::upstream_error(
+                status,
+                &value,
+                "Seedance 视频任务查询失败",
+            ));
         }
         Self::response(value, Some(task_id))
     }

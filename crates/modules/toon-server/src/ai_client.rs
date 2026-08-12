@@ -4,6 +4,23 @@ use std::sync::atomic::{AtomicI64, Ordering};
 
 static TASK_SEQUENCE: AtomicI64 = AtomicI64::new(0);
 
+fn normalized_app_error(error: rust_toon_framework_web::AppError) -> String {
+    if let Some(data) = error.data()
+        && data.get("code").is_some()
+        && data.get("category").is_some()
+    {
+        return data.to_string();
+    }
+    serde_json::json!({
+        "code": format!("AI_REQUEST_{}", error.code()),
+        "category": if error.status().is_server_error() { "internal" } else { "request" },
+        "message": error.message(),
+        "status": error.status().as_u16(),
+        "retryable": error.status().is_server_error(),
+    })
+    .to_string()
+}
+
 fn task_id() -> i64 {
     chrono::Utc::now().timestamp_millis() * 1000
         + TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed) % 1000
@@ -108,7 +125,7 @@ pub async fn text_tools(
                 (tokens > 0).then_some(tokens as u32),
             )
             .await
-            .map_err(|error| format!("{error:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }
@@ -131,7 +148,7 @@ pub async fn project_text_tools(
                 (tokens > 0).then_some(tokens as u32),
             )
             .await
-            .map_err(|error| format!("{error:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }
@@ -170,7 +187,7 @@ pub async fn project_text(
             .chat(model, chat_request(system, user, temperature, tokens))
             .await
             .map(|response| response.content)
-            .map_err(|error| format!("{error:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }
@@ -182,7 +199,7 @@ pub async fn text(pool: &PgPool, key: &str, system: &str, user: &str) -> Result<
             .chat(model, chat_request(system, user, temperature, tokens))
             .await
             .map(|x| x.content)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }
@@ -208,7 +225,7 @@ where
             )
             .await
             .map(|x| x.content)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }
@@ -242,7 +259,7 @@ pub async fn image_with_references(
             {
                 Ok(response) => return Ok(response.url),
                 Err(error) => {
-                    last_error = format!("{error:?}");
+                    last_error = normalized_app_error(error);
                     if attempt == 3 || !is_transient_model_error(&last_error) {
                         break;
                     }
@@ -277,7 +294,7 @@ pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<St
     let config = rust_toon_ai_server::AiModelFactory::new(pool.clone())
         .config(model_id)
         .await
-        .map_err(|error| format!("{error:?}"))?;
+        .map_err(normalized_app_error)?;
     let capabilities = config.capabilities();
     let mode = payload
         .get("mode")
@@ -318,7 +335,7 @@ async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Resul
     let response = factory
         .video(model_id, payload)
         .await
-        .map_err(|e| format!("{e:?}"))?;
+        .map_err(normalized_app_error)?;
     if !response.url.is_empty() {
         return Ok(response.url);
     }
@@ -340,7 +357,7 @@ async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Resul
         let result = factory
             .poll_video(model_id, &task_id)
             .await
-            .map_err(|e| format!("{e:?}"))?;
+            .map_err(normalized_app_error)?;
         if !result.url.is_empty() {
             return Ok(result.url);
         }
@@ -389,7 +406,7 @@ pub async fn speech(
             )
             .await
             .map(|x| x.url)
-            .map_err(|e| format!("{e:?}"))
+            .map_err(normalized_app_error)
     })
     .await
 }

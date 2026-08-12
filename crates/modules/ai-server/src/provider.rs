@@ -5,7 +5,91 @@ use rust_toon_ai_api::{
     ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageRequest, MediaResponse,
     ModelConfig, SpeechRequest,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderError {
+    pub code: String,
+    pub category: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_data: Option<Value>,
+    pub retryable: bool,
+}
+
+impl ProviderError {
+    fn encoded(self) -> String {
+        serde_json::to_string(&self).unwrap_or(self.message)
+    }
+}
+
+pub(crate) fn provider_app_error(error: String) -> rust_toon_framework_web::AppError {
+    if let Ok(details) = serde_json::from_str::<ProviderError>(&error) {
+        let message = details.message.clone();
+        return rust_toon_framework_web::AppError::new(
+            axum::http::StatusCode::BAD_GATEWAY,
+            502,
+            message,
+        )
+        .with_data(serde_json::to_value(details).unwrap_or(Value::Null));
+    }
+    rust_toon_framework_web::AppError::bad_request(error)
+}
+
+fn truncate(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn transport_error(error: &reqwest::Error) -> String {
+    let (code, message, retryable) = if error.is_timeout() {
+        ("AI_UPSTREAM_TIMEOUT", "AI 服务响应超时", true)
+    } else if error.is_connect() {
+        ("AI_UPSTREAM_UNAVAILABLE", "无法连接 AI 服务", true)
+    } else {
+        ("AI_UPSTREAM_TRANSPORT", "AI 服务网络请求失败", false)
+    };
+    ProviderError {
+        code: code.into(),
+        category: "transport".into(),
+        message: message.into(),
+        status: error.status().map(|status| status.as_u16()),
+        response_data: Some(json!({"summary": truncate(&error.to_string(), 1000)})),
+        retryable,
+    }
+    .encoded()
+}
+
+async fn response_json(
+    response: reqwest::Response,
+    fallback: &str,
+) -> Result<(reqwest::StatusCode, Value), String> {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|error| transport_error(&error))?;
+    match serde_json::from_str(&body) {
+        Ok(value) => Ok((status, value)),
+        Err(_) if status.is_success() => Err(ProviderError {
+            code: "AI_INVALID_RESPONSE".into(),
+            category: "response".into(),
+            message: format!("{fallback}：上游返回了无法解析的响应"),
+            status: Some(status.as_u16()),
+            response_data: Some(json!({"summary": truncate(&body, 1000)})),
+            retryable: false,
+        }
+        .encoded()),
+        Err(_) => Err(upstream_error(
+            status,
+            &Value::String(truncate(&body, 1000)),
+            fallback,
+        )),
+    }
+}
 
 fn request_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(
@@ -42,11 +126,19 @@ pub(crate) async fn send_with_retry(
             Ok(response) if response.status().is_server_error() && attempt < 2 => {}
             Ok(response) => return Ok(response),
             Err(error) if (error.is_connect() || error.is_timeout()) && attempt < 2 => {}
-            Err(error) => return Err(error.to_string()),
+            Err(error) => return Err(transport_error(&error)),
         }
         tokio::time::sleep(std::time::Duration::from_millis(250 * (1 << attempt))).await;
     }
-    Err("AI 请求重试耗尽".into())
+    Err(ProviderError {
+        code: "AI_UPSTREAM_RETRY_EXHAUSTED".into(),
+        category: "transport".into(),
+        message: "AI 服务暂时不可用，请稍后重试".into(),
+        status: None,
+        response_data: None,
+        retryable: true,
+    }
+    .encoded())
 }
 
 mod anthropic;
@@ -128,10 +220,9 @@ impl OpenAiCompatibleProvider {
             }
         }
         let response = send_with_retry(builder).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = response_json(response, "模型工具请求失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "模型工具请求失败"));
+            return Err(upstream_error(status, &value, "模型工具请求失败"));
         }
         Ok(value)
     }
@@ -161,10 +252,9 @@ impl OpenAiCompatibleProvider {
             };
         }
         let response = send_with_retry(builder).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = response_json(response, "模型请求失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "模型请求失败"));
+            return Err(upstream_error(status, &value, "模型请求失败"));
         }
         let content = value
             .pointer("/choices/0/message/content")
@@ -211,17 +301,19 @@ impl OpenAiCompatibleProvider {
             }
         }
         let response = send_with_retry(builder).await?;
-        if !response.status().is_success() {
-            return Err(response
-                .text()
-                .await
-                .unwrap_or_else(|_| "模型请求失败".into()));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(upstream_error(status, &value, "模型请求失败"));
         }
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
         while let Some(chunk) = stream.next().await {
-            buffer.push_str(&String::from_utf8_lossy(&chunk.map_err(|e| e.to_string())?));
+            buffer.push_str(&String::from_utf8_lossy(
+                &chunk.map_err(|error| transport_error(&error))?,
+            ));
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].trim().to_string();
                 buffer.drain(..=pos);
@@ -303,13 +395,10 @@ impl OpenAiCompatibleProvider {
         if !config.api_key.is_empty() {
             image_request = image_request.bearer_auth(config.api_key.trim_start_matches("Bearer "));
         }
-        let response = send_with_retry(image_request.json(&body))
-            .await
-            .map_err(|error| format!("图片服务连接失败: {error}"))?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        let response = send_with_retry(image_request.json(&body)).await?;
+        let (status, value) = response_json(response, "图片生成失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "图片生成失败"));
+            return Err(upstream_error(status, &value, "图片生成失败"));
         }
         let url = value
             .pointer("/data/0/url")
@@ -444,10 +533,9 @@ impl OpenAiCompatibleProvider {
             request = request.json(&body);
         }
         let response = send_with_retry(request).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = response_json(response, operation).await?;
         if !status.is_success() {
-            return Err(api_error(&value, operation));
+            return Err(upstream_error(status, &value, operation));
         }
         Ok(value)
     }
@@ -463,10 +551,9 @@ impl OpenAiCompatibleProvider {
             .unwrap_or("/videos/generations");
         payload["model"] = json!(config.model);
         let response = send_with_retry(self.request(config, path).json(&payload)).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        let (status, value) = response_json(response, "视频生成失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "视频生成失败"));
+            return Err(upstream_error(status, &value, "视频生成失败"));
         }
         let url = value
             .get("url")
@@ -501,10 +588,9 @@ impl OpenAiCompatibleProvider {
             .unwrap_or("/music/generations");
         payload["model"] = json!(config.model);
         let response = send_with_retry(self.request(config, path).json(&payload)).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = response_json(response, "音乐生成失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "音乐生成失败"));
+            return Err(upstream_error(status, &value, "音乐生成失败"));
         }
         let url = value
             .get("audio_url")
@@ -553,10 +639,9 @@ impl OpenAiCompatibleProvider {
             }
         }
         let response = send_with_retry(request).await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = response_json(response, "音乐任务查询失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "音乐任务查询失败"));
+            return Err(upstream_error(status, &value, "音乐任务查询失败"));
         }
         let url = value
             .get("audio_url")
@@ -591,9 +676,14 @@ impl OpenAiCompatibleProvider {
             .and_then(|value| value.to_str().ok())
             .unwrap_or("audio/mpeg")
             .to_string();
-        let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| transport_error(&error))?;
         if !status.is_success() {
-            return Err(String::from_utf8_lossy(&bytes).into_owned());
+            let body = String::from_utf8_lossy(&bytes).into_owned();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(upstream_error(status, &value, "语音生成失败"));
         }
         Ok(MediaResponse {
             url: format!("data:{content_type};base64,{}", STANDARD.encode(bytes)),
@@ -616,10 +706,9 @@ impl OpenAiCompatibleProvider {
                 .json(&json!({"model":config.model,"input":request.inputs})),
         )
         .await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|error| error.to_string())?;
+        let (status, value) = response_json(response, "Embedding 请求失败").await?;
         if !status.is_success() {
-            return Err(api_error(&value, "Embedding 请求失败"));
+            return Err(upstream_error(status, &value, "Embedding 请求失败"));
         }
         let embeddings = value
             .get("data")
@@ -659,21 +748,32 @@ impl OpenAiCompatibleProvider {
             .await
     }
 }
-fn api_error(value: &Value, fallback: &str) -> String {
-    if let Some(message) = value
+pub(super) fn upstream_error(status: reqwest::StatusCode, value: &Value, fallback: &str) -> String {
+    let upstream_message = value
         .pointer("/error/message")
         .and_then(Value::as_str)
         .or_else(|| value.get("message").and_then(Value::as_str))
-    {
-        return message.to_string();
+        .unwrap_or(fallback)
+        .to_string();
+    let message = match status.as_u16() {
+        401 | 403 => "AI 服务认证失败，请检查模型密钥与权限".to_string(),
+        408 | 504 => "AI 服务响应超时，请稍后重试".to_string(),
+        429 => "AI 服务请求过于频繁，请稍后重试".to_string(),
+        500..=599 => "AI 服务暂时不可用，请稍后重试".to_string(),
+        _ => upstream_message.clone(),
+    };
+    ProviderError {
+        code: format!("AI_UPSTREAM_HTTP_{}", status.as_u16()),
+        category: "upstream".into(),
+        message,
+        status: Some(status.as_u16()),
+        response_data: Some(json!({
+            "message": upstream_message,
+            "summary": truncate(&value.to_string(), 1000)
+        })),
+        retryable: status.is_server_error() || status.as_u16() == 429,
     }
-    let body = value.to_string();
-    let summary = body.chars().take(500).collect::<String>();
-    if summary == "null" || summary == "{}" {
-        fallback.to_string()
-    } else {
-        format!("{fallback}：{summary}")
-    }
+    .encoded()
 }
 
 #[async_trait]
@@ -685,5 +785,42 @@ impl ChatProvider for OpenAiCompatibleProvider {
     ) -> Result<ChatResponse, String> {
         self.chat_with_header(config, request, "authorization")
             .await
+    }
+}
+
+#[cfg(test)]
+mod structured_error_tests {
+    use super::{ProviderError, provider_app_error, upstream_error};
+    use reqwest::StatusCode;
+    use serde_json::json;
+
+    #[test]
+    fn preserves_upstream_status_and_response_summary() {
+        let encoded = upstream_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            &json!({"error":{"message":"quota exceeded"}}),
+            "模型请求失败",
+        );
+        let error: ProviderError = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(error.code, "AI_UPSTREAM_HTTP_429");
+        assert_eq!(error.status, Some(429));
+        assert!(error.retryable);
+        assert_eq!(error.message, "AI 服务请求过于频繁，请稍后重试");
+        assert_eq!(
+            error.response_data.unwrap()["message"],
+            json!("quota exceeded")
+        );
+    }
+
+    #[test]
+    fn maps_provider_details_into_http_error_data() {
+        let encoded = upstream_error(
+            StatusCode::UNAUTHORIZED,
+            &json!({"message":"invalid token"}),
+            "模型请求失败",
+        );
+        let error = provider_app_error(encoded);
+        assert_eq!(error.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(error.data().unwrap()["status"], json!(401));
     }
 }

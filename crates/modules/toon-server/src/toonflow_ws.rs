@@ -62,6 +62,75 @@ fn uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+fn normalized_error(error: &str) -> Value {
+    let Ok(mut details) = serde_json::from_str::<Value>(error) else {
+        return json!({
+            "error": error,
+            "errorCode": "AGENT_EXECUTION_FAILED",
+            "errorCategory": "agent"
+        });
+    };
+    let message = details
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("AI 服务请求失败")
+        .to_string();
+    let code = details
+        .get("code")
+        .cloned()
+        .unwrap_or_else(|| json!("AI_REQUEST_FAILED"));
+    let category = details
+        .get("category")
+        .cloned()
+        .unwrap_or_else(|| json!("unknown"));
+    let Some(object) = details.as_object_mut() else {
+        return json!({ "error": message, "errorCode": code, "errorCategory": category });
+    };
+    object.insert("error".into(), json!(message));
+    object.insert("errorCode".into(), code);
+    object.insert("errorCategory".into(), category);
+    details
+}
+
+fn friendly_error(error: &str) -> String {
+    normalized_error(error)
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or(error)
+        .to_string()
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::{friendly_error, normalized_error};
+    use serde_json::json;
+
+    #[test]
+    fn maps_structured_ai_errors_without_breaking_legacy_error_field() {
+        let source = json!({
+            "code":"AI_UPSTREAM_HTTP_429",
+            "category":"upstream",
+            "message":"AI 服务请求过于频繁，请稍后重试",
+            "status":429,
+            "responseData":{"summary":"quota exceeded"},
+            "retryable":true
+        })
+        .to_string();
+        let result = normalized_error(&source);
+        assert_eq!(result["error"], json!("AI 服务请求过于频繁，请稍后重试"));
+        assert_eq!(result["errorCode"], json!("AI_UPSTREAM_HTTP_429"));
+        assert_eq!(result["status"], json!(429));
+        assert_eq!(friendly_error(&source), "AI 服务请求过于频繁，请稍后重试");
+    }
+
+    #[test]
+    fn keeps_plain_agent_errors_compatible() {
+        let result = normalized_error("工具执行失败");
+        assert_eq!(result["error"], json!("工具执行失败"));
+        assert_eq!(result["errorCategory"], json!("agent"));
+    }
+}
+
 /// Shared sender that agent execution uses to push events to the WebSocket.
 #[derive(Clone)]
 pub struct WsEmitter {
@@ -98,7 +167,7 @@ impl WsEmitter {
             "data": { "id": id, "status": status }
         });
         if let Some(err) = error {
-            payload["data"]["ext"] = json!({ "error": err });
+            payload["data"]["ext"] = normalized_error(err);
         }
         self.send_json(&payload);
     }
@@ -501,10 +570,11 @@ async fn handle_socket(
                             exec_emitter.update_message(&exec_msg_id, "complete", None);
                         }
                         Err(error) => {
+                            let friendly = friendly_error(&error);
                             exec_emitter.text_delta(
                                 &exec_msg_id,
                                 &exec_text_cid,
-                                &format!("\n\n错误：{error}"),
+                                &format!("\n\n错误：{friendly}"),
                             );
                             exec_emitter.update_message(&exec_msg_id, "error", Some(&error));
                         }

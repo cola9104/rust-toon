@@ -59,14 +59,9 @@ impl ChatProvider for GeminiProvider {
                 .json(&body(request)),
         )
         .await?;
-        let status = response.status();
-        let value: Value = response.json().await.map_err(|e| e.to_string())?;
+        let (status, value) = super::response_json(response, "Gemini 请求失败").await?;
         if !status.is_success() {
-            return Err(value
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("Gemini 请求失败")
-                .into());
+            return Err(super::upstream_error(status, &value, "Gemini 请求失败"));
         }
         let content = extract(&value);
         if content.is_empty() {
@@ -99,17 +94,19 @@ impl GeminiProvider {
                 .json(&body(request)),
         )
         .await?;
-        if !response.status().is_success() {
-            return Err(response
-                .text()
-                .await
-                .unwrap_or_else(|_| "Gemini 请求失败".into()));
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(super::upstream_error(status, &value, "Gemini 请求失败"));
         }
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
         while let Some(chunk) = stream.next().await {
-            buffer.push_str(&String::from_utf8_lossy(&chunk.map_err(|e| e.to_string())?));
+            buffer.push_str(&String::from_utf8_lossy(
+                &chunk.map_err(|error| super::transport_error(&error))?,
+            ));
             while let Some(pos) = buffer.find('\n') {
                 let line = buffer[..pos].trim().to_string();
                 buffer.drain(..=pos);

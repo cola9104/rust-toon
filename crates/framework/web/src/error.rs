@@ -1,14 +1,16 @@
 use axum::{Json, http::StatusCode, response::IntoResponse};
 use rust_toon_framework_common::ApiResponse;
 use serde::Serialize;
+use serde_json::Value;
 
-pub type ErrorBody = ApiResponse<()>;
+pub type ErrorBody = ApiResponse<Value>;
 
 #[derive(Debug)]
 pub struct AppError {
     status: StatusCode,
     code: u16,
     message: String,
+    data: Option<Value>,
 }
 
 impl AppError {
@@ -17,7 +19,29 @@ impl AppError {
             status,
             code,
             message: message.into(),
+            data: None,
         }
+    }
+
+    pub fn with_data(mut self, data: Value) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    pub fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub fn code(&self) -> u16 {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    pub fn data(&self) -> Option<&Value> {
+        self.data.as_ref()
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -57,7 +81,7 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let body = ErrorBody {
             code: self.code,
-            data: (),
+            data: self.data.unwrap_or(Value::Null),
             message: self.message,
         };
         (self.status, Json(body)).into_response()
@@ -71,7 +95,7 @@ impl Serialize for AppError {
     {
         ErrorBody {
             code: self.code,
-            data: (),
+            data: self.data.clone().unwrap_or(Value::Null),
             message: self.message.clone(),
         }
         .serialize(serializer)

@@ -1,6 +1,6 @@
 use crate::provider::{
     AnthropicProvider, AzureOpenAiProvider, ChatProvider, DouBaoMediaProvider, GeminiProvider,
-    OpenAiCompatibleProvider,
+    OpenAiCompatibleProvider, provider_app_error,
 };
 use rust_toon_ai_api::{
     AiModelType, AiPlatform, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -92,7 +92,7 @@ impl AiModelFactory {
         provider
             .chat(&config, &request)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn chat_tools(
         &self,
@@ -130,7 +130,7 @@ impl AiModelFactory {
                 OpenAiCompatibleProvider
                     .raw_chat_with_header(&azure, body, "api-key")
                     .await
-                    .map_err(AppError::bad_request)
+                    .map_err(provider_app_error)
             }
             AiPlatform::OpenAI
             | AiPlatform::TongYi
@@ -150,7 +150,7 @@ impl AiModelFactory {
             | AiPlatform::OpenAICompatible => OpenAiCompatibleProvider
                 .raw_chat_with_header(&config, body, "authorization")
                 .await
-                .map_err(AppError::bad_request),
+                .map_err(provider_app_error),
             _ => Err(AppError::bad_request(format!(
                 "平台 {} 暂不支持工具调用",
                 config.platform
@@ -196,19 +196,19 @@ impl AiModelFactory {
             | AiPlatform::OpenAICompatible => OpenAiCompatibleProvider
                 .chat_stream(&config, &request, on_delta)
                 .await
-                .map_err(AppError::bad_request),
+                .map_err(provider_app_error),
             AiPlatform::Anthropic => AnthropicProvider
                 .chat_stream(&config, &request, on_delta)
                 .await
-                .map_err(AppError::bad_request),
+                .map_err(provider_app_error),
             AiPlatform::Gemini => GeminiProvider
                 .chat_stream(&config, &request, on_delta)
                 .await
-                .map_err(AppError::bad_request),
+                .map_err(provider_app_error),
             AiPlatform::AzureOpenAI => AzureOpenAiProvider
                 .chat_stream(&config, &request, on_delta)
                 .await
-                .map_err(AppError::bad_request),
+                .map_err(provider_app_error),
             _ => Err(AppError::bad_request(format!(
                 "platform {} streaming provider is not implemented",
                 config.platform
@@ -220,7 +220,7 @@ impl AiModelFactory {
         OpenAiCompatibleProvider
             .image(&config, &request)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn midjourney_imagine(
         &self,
@@ -234,7 +234,7 @@ impl AiModelFactory {
         OpenAiCompatibleProvider
             .midjourney_imagine(&config, payload)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn midjourney_action(
         &self,
@@ -248,7 +248,7 @@ impl AiModelFactory {
         OpenAiCompatibleProvider
             .midjourney_action(&config, payload)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn poll_midjourney(&self, id: i64, task_id: &str) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Image).await?;
@@ -258,7 +258,7 @@ impl AiModelFactory {
         OpenAiCompatibleProvider
             .poll_midjourney(&config, task_id)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn video(&self, id: i64, payload: Value) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Video).await?;
@@ -266,12 +266,12 @@ impl AiModelFactory {
             return DouBaoMediaProvider
                 .video(&config, payload)
                 .await
-                .map_err(AppError::bad_request);
+                .map_err(provider_app_error);
         }
         OpenAiCompatibleProvider
             .video(&config, payload)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn poll_video(&self, id: i64, task_id: &str) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Video).await?;
@@ -281,28 +281,28 @@ impl AiModelFactory {
         DouBaoMediaProvider
             .poll_video(&config, task_id)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn music(&self, id: i64, payload: Value) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Music).await?;
         OpenAiCompatibleProvider
             .music(&config, payload)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn poll_music(&self, id: i64, task_id: &str) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Music).await?;
         OpenAiCompatibleProvider
             .poll_music(&config, task_id)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn speech(&self, id: i64, request: SpeechRequest) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Speech).await?;
         OpenAiCompatibleProvider
             .speech(&config, &request)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
     pub async fn embedding(
         &self,
@@ -313,7 +313,7 @@ impl AiModelFactory {
         OpenAiCompatibleProvider
             .embedding(&config, &request)
             .await
-            .map_err(AppError::bad_request)
+            .map_err(provider_app_error)
     }
 }
 
