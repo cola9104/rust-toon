@@ -80,6 +80,9 @@ function assetSummary(asset: ToonflowApi.Asset) {
     />
 
     <div v-else class="production-assets-canvas">
+      <div class="production-asset-columns" aria-hidden="true">
+        <span>基础资产</span><i>剧情派生</i><span>衍生资产</span>
+      </div>
       <div v-for="asset in assetRows" :key="asset.id" class="production-asset-row">
         <article class="production-asset-card origin-card">
           <div class="production-asset-cover">
@@ -211,9 +214,9 @@ function assetSummary(asset: ToonflowApi.Asset) {
   --production-link-color: var(--ant-color-primary, #1677ff);
 
   overflow: hidden;
+  background: var(--ant-color-bg-container);
   border: 1px solid var(--ant-color-border-secondary);
   border-radius: 10px;
-  background: var(--ant-color-bg-container);
 }
 
 .production-assets-heading {
@@ -230,24 +233,46 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .production-assets-subtitle {
   margin-top: 2px;
-  color: var(--ant-color-text-tertiary);
   font-size: 12px;
+  color: var(--ant-color-text-tertiary);
 }
 
 .production-assets-canvas {
   max-height: 470px;
-  overflow: auto;
   padding: 18px;
+  overflow: auto;
   background-color: var(--ant-color-fill-quaternary);
   background-image: radial-gradient(var(--ant-color-border) 0.8px, transparent 0.8px);
   background-size: 16px 16px;
 }
 
+.production-asset-columns {
+  position: sticky;
+  top: -18px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: 150px 84px minmax(150px, 1fr);
+  align-items: center;
+  min-width: 440px;
+  padding: 9px 18px;
+  margin: -18px -18px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ant-color-text-secondary);
+  background: color-mix(in srgb, var(--ant-color-bg-container) 94%, transparent);
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+  backdrop-filter: blur(8px);
+}
+
+.production-asset-columns i { font-size: 10px; font-style: normal; color: var(--ant-color-warning); text-align: center; }
+
+.production-asset-columns span:last-child { color: #d46b08; }
+
 .production-asset-row {
   display: flex;
+  align-items: center;
   width: 100%;
   min-width: 100%;
-  align-items: center;
   padding: 10px 0;
 }
 
@@ -256,12 +281,12 @@ function assetSummary(asset: ToonflowApi.Asset) {
 }
 
 .production-asset-card {
-  width: 150px;
   flex: 0 0 150px;
+  width: 150px;
   overflow: hidden;
+  background: var(--ant-color-bg-container);
   border: 1px solid var(--ant-color-border-secondary);
   border-radius: 8px;
-  background: var(--ant-color-bg-container);
   box-shadow: 0 2px 8px rgb(0 0 0 / 6%);
 }
 
@@ -272,6 +297,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .derived-card {
   border-color: color-mix(in srgb, var(--ant-color-warning) 45%, transparent);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--ant-color-warning) 15%, transparent);
 }
 
 .derived-card.no-image {
@@ -298,21 +324,21 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .production-asset-image-placeholder {
   display: flex;
-  height: 100%;
   align-items: center;
   justify-content: center;
+  height: 100%;
   padding: 12px;
-  color: var(--ant-color-text-tertiary);
   font-size: 12px;
+  color: var(--ant-color-text-tertiary);
   text-align: center;
 }
 
 .derived-placeholder {
   height: calc(100% - 16px);
   margin: 8px;
+  background: color-mix(in srgb, var(--ant-color-warning) 6%, var(--ant-color-bg-container));
   border: 1px dashed color-mix(in srgb, var(--ant-color-warning) 55%, transparent);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--ant-color-warning) 6%, var(--ant-color-bg-container));
 }
 
 .production-asset-kind {
@@ -328,22 +354,22 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .production-asset-name {
   overflow: hidden;
+  text-overflow: ellipsis;
   font-size: 13px;
   font-weight: 600;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .production-asset-description {
   display: -webkit-box;
   height: 34px;
-  overflow: hidden;
   margin-top: 4px;
-  color: var(--ant-color-text-tertiary);
+  overflow: hidden;
+  -webkit-line-clamp: 2;
   font-size: 12px;
   line-height: 17px;
+  color: var(--ant-color-text-tertiary);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
 }
 
 .production-asset-description.generating {
@@ -355,36 +381,37 @@ function assetSummary(asset: ToonflowApi.Asset) {
 }
 
 .production-appearance-scenes {
-  overflow: hidden;
   margin-top: 7px;
-  color: var(--ant-color-warning-text);
-  font-size: 11px;
+  overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--ant-color-warning-text);
   white-space: nowrap;
 }
 
 .production-asset-edit,.production-asset-generate {
   width: 100%;
-  margin-top: 7px;
   padding: 3px 6px;
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--ant-color-primary);
+  cursor: pointer;
+  background: var(--ant-color-bg-container);
   border: 1px solid var(--ant-color-border);
   border-radius: 5px;
-  color: var(--ant-color-primary);
-  font-size: 12px;
-  background: var(--ant-color-bg-container);
-  cursor: pointer;
 }
 
 .production-asset-edit:hover,.production-asset-generate:hover {
   border-color: var(--ant-color-primary);
 }
+
 .production-asset-generate { color: #d46b08; }
 
 .production-asset-connector {
   position: relative;
+  flex: 0 0 58px;
   width: 58px;
   min-height: 220px;
-  flex: 0 0 58px;
 }
 
 .production-asset-connector::before {
@@ -393,9 +420,9 @@ function assetSummary(asset: ToonflowApi.Asset) {
   right: 0;
   left: 0;
   height: 2px;
-  border-radius: 2px;
-  background: var(--production-link-color);
   content: '';
+  background: var(--production-link-color);
+  border-radius: 2px;
 }
 
 .production-asset-connector::after {
@@ -404,34 +431,34 @@ function assetSummary(asset: ToonflowApi.Asset) {
   right: 1px;
   width: 8px;
   height: 8px;
+  content: '';
   border-top: 2px solid var(--production-link-color);
   border-right: 2px solid var(--production-link-color);
-  content: '';
   transform: rotate(45deg);
 }
 
 .production-asset-connector > span {
   position: absolute;
-  z-index: 1;
   top: 50%;
   left: 50%;
+  z-index: 1;
   padding: 1px 5px;
-  border: 1px solid color-mix(in srgb, var(--production-link-color) 35%, transparent);
-  border-radius: 10px;
-  background: var(--ant-color-bg-container, #fff);
-  color: var(--production-link-color);
   font-size: 10px;
   line-height: 16px;
-  transform: translate(-50%, -50%);
+  color: var(--production-link-color);
   white-space: nowrap;
+  background: var(--ant-color-bg-container, #fff);
+  border: 1px solid color-mix(in srgb, var(--production-link-color) 35%, transparent);
+  border-radius: 10px;
+  transform: translate(-50%, -50%);
 }
 
 .production-derived-list {
   position: relative;
   display: flex;
-  min-width: 214px;
   flex-direction: column;
   gap: 12px;
+  min-width: 214px;
   padding-left: 34px;
 }
 
@@ -441,16 +468,16 @@ function assetSummary(asset: ToonflowApi.Asset) {
   bottom: 116px;
   left: 0;
   width: 2px;
-  border-radius: 2px;
-  background: var(--production-link-color);
   content: '';
+  background: var(--production-link-color);
+  border-radius: 2px;
 }
 
 .production-derived-node {
   position: relative;
   display: flex;
-  min-height: 220px;
   align-items: center;
+  min-height: 220px;
 }
 
 .production-derived-node::before {
@@ -459,9 +486,9 @@ function assetSummary(asset: ToonflowApi.Asset) {
   left: -34px;
   width: 34px;
   height: 2px;
-  border-radius: 2px;
-  background: var(--production-link-color);
   content: '';
+  background: var(--production-link-color);
+  border-radius: 2px;
 }
 
 .production-derived-node::after {
@@ -470,35 +497,35 @@ function assetSummary(asset: ToonflowApi.Asset) {
   left: -6px;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
-  background: var(--production-link-color);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--production-link-color) 18%, transparent);
   content: '';
+  background: var(--production-link-color);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--production-link-color) 18%, transparent);
 }
 
 .production-no-derived {
   display: flex;
-  width: 180px;
-  min-height: 220px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border: 1px dashed var(--ant-color-border);
-  border-radius: 8px;
+  width: 180px;
+  min-height: 220px;
   color: var(--ant-color-text-secondary);
   background: color-mix(in srgb, var(--ant-color-bg-container) 82%, transparent);
+  border: 1px dashed var(--ant-color-border);
+  border-radius: 8px;
 }
 
 .production-no-derived-icon {
   margin-bottom: 4px;
-  color: var(--ant-color-text-tertiary);
   font-size: 24px;
+  color: var(--ant-color-text-tertiary);
 }
 
 .production-no-derived small {
   margin-top: 4px;
-  color: var(--ant-color-text-tertiary);
   font-size: 11px;
+  color: var(--ant-color-text-tertiary);
 }
 
 @media (max-width: 900px) {
@@ -508,8 +535,8 @@ function assetSummary(asset: ToonflowApi.Asset) {
   }
 
   .production-asset-card {
-    width: 132px;
     flex-basis: 132px;
+    width: 132px;
   }
 }
 </style>
