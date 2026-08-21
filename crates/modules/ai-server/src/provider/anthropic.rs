@@ -138,6 +138,7 @@ impl AnthropicProvider {
         let mut stream = response.bytes_stream();
         let mut buffer = String::new();
         let mut content = String::new();
+        let mut usage = json!({});
         let mut calls: Vec<Value> = Vec::new();
         while let Some(chunk) = stream.next().await {
             buffer.push_str(&String::from_utf8_lossy(
@@ -150,6 +151,9 @@ impl AnthropicProvider {
                     continue;
                 };
                 let event: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+                if let Some(summary) = event.get("usage") {
+                    usage = summary.clone();
+                }
                 match event.get("type").and_then(Value::as_str) {
                     Some("content_block_start") => {
                         if let Some(block) = event
@@ -183,7 +187,9 @@ impl AnthropicProvider {
         if !calls.is_empty() {
             message["tool_calls"] = json!(calls);
         }
-        Ok(json!({"choices":[{"message":message}],"usage":{}}))
+        Ok(
+            json!({"choices":[{"message":message,"finish_reason":if calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":usage}),
+        )
     }
 
     pub async fn chat_stream<F, Fut>(
