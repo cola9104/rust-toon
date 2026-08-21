@@ -2,7 +2,9 @@ use crate::{
     ToonState, ai_client,
     shared::require,
     toonflow_asset_prompt, toonflow_prompt_store,
-    toonflow_storage::{delete_asset_file, image_data_url, persist_remote_image},
+    toonflow_storage::{
+        delete_asset_file, image_data_url, persist_remote_image, record_cleanup_failure,
+    },
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -802,7 +804,9 @@ pub async fn delete_image(
         .await
         .map_err(|_| AppError::internal("failed to commit transaction"))?;
     if let Some(path) = path {
-        let _ = delete_asset_file(&path).await;
+        if let Err(error) = delete_asset_file(&path).await {
+            record_cleanup_failure(&state.pool, &path, "image", Some(req.id), &error).await;
+        }
     }
     Ok(Json(ApiResponse::new(
         json!({"message":"资产图片删除成功"}),

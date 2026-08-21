@@ -243,6 +243,29 @@ pub(crate) async fn delete_asset_file(file_path: &str) -> Result<(), String> {
     }
 }
 
+pub(crate) async fn record_cleanup_failure(
+    pool: &sqlx::PgPool,
+    object_path: &str,
+    resource_type: &str,
+    resource_id: Option<i64>,
+    error: &str,
+) {
+    let id = chrono::Utc::now().timestamp_millis();
+    let _ = sqlx::query(
+        "INSERT INTO toonflow.storage_cleanup_tasks(id,object_path,resource_type,resource_id,error_reason,attempts,state,create_time,update_time)
+         VALUES($1,$2,$3,$4,$5,1,'pending',$6,$6)
+         ON CONFLICT(id) DO NOTHING",
+    )
+    .bind(id)
+    .bind(object_path)
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(error)
+    .bind(id)
+    .execute(pool)
+    .await;
+}
+
 fn asset_image_key(file_path: &str) -> Option<&str> {
     file_path
         .strip_prefix("/toonflow/assets/files/")

@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 26);
+    assert_eq!(applied, 27);
 
     for source_key in ["script_ai_regex", "script_prompt_polish"] {
         let seeded: bool = sqlx::query_scalar(

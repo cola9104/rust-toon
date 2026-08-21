@@ -13,7 +13,7 @@ use crate::{
     ToonState,
     shared::{affected, current_user_id, require},
     toonflow_materials::save_asset_cover_data_url,
-    toonflow_storage::delete_asset_file,
+    toonflow_storage::{delete_asset_file, record_cleanup_failure},
 };
 
 fn now_ms() -> i64 {
@@ -252,7 +252,9 @@ pub async fn delete_project(
         .map_err(|_| AppError::internal("failed to delete toonflow project"))?;
     affected(result.rows_affected(), "project")?;
     for path in paths.into_iter().flatten() {
-        let _ = delete_asset_file(&path).await;
+        if let Err(error) = delete_asset_file(&path).await {
+            record_cleanup_failure(&state.pool, &path, "project", Some(request.id), &error).await;
+        }
     }
     Ok(Json(ApiResponse::with_message((), "删除项目成功")))
 }
@@ -765,7 +767,9 @@ pub async fn delete_scripts(
         .await
         .map_err(|_| AppError::internal("failed to commit script deletion"))?;
     for path in paths.into_iter().flatten() {
-        let _ = delete_asset_file(&path).await;
+        if let Err(error) = delete_asset_file(&path).await {
+            record_cleanup_failure(&state.pool, &path, "script", None, &error).await;
+        }
     }
     Ok(Json(ApiResponse::with_message((), "删除剧本成功")))
 }
