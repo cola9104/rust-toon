@@ -236,12 +236,24 @@ pub async fn delete_project(
     Json(request): Json<IdRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:delete")?;
+    let paths: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT file_path FROM toonflow.images WHERE assets_id IN (SELECT id FROM toonflow.assets WHERE project_id=$1)
+         UNION ALL SELECT file_path FROM toonflow.storyboards WHERE project_id=$1
+         UNION ALL SELECT file_path FROM toonflow.videos WHERE project_id=$1",
+    )
+    .bind(request.id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to collect project files"))?;
     let result = sqlx::query("DELETE FROM toonflow.projects WHERE id = $1")
         .bind(request.id)
         .execute(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to delete toonflow project"))?;
     affected(result.rows_affected(), "project")?;
+    for path in paths.into_iter().flatten() {
+        let _ = delete_asset_file(&path).await;
+    }
     Ok(Json(ApiResponse::with_message((), "删除项目成功")))
 }
 
@@ -720,6 +732,15 @@ pub async fn delete_scripts(
     if request.ids.is_empty() {
         return Err(AppError::bad_request("script ids are required"));
     }
+    let paths: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT file_path FROM toonflow.storyboards WHERE script_id=ANY($1)
+         UNION ALL SELECT file_path FROM toonflow.videos WHERE script_id=ANY($1)
+         UNION ALL SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.image_id=i.id WHERE a.script_id=ANY($1)",
+    )
+    .bind(&request.ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to collect script files"))?;
     let mut tx = state
         .pool
         .begin()
@@ -743,6 +764,9 @@ pub async fn delete_scripts(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit script deletion"))?;
+    for path in paths.into_iter().flatten() {
+        let _ = delete_asset_file(&path).await;
+    }
     Ok(Json(ApiResponse::with_message((), "删除剧本成功")))
 }
 

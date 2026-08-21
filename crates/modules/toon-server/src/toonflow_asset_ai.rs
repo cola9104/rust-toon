@@ -2,7 +2,7 @@ use crate::{
     ToonState, ai_client,
     shared::require,
     toonflow_asset_prompt, toonflow_prompt_store,
-    toonflow_storage::{image_data_url, persist_remote_image},
+    toonflow_storage::{delete_asset_file, image_data_url, persist_remote_image},
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -777,6 +777,12 @@ pub async fn delete_image(
     Json(req): Json<ImageId>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
+    let path: Option<String> =
+        sqlx::query_scalar("SELECT file_path FROM toonflow.images WHERE id=$1")
+            .bind(req.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load image file"))?;
     let mut tx = state
         .pool
         .begin()
@@ -795,6 +801,9 @@ pub async fn delete_image(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit transaction"))?;
+    if let Some(path) = path {
+        let _ = delete_asset_file(&path).await;
+    }
     Ok(Json(ApiResponse::new(
         json!({"message":"资产图片删除成功"}),
     )))
