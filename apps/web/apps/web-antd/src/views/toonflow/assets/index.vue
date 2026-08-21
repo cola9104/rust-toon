@@ -103,6 +103,9 @@ const failedSelectedAssets = computed(() => selectedAssets.value.filter((asset) 
 const selectedVisibleCount = computed(() => filteredAssets.value.filter((asset) => selectedAssetIds.has(asset.id)).length);
 const allVisibleSelected = computed(() => filteredAssets.value.length > 0 && selectedVisibleCount.value === filteredAssets.value.length);
 const someVisibleSelected = computed(() => selectedVisibleCount.value > 0 && !allVisibleSelected.value);
+function imagePath(asset: ToonflowApi.LibraryAsset) {
+  return asset.imageFilePath || asset.imageUrl || (asset as ToonflowApi.Asset & { filePath?: string }).filePath || '';
+}
 
 const assetForm = reactive({
   id: undefined as number | undefined,
@@ -624,9 +627,9 @@ watch(() => route.query.projectId, (value) => {
                   <Checkbox class="asset-selector" :checked="selectedAssetIds.has(item.id)" @change="toggleAsset(item.id, $event.target.checked)" />
                   <div v-if="generatingAssetIds.has(item.id)" class="asset-progress"><span />生成中</div>
                   <Image
-                    v-if="item.imageFilePath && !failedImageIds.has(item.id)"
+                    v-if="imagePath(item) && !failedImageIds.has(item.id)"
                     :alt="item.name"
-                    :src="assetFileUrl(item.imageFilePath)"
+                    :src="assetFileUrl(imagePath(item))"
                     :preview="true"
                     class="asset-thumb"
                     @error="failedImageIds.add(item.id)"
