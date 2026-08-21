@@ -25,6 +25,10 @@ pub(crate) struct WsParams {
     project_id: i64,
     #[serde(rename = "scriptId")]
     script_id: Option<i64>,
+    #[serde(default)]
+    eio: Option<u8>,
+    #[serde(default)]
+    transport: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -135,11 +139,17 @@ mod error_tests {
 #[derive(Clone)]
 pub struct WsEmitter {
     tx: tokio::sync::mpsc::UnboundedSender<Message>,
+    socket_io: bool,
 }
 
 impl WsEmitter {
     fn send_json(&self, value: &Value) {
-        let _ = self.tx.send(Message::Text(value.to_string().into()));
+        let text = if self.socket_io {
+            format!("42[\"toonflow\",{}]", value)
+        } else {
+            value.to_string()
+        };
+        let _ = self.tx.send(Message::Text(text.into()));
     }
 
     /// Create a new message bubble. Returns (message_id, datetime).
@@ -386,6 +396,7 @@ async fn handle_socket(
     _user_id: String,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
+    let socket_io = params.eio.is_some() || params.transport.as_deref() == Some("websocket");
 
     // Create a channel for the emitter
     let (emitter_tx, mut emitter_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
@@ -399,14 +410,28 @@ async fn handle_socket(
         }
     });
 
-    let emitter = WsEmitter { tx: emitter_tx };
+    let emitter = WsEmitter {
+        tx: emitter_tx,
+        socket_io,
+    };
+    if socket_io {
+        let _ = emitter.tx.send(Message::Text(
+            r#"0{"sid":"toonflow","upgrades":[],"pingInterval":30000,"pingTimeout":20000}"#.into(),
+        ));
+        let _ = emitter.tx.send(Message::Text("40".into()));
+    }
     let heartbeat_tx = emitter.tx.clone();
     let heartbeat_handle = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         interval.tick().await;
         loop {
             interval.tick().await;
-            if heartbeat_tx.send(Message::Ping(Vec::new().into())).is_err() {
+            let heartbeat = if socket_io {
+                Message::Text("2".into())
+            } else {
+                Message::Ping(Vec::new().into())
+            };
+            if heartbeat_tx.send(heartbeat).is_err() {
                 break;
             }
         }
@@ -491,11 +516,34 @@ async fn handle_socket(
             Err(_) => break,
         };
 
-        let text = match msg {
+        let mut text = match msg {
             Message::Text(t) => t,
             Message::Close(_) => break,
             _ => continue,
         };
+
+        if socket_io {
+            let raw = text.as_str();
+            if raw == "2" {
+                let _ = emitter.tx.send(Message::Text("3".into()));
+                continue;
+            }
+            if let Some(payload) = raw.strip_prefix("42") {
+                let packet: Value = match serde_json::from_str(payload) {
+                    Ok(value) => value,
+                    Err(_) => continue,
+                };
+                text = packet
+                    .as_array()
+                    .and_then(|items| items.get(1))
+                    .cloned()
+                    .unwrap_or(Value::Null)
+                    .to_string()
+                    .into();
+            } else {
+                continue;
+            }
+        }
 
         // Parse client message
         let client_msg: ClientMessage = match serde_json::from_str(&text) {
