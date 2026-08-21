@@ -268,6 +268,19 @@ pub(crate) async fn execute_inner(
         return Ok(json!({"path":path,"content":content}));
     }
     match (request.agent_type.as_str(), request.tool_name.as_str()) {
+        ("scriptAgent", "get_planData") => {
+            let key = request
+                .arguments
+                .get("key")
+                .and_then(Value::as_str)
+                .unwrap_or("scriptAgent");
+            if key != "scriptAgent" {
+                return Err(AppError::bad_request(
+                    "get_planData 仅支持 scriptAgent 工作区",
+                ));
+            }
+            crate::toonflow_agent_plan::load_plan_data(&state.pool, request.project_id).await
+        }
         ("scriptAgent" | "productionAgent", "deepRetrieve") => {
             let keyword = request
                 .arguments

@@ -60,6 +60,35 @@ async fn scripts(pool: &sqlx::PgPool, project_id: i64) -> Result<Value, AppError
     ))
 }
 
+pub(crate) async fn load_plan_data(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+) -> Result<Value, AppError> {
+    let row: Option<(i64, Value)> = sqlx::query_as(
+        "SELECT id,data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load plan data"))?;
+    let (id, mut data) = if let Some(row) = row {
+        row
+    } else {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time) VALUES($1,NULL,'scriptAgent',$2,$3,$3) RETURNING id",
+        )
+        .bind(project_id)
+        .bind(json!({"storySkeleton":"","adaptationStrategy":""}))
+        .bind(now_ms())
+        .fetch_one(pool)
+        .await
+        .map_err(|_| AppError::internal("failed to create plan data"))?;
+        (id, json!({"storySkeleton":"","adaptationStrategy":""}))
+    };
+    data["script"] = scripts(pool, project_id).await?;
+    Ok(json!({"id": id, "data": data}))
+}
+
 pub async fn get_plan(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -67,15 +96,9 @@ pub async fn get_plan(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:read")?;
     validate_script_agent(&request.agent_type)?;
-    let row:Option<(i64,Value)>=sqlx::query_as("SELECT id,data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key=$2").bind(request.project_id).bind(&request.agent_type).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load plan data"))?;
-    let (id, mut data) = if let Some(row) = row {
-        row
-    } else {
-        let id: i64=sqlx::query_scalar("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,$2,$3,$4,$4) RETURNING id").bind(request.project_id).bind(&request.agent_type).bind(json!({"storySkeleton":"","adaptationStrategy":""})).bind(now_ms()).fetch_one(&state.pool).await.map_err(|_|AppError::internal("failed to create plan data"))?;
-        (id, json!({"storySkeleton":"","adaptationStrategy":""}))
-    };
-    data["script"] = scripts(&state.pool, request.project_id).await?;
-    Ok(Json(ApiResponse::new(json!({"id":id,"data":data}))))
+    Ok(Json(ApiResponse::new(
+        load_plan_data(&state.pool, request.project_id).await?,
+    )))
 }
 
 pub async fn set_plan(

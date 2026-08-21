@@ -385,6 +385,7 @@ fn tool_names(agent_type: &str) -> &'static [&'static str] {
             "get_novel_events",
             "get_novel_text",
             "get_script_content",
+            "get_planData",
             "run_sub_agent_storySkeleton",
             "run_sub_agent_adaptationStrategy",
             "run_sub_agent_script",
@@ -434,6 +435,9 @@ fn tool_def(name: &str) -> Value {
         }
         "get_script_content" => {
             json!({"type":"function","function":{"name":"get_script_content","description":"读取已有剧本内容。用于执行层子Agent读取已生成的剧本。","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"},"description":"剧本ID数组"}},"required":["ids"]}}})
+        }
+        "get_planData" => {
+            json!({"type":"function","function":{"name":"get_planData","description":"读取当前项目的故事骨架、改编策略和已保存剧本工作区数据。","parameters":{"type":"object","properties":{"key":{"type":"string","description":"固定为 scriptAgent"}},"required":["key"]}}})
         }
         "run_sub_agent_storySkeleton" => {
             json!({"type":"function","function":{"name":"run_sub_agent_storySkeleton","description":"派发任务给「编剧」执行层子Agent，进行故事骨架搭建（阶段1）。项目参数确认且章节校验通过后调用。仅需传入prompt参数。完成后必须调用run_supervision_agent审核。","parameters":{"type":"object","properties":{"prompt":{"type":"string","description":"派发给子Agent的执行指令（正文≤100字），需在头部附带【项目配置】"}},"required":["prompt"]}}})
