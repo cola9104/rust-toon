@@ -586,11 +586,19 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_asset_ai::batch_generate_images),
         )
         .route(
+            "/api/production/assets/batchGenerateAssetsImage",
+            post(toonflow_asset_ai::batch_generate_images),
+        )
+        .route(
             "/api/assetsGenerate/retryImageAssets",
             post(toonflow_asset_ai::retry_images),
         )
         .route(
             "/api/assets/pollingImageAssets",
+            post(toonflow_asset_ai::poll_images),
+        )
+        .route(
+            "/api/production/assets/pollingImage",
             post(toonflow_asset_ai::poll_images),
         )
         .route("/api/assets/getImage", post(toonflow_asset_ai::get_images))
@@ -1163,11 +1171,19 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_asset_ai::batch_generate_images),
         )
         .route(
+            "/production/assets/batchGenerateAssetsImage",
+            post(toonflow_asset_ai::batch_generate_images),
+        )
+        .route(
             "/assetsGenerate/retryImageAssets",
             post(toonflow_asset_ai::retry_images),
         )
         .route(
             "/assets/pollingImageAssets",
+            post(toonflow_asset_ai::poll_images),
+        )
+        .route(
+            "/production/assets/pollingImage",
             post(toonflow_asset_ai::poll_images),
         )
         .route(

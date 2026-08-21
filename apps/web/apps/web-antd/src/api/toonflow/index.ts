@@ -159,6 +159,8 @@ export const generateAssetImage = (data: { projectId: number; model: number | st
 export const queueAssetImages = (data: { projectId: number; model: number | string; resolution: string; concurrentCount?: number; items: Array<{ id: number; type: string; name: string; prompt: string; base64?: string }> }) => requestClient.post<{ total: number }>('/assetsGenerate/batchGenerateImageAssets', data);
 export const retryAssetImages = (data: { projectId: number; ids: number[]; concurrentCount?: number }) => requestClient.post<{ total: number; ids: number[] }>('/assetsGenerate/retryImageAssets', data);
 export const pollAssetImages = (ids: number[]) => requestClient.post<Array<{ id: number; state: string; filePath?: string; errorReason?: string; imageId: number }>>('/assets/pollingImageAssets', { ids });
+export const batchGenerateAssetsImage = queueAssetImages;
+export const pollingImage = pollAssetImages;
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
 export const getMaterialData = (projectId: number, scriptId?: number) => requestClient.post<{ data: any[]; video: any[] }>('/assets/getMaterialData', { projectId, scriptId });
