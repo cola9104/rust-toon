@@ -424,6 +424,8 @@ async fn handle_socket(
 
     // Abort controller
     let (mut abort_tx, _abort_rx) = watch::channel(false);
+    let mut active_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut active_message: Option<(String, String)> = None;
 
     // Restore historical messages as chat bubbles
     let memories: Vec<toonflow_agents::MemoryRow> = sqlx::query_as(
@@ -522,6 +524,22 @@ async fn handle_socket(
                 let (msg_id, _msg_dt) = emitter.new_message(agent_name, "assistant");
                 let text_cid = emitter.add_content(&msg_id, "text", &json!(""));
 
+                // Abort an in-flight HTTP/LLM request immediately. The watch
+                // signal remains useful for cooperative cancellation inside
+                // tool loops, while JoinHandle::abort handles the await that
+                // is currently blocked on the upstream request.
+                if let Some(task) = active_task.take() {
+                    task.abort();
+                }
+                if let Some((old_message, old_content)) = active_message.take() {
+                    emitter.update_message(
+                        &old_message,
+                        "canceled",
+                        Some("用户开始了新的 Agent 运行"),
+                    );
+                    emitter.text_complete(&old_message, &old_content);
+                }
+
                 // Build the agent request
                 let request = toonflow_agents::ChatRequest {
                     agent_type: agent_type.clone(),
@@ -548,7 +566,7 @@ async fn handle_socket(
                 let exec_text_cid = text_cid.clone();
                 let exec_abort_rx = new_abort_rx;
 
-                tokio::spawn(async move {
+                active_task = Some(tokio::spawn(async move {
                     let result = toonflow_agents::run_with_emitter(
                         &exec_state,
                         &request,
@@ -575,11 +593,19 @@ async fn handle_socket(
                             exec_emitter.update_message(&exec_msg_id, "error", Some(&error));
                         }
                     }
-                });
+                }));
+                active_message = Some((msg_id, text_cid));
             }
 
             ClientMessage::Stop => {
                 let _ = abort_tx.send(true);
+                if let Some(task) = active_task.take() {
+                    task.abort();
+                }
+                if let Some((message_id, content_id)) = active_message.take() {
+                    emitter.text_complete(&message_id, &content_id);
+                    emitter.update_message(&message_id, "canceled", Some("用户已中止"));
+                }
             }
 
             ClientMessage::ThinkConfig {
