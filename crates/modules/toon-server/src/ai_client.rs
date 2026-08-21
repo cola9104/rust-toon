@@ -221,6 +221,25 @@ pub async fn project_text(
     .await
 }
 
+/// Executes a project-scoped text request without creating a second generic
+/// `text` task. Domain workflows should create their own descriptive task
+/// (for example, chapter event extraction) and use this helper for the nested
+/// model call.
+pub async fn project_text_untracked(
+    pool: &PgPool,
+    key: &str,
+    project_id: i64,
+    system: &str,
+    user: &str,
+) -> Result<String, String> {
+    let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
+    rust_toon_ai_server::AiModelFactory::new(pool.clone())
+        .chat(model, chat_request(system, user, temperature, tokens))
+        .await
+        .map(|response| response.content)
+        .map_err(normalized_app_error)
+}
+
 pub async fn text(pool: &PgPool, key: &str, system: &str, user: &str) -> Result<String, String> {
     let (model, temperature, tokens) = agent_model(pool, key).await?;
     recorded(pool, "text", &model.to_string(), key, async move {
