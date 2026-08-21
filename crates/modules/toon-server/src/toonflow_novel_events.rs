@@ -63,6 +63,10 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     };
     let task_id = chrono::Utc::now().timestamp_millis() * 1_000_000 + id % 1_000_000;
     let task_input = json!({"projectId":project_id,"novelId":id,"chapter":title});
+    let task_model = ai_client::project_model_id(pool, "universalAi", project_id)
+        .await
+        .map(|model| model.to_string())
+        .unwrap_or_else(|_| "universalAi".to_string());
     // addNovel 会自动触发提取，旧客户端也可能紧接着调用 generate。用章节级
     // advisory lock + running 检查保证同一章节不会并发创建两个任务。
     let mut task_tx = match pool.begin().await {
@@ -88,10 +92,11 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     if already_running.is_some() {
         return;
     }
-    if sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5,$6,0,1) ON CONFLICT(id) DO NOTHING")
+    if sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'novelEvent',$3,$4,$5,'running',$6,$7,0,1) ON CONFLICT(id) DO NOTHING")
         .bind(task_id)
         .bind(project_id)
         .bind(id.to_string())
+        .bind(task_model)
         .bind(format!("提取事件：{title}"))
         .bind(chrono::Utc::now().timestamp_millis())
         .bind(task_input)

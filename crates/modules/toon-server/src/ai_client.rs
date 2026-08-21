@@ -88,6 +88,12 @@ async fn project_agent_model(
     ))
 }
 
+pub async fn project_model_id(pool: &PgPool, key: &str, project_id: i64) -> Result<i64, String> {
+    project_agent_model(pool, key, project_id)
+        .await
+        .map(|(model, _, _)| model)
+}
+
 async fn agent_model(pool: &PgPool, key: &str) -> Result<(i64, i32, i32), String> {
     let row: Option<(Option<i64>, i32, i32, bool)> = sqlx::query_as(
         "SELECT model_config_id,temperature,max_output_tokens,disabled FROM toonflow.agent_deployments WHERE key=$1",
