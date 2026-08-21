@@ -78,6 +78,80 @@ impl ChatProvider for GeminiProvider {
     }
 }
 impl GeminiProvider {
+    pub async fn chat_tools_stream<F, Fut>(
+        &self,
+        config: &ModelConfig,
+        messages: Vec<Value>,
+        tools: Vec<Value>,
+        mut on_delta: F,
+    ) -> Result<Value, String>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let mut request = messages.iter().filter(|m| m.get("role").and_then(Value::as_str) != Some("system")).map(|m| json!({"role":if m.get("role").and_then(Value::as_str)==Some("assistant"){"model"}else{"user"},"parts":[{"text":m.get("content").and_then(Value::as_str).unwrap_or("")}]})).collect::<Vec<_>>();
+        if request.is_empty() {
+            request.push(json!({"role":"user","parts":[{"text":""}]}));
+        }
+        let mut body = json!({"contents":request,"generationConfig":{"temperature":0.7}});
+        if !tools.is_empty() {
+            body["tools"] = json!([{"functionDeclarations":tools.into_iter().filter_map(|t|{let f=t.get("function")?;Some(json!({"name":f.get("name")?,"description":f.get("description").cloned().unwrap_or(json!("")),"parameters":f.get("parameters").cloned().unwrap_or(json!({"type":"object"}))}))}).collect::<Vec<_>>() }]);
+        }
+        let response =
+            super::send_with_retry(super::http_client().post(url(config, true)).json(&body))
+                .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(super::upstream_error(
+                status,
+                &value,
+                "Gemini 流式工具请求失败",
+            ));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut content = String::new();
+        let mut calls = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buffer.push_str(&String::from_utf8_lossy(
+                &chunk.map_err(|e| super::transport_error(&e))?,
+            ));
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer.drain(..=pos);
+                let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                    continue;
+                };
+                let value: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+                for part in value
+                    .pointer("/candidates/0/content/parts")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        content.push_str(text);
+                        on_delta(json!({"content":text})).await?;
+                    }
+                    if let Some(call) = part.get("functionCall") {
+                        let index = calls.len();
+                        let name = call.get("name").cloned().unwrap_or(json!(""));
+                        let args = call.get("args").cloned().unwrap_or(json!({}));
+                        calls.push(json!({"id":format!("gemini-tool-{index}"),"type":"function","function":{"name":name,"arguments":args.to_string()}}));
+                        on_delta(json!({"tool_calls":[{"index":index,"id":format!("gemini-tool-{index}"),"function":{"name":call.get("name").cloned().unwrap_or(json!("")),"arguments":args.to_string()}}]})).await?;
+                    }
+                }
+            }
+        }
+        let mut message = json!({"role":"assistant","content":content});
+        if !calls.is_empty() {
+            message["tool_calls"] = json!(calls);
+        }
+        Ok(json!({"choices":[{"message":message}],"usage":{}}))
+    }
+
     pub async fn chat_stream<F, Fut>(
         &self,
         config: &ModelConfig,
