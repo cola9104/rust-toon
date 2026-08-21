@@ -75,9 +75,13 @@ export namespace ToonflowApi {
     remark?: string;
     type: string;
     description: string;
+    /** Legacy Toonflow clients used `describe`; keep both during migration. */
+    describe?: string;
     scriptId?: number;
     imageId?: number;
     imageFilePath?: string;
+    imageUrl?: string;
+    audioUrl?: string;
     imageState?: string;
     imageErrorReason?: string;
     parentAssetId?: number;
@@ -101,8 +105,9 @@ export namespace ToonflowApi {
     state?: string;
     track?: string;
     videoDesc?: string;
-    shouldGenerateImage: number;
+    shouldGenerateImage: number | boolean;
     associateAssetsIds: number[];
+    describe?: string;
     filePath?: string;
     flowId?: number;
     index?: number;
