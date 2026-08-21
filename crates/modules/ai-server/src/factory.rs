@@ -221,6 +221,17 @@ impl AiModelFactory {
                 )
                 .await
                 .map_err(provider_app_error),
+            AiPlatform::Anthropic => AnthropicProvider
+                .chat_tools_stream(
+                    &config,
+                    messages,
+                    tools,
+                    temperature.unwrap_or(0.7),
+                    max_tokens,
+                    on_delta,
+                )
+                .await
+                .map_err(provider_app_error),
             _ => Err(AppError::bad_request(format!(
                 "平台 {} 暂不支持流式工具调用",
                 config.platform

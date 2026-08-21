@@ -75,6 +75,117 @@ impl ChatProvider for AnthropicProvider {
 }
 
 impl AnthropicProvider {
+    pub async fn chat_tools_stream<F, Fut>(
+        &self,
+        config: &ModelConfig,
+        messages: Vec<Value>,
+        tools: Vec<Value>,
+        temperature: f64,
+        max_tokens: Option<u32>,
+        mut on_delta: F,
+    ) -> Result<Value, String>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let system = messages
+            .iter()
+            .filter(|m| m.get("role").and_then(Value::as_str) == Some("system"))
+            .filter_map(|m| m.get("content").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let user_messages = messages
+            .into_iter()
+            .filter(|m| m.get("role").and_then(Value::as_str) != Some("system"))
+            .collect::<Vec<_>>();
+        let mut body = json!({"model":config.model,"system":system,"messages":user_messages,"temperature":temperature,"max_tokens":max_tokens.unwrap_or(4096),"stream":true});
+        if !tools.is_empty() {
+            body["tools"] = json!(tools.into_iter().filter_map(|tool| {
+                let function = tool.get("function")?;
+                Some(json!({"name":function.get("name")?,"description":function.get("description").cloned().unwrap_or(json!("")),"input_schema":function.get("parameters").cloned().unwrap_or(json!({"type":"object"}))}))
+            }).collect::<Vec<_>>());
+        }
+        let path = config
+            .config
+            .get("textPath")
+            .and_then(Value::as_str)
+            .unwrap_or("/v1/messages");
+        let response = super::send_with_retry(
+            super::http_client()
+                .post(format!("{}{}", config.url.trim_end_matches('/'), path))
+                .header("x-api-key", &config.api_key)
+                .header(
+                    "anthropic-version",
+                    config
+                        .config
+                        .get("anthropicVersion")
+                        .and_then(Value::as_str)
+                        .unwrap_or("2023-06-01"),
+                )
+                .json(&body),
+        )
+        .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(super::upstream_error(
+                status,
+                &value,
+                "Anthropic 流式工具请求失败",
+            ));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut content = String::new();
+        let mut calls: Vec<Value> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buffer.push_str(&String::from_utf8_lossy(
+                &chunk.map_err(|e| super::transport_error(&e))?,
+            ));
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer.drain(..=pos);
+                let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                    continue;
+                };
+                let event: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+                match event.get("type").and_then(Value::as_str) {
+                    Some("content_block_start") => {
+                        if let Some(block) = event
+                            .get("content_block")
+                            .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))
+                        {
+                            calls.push(json!({"id":block.get("id").cloned().unwrap_or(json!("")),"type":"function","function":{"name":block.get("name").cloned().unwrap_or(json!("")),"arguments":""}}));
+                        }
+                    }
+                    Some("content_block_delta") => {
+                        let delta = event.get("delta").cloned().unwrap_or(json!({}));
+                        if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                            content.push_str(text);
+                            on_delta(json!({"content":text})).await?;
+                        }
+                        if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
+                            if let Some(call) = calls.last_mut() {
+                                if let Some(args) = call.pointer_mut("/function/arguments") {
+                                    let previous = args.as_str().unwrap_or("").to_string();
+                                    *args = json!(format!("{previous}{partial}"));
+                                }
+                            }
+                            on_delta(json!({"tool_calls":[{"index":calls.len().saturating_sub(1),"function":{"arguments":partial}}]})).await?;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut message = json!({"role":"assistant","content":content});
+        if !calls.is_empty() {
+            message["tool_calls"] = json!(calls);
+        }
+        Ok(json!({"choices":[{"message":message}],"usage":{}}))
+    }
+
     pub async fn chat_stream<F, Fut>(
         &self,
         config: &ModelConfig,
