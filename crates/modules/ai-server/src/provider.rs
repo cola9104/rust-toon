@@ -253,6 +253,7 @@ impl OpenAiCompatibleProvider {
         let mut buffer = String::new();
         let mut content = String::new();
         let mut tool_calls: Vec<Value> = Vec::new();
+        let mut usage = json!({});
         while let Some(chunk) = stream.next().await {
             buffer.push_str(&String::from_utf8_lossy(
                 &chunk.map_err(|error| transport_error(&error))?,
@@ -267,6 +268,9 @@ impl OpenAiCompatibleProvider {
                     continue;
                 }
                 let value: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+                if let Some(summary) = value.get("usage") {
+                    usage = summary.clone();
+                }
                 let delta = value
                     .pointer("/choices/0/delta")
                     .cloned()
@@ -314,7 +318,9 @@ impl OpenAiCompatibleProvider {
         if !tool_calls.is_empty() {
             message["tool_calls"] = json!(tool_calls);
         }
-        Ok(json!({"choices":[{"message":message}],"usage":{}}))
+        Ok(
+            json!({"choices":[{"message":message,"finish_reason":if tool_calls.is_empty(){"stop"}else{"tool_calls"}}],"usage":usage}),
+        )
     }
 
     pub async fn raw_chat_with_header(
