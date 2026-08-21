@@ -63,7 +63,47 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     };
     let task_id = chrono::Utc::now().timestamp_millis() * 1_000_000 + id % 1_000_000;
     let task_input = json!({"projectId":project_id,"novelId":id,"chapter":title});
-    let _=sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5,$6,0,1) ON CONFLICT(id) DO NOTHING").bind(task_id).bind(project_id).bind(id.to_string()).bind(format!("提取事件：{title}")).bind(chrono::Utc::now().timestamp_millis()).bind(task_input).execute(pool).await;
+    // addNovel 会自动触发提取，旧客户端也可能紧接着调用 generate。用章节级
+    // advisory lock + running 检查保证同一章节不会并发创建两个任务。
+    let mut task_tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(_) => return,
+    };
+    if sqlx::query("SELECT pg_advisory_xact_lock($1::bigint)")
+        .bind(id)
+        .execute(&mut *task_tx)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let already_running: Option<(i64,)> = sqlx::query_as(
+        "SELECT id FROM toonflow.tasks WHERE task_class='novelEvent' AND related_objects=$1 AND state='running' LIMIT 1",
+    )
+    .bind(id.to_string())
+    .fetch_optional(&mut *task_tx)
+    .await
+    .ok()
+    .flatten();
+    if already_running.is_some() {
+        return;
+    }
+    if sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5,$6,0,1) ON CONFLICT(id) DO NOTHING")
+        .bind(task_id)
+        .bind(project_id)
+        .bind(id.to_string())
+        .bind(format!("提取事件：{title}"))
+        .bind(chrono::Utc::now().timestamp_millis())
+        .bind(task_input)
+        .execute(&mut *task_tx)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    if task_tx.commit().await.is_err() {
+        return;
+    }
     // Try loading custom prompt from prompts table, fall back to built-in
     let system = sqlx::query_scalar::<_,String>(
         "SELECT data FROM toonflow.prompts WHERE type='eventExtraction' AND use_data=true ORDER BY id DESC LIMIT 1",
