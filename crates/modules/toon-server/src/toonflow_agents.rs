@@ -913,12 +913,26 @@ pub(crate) async fn run_with_emitter(
             return Err("用户已中止".into());
         }
 
-        let raw = ai_client::project_text_tools(
+        let stream_emitter = emitter.clone();
+        let stream_message = msg_id.to_string();
+        let stream_content = text_cid.to_string();
+        let raw = ai_client::project_text_tools_stream(
             &state.pool,
             agent_key,
             request.project_id,
             messages.clone(),
             native_tool_definitions(&request.agent_type),
+            move |delta| {
+                let emitter = stream_emitter.clone();
+                let message = stream_message.clone();
+                let content = stream_content.clone();
+                async move {
+                    if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                        emitter.text_delta(&message, &content, text);
+                    }
+                    Ok(())
+                }
+            },
         )
         .await?;
 
@@ -944,51 +958,6 @@ pub(crate) async fn run_with_emitter(
                 // Continue loop to retry with shorter context
                 warn!("模型返回空内容，跳过本轮（第{}轮）", round);
                 continue;
-            }
-
-            // Incremental filter preserves tags split across provider chunks.
-            let mut filter = toonflow_agent_runtime::ThinkingStream::default();
-            let mut thinking_cid: Option<String> = None;
-            let mut thinking_start = 0i64;
-            let mut thinking_buf = String::new();
-            let mut parts = Vec::new();
-            let characters = text.chars().collect::<Vec<_>>();
-            for chunk in characters.chunks(64) {
-                parts.extend(filter.push(&chunk.iter().collect::<String>()));
-            }
-            parts.extend(filter.finish());
-            for part in parts {
-                match part {
-                    toonflow_agent_runtime::ThinkingPart::Text(value) => {
-                        emitter.text_delta(msg_id, text_cid, &value)
-                    }
-                    toonflow_agent_runtime::ThinkingPart::Start => {
-                        thinking_start = now_ms();
-                        thinking_buf.clear();
-                        thinking_cid = Some(emitter.thinking_start(msg_id, "思考中..."));
-                    }
-                    toonflow_agent_runtime::ThinkingPart::Thinking(value) => {
-                        thinking_buf.push_str(&value);
-                        if let Some(ref cid) = thinking_cid {
-                            emitter.thinking_append(msg_id, cid, &value);
-                        }
-                    }
-                    toonflow_agent_runtime::ThinkingPart::End => {
-                        if let Some(ref cid) = thinking_cid {
-                            let elapsed = (now_ms() - thinking_start) as f64 / 1000.0;
-                            emitter.thinking_complete(
-                                msg_id,
-                                cid,
-                                &format!("思考完毕（{elapsed:.1}秒）"),
-                                &thinking_buf,
-                            );
-                        }
-                        thinking_cid = None;
-                    }
-                }
-            }
-            if let Some(cid) = thinking_cid {
-                emitter.thinking_complete(msg_id, &cid, "思考输出结束", &thinking_buf);
             }
 
             let _ = add_memory(

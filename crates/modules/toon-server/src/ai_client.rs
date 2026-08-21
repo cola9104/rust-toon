@@ -152,6 +152,35 @@ pub async fn project_text_tools(
     })
     .await
 }
+
+pub async fn project_text_tools_stream<F, Fut>(
+    pool: &PgPool,
+    key: &str,
+    project_id: i64,
+    messages: Vec<Value>,
+    tools: Vec<Value>,
+    on_delta: F,
+) -> Result<Value, String>
+where
+    F: FnMut(Value) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
+    recorded(pool, "text", &model.to_string(), key, async move {
+        rust_toon_ai_server::AiModelFactory::new(pool.clone())
+            .chat_tools_stream(
+                model,
+                messages,
+                tools,
+                Some(temperature as f64),
+                (tokens > 0).then_some(tokens as u32),
+                on_delta,
+            )
+            .await
+            .map_err(normalized_app_error)
+    })
+    .await
+}
 fn chat_request(
     system: &str,
     user: &str,

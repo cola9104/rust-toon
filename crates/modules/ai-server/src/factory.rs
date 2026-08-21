@@ -157,6 +157,76 @@ impl AiModelFactory {
             ))),
         }
     }
+
+    pub async fn chat_tools_stream<F, Fut>(
+        &self,
+        id: i64,
+        messages: Vec<Value>,
+        tools: Vec<Value>,
+        temperature: Option<f64>,
+        max_tokens: Option<u32>,
+        on_delta: F,
+    ) -> Result<Value, AppError>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let config = self.typed(id, AiModelType::Chat).await?;
+        let platform = AiPlatform::parse(&config.platform)
+            .ok_or_else(|| AppError::bad_request("unsupported AI platform"))?;
+        let (config, auth_header) = if platform == AiPlatform::AzureOpenAI {
+            let version = config
+                .config
+                .get("apiVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("2024-10-21");
+            let mut azure = config.clone();
+            azure.url = format!(
+                "{}/openai/deployments/{}",
+                azure.url.trim_end_matches('/'),
+                azure.model
+            );
+            azure.config =
+                serde_json::json!({"textPath":format!("/chat/completions?api-version={version}")});
+            (azure, "api-key")
+        } else {
+            (config, "authorization")
+        };
+        match platform {
+            AiPlatform::OpenAI
+            | AiPlatform::TongYi
+            | AiPlatform::XingHuo
+            | AiPlatform::DeepSeek
+            | AiPlatform::DouBao
+            | AiPlatform::HunYuan
+            | AiPlatform::SiliconFlow
+            | AiPlatform::MiniMax
+            | AiPlatform::Moonshot
+            | AiPlatform::BaiChuan
+            | AiPlatform::StepFun
+            | AiPlatform::YiYan
+            | AiPlatform::ZhiPu
+            | AiPlatform::Grok
+            | AiPlatform::Ollama
+            | AiPlatform::OpenAICompatible
+            | AiPlatform::AzureOpenAI => OpenAiCompatibleProvider
+                .chat_tools_stream(
+                    &config,
+                    messages,
+                    tools,
+                    temperature.unwrap_or(0.7),
+                    max_tokens,
+                    on_delta,
+                    auth_header,
+                )
+                .await
+                .map_err(provider_app_error),
+            _ => Err(AppError::bad_request(format!(
+                "平台 {} 暂不支持流式工具调用",
+                config.platform
+            ))),
+        }
+    }
     pub async fn chat_stream<F, Fut>(
         &self,
         id: i64,

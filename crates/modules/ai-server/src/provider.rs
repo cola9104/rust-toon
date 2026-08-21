@@ -198,6 +198,125 @@ pub trait ChatProvider: Send + Sync {
 pub struct OpenAiCompatibleProvider;
 
 impl OpenAiCompatibleProvider {
+    /// Stream an OpenAI-compatible tool call response while preserving the
+    /// complete assistant message shape expected by the existing tool loop.
+    pub async fn chat_tools_stream<F, Fut>(
+        &self,
+        config: &ModelConfig,
+        messages: Vec<Value>,
+        tools: Vec<Value>,
+        temperature: f64,
+        max_tokens: Option<u32>,
+        mut on_delta: F,
+        auth_header: &str,
+    ) -> Result<Value, String>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let path = config
+            .config
+            .get("textPath")
+            .and_then(Value::as_str)
+            .unwrap_or("/chat/completions");
+        let mut body = json!({
+            "model": config.model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": true
+        });
+        if !tools.is_empty() {
+            body["tools"] = json!(tools);
+            body["tool_choice"] = json!("auto");
+        }
+        if let Some(limit) = max_tokens {
+            body["max_tokens"] = json!(limit);
+        }
+        let mut builder = http_client()
+            .post(format!("{}{}", config.url.trim_end_matches('/'), path))
+            .json(&body);
+        if !config.api_key.is_empty() {
+            builder = if auth_header.eq_ignore_ascii_case("authorization") {
+                builder.bearer_auth(config.api_key.trim_start_matches("Bearer "))
+            } else {
+                builder.header(auth_header, &config.api_key)
+            };
+        }
+        let response = send_with_retry(builder).await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            let value = serde_json::from_str(&body).unwrap_or(Value::String(body));
+            return Err(upstream_error(status, &value, "模型流式工具请求失败"));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut content = String::new();
+        let mut tool_calls: Vec<Value> = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            buffer.push_str(&String::from_utf8_lossy(
+                &chunk.map_err(|error| transport_error(&error))?,
+            ));
+            while let Some(pos) = buffer.find('\n') {
+                let line = buffer[..pos].trim().to_string();
+                buffer.drain(..=pos);
+                let Some(data) = line.strip_prefix("data:").map(str::trim) else {
+                    continue;
+                };
+                if data == "[DONE]" || data.is_empty() {
+                    continue;
+                }
+                let value: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+                let delta = value
+                    .pointer("/choices/0/delta")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                    content.push_str(text);
+                }
+                if let Some(parts) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for part in parts {
+                        let index = part.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        while tool_calls.len() <= index {
+                            tool_calls.push(json!({"id":"","type":"function","function":{"name":"","arguments":""}}));
+                        }
+                        let target = tool_calls[index].as_object_mut().expect("tool call object");
+                        if let Some(id) = part.get("id").and_then(Value::as_str) {
+                            target.insert("id".into(), json!(id));
+                        }
+                        if let Some(function) = part.get("function").and_then(Value::as_object) {
+                            let current = target
+                                .get_mut("function")
+                                .and_then(Value::as_object_mut)
+                                .unwrap();
+                            if let Some(name) = function.get("name").and_then(Value::as_str) {
+                                current.insert("name".into(), json!(name));
+                            }
+                            if let Some(arguments) =
+                                function.get("arguments").and_then(Value::as_str)
+                            {
+                                let previous = current
+                                    .get("arguments")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                current.insert(
+                                    "arguments".into(),
+                                    json!(format!("{previous}{arguments}")),
+                                );
+                            }
+                        }
+                    }
+                }
+                on_delta(delta).await?;
+            }
+        }
+        let mut message = json!({"role":"assistant","content":content});
+        if !tool_calls.is_empty() {
+            message["tool_calls"] = json!(tool_calls);
+        }
+        Ok(json!({"choices":[{"message":message}],"usage":{}}))
+    }
+
     pub async fn raw_chat_with_header(
         &self,
         config: &ModelConfig,
