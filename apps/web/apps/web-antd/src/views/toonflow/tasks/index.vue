@@ -3,7 +3,7 @@ import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Page } from '@vben/common-ui';
-import { Button, Card, Drawer, Empty, Select, Space, Table, Tag } from 'ant-design-vue';
+import { Button, Card, Drawer, Empty, Progress, Select, Space, Table, Tag } from 'ant-design-vue';
 import { getTasks } from '#/api/toonflow';
 import '../shared/page-card.css';
 import '../styles/toon-theme.css';
@@ -48,11 +48,37 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
 <template>
   <Page auto-content-height class="toon-page">
     <Card :bordered="false" class="toonflow-page-card h-full toon-surface">
-      <div class="toon-header"><div><h1 class="toon-title">任务中心</h1><p class="toon-subtitle">每 5 秒自动更新，切换到后台时暂停轮询。</p></div><Space><Select v-model:value="category" :options="categoryOptions" style="width: 170px" /><Select v-model:value="state" :options="[{label:'全部状态',value:'all'},{label:'处理中',value:'running'},{label:'已完成',value:'completed'},{label:'失败',value:'failed'}]" style="width: 130px" /><Button @click="load()">刷新</Button></Space></div>
-      <div class="task-stats"><div class="stat-card total"><span class="stat-label">全部任务</span><strong>{{ taskStats.total }}</strong><small>累计记录</small></div><div class="stat-card running"><span class="stat-label">处理中</span><strong>{{ taskStats.running }}</strong><small>正在执行</small></div><div class="stat-card success"><span class="stat-label">已完成</span><strong>{{ taskStats.success }}</strong><small>执行成功</small></div><div class="stat-card failed"><span class="stat-label">失败</span><strong>{{ taskStats.failed }}</strong><small>需要处理</small></div></div>
+      <div class="toon-header">
+        <div>
+          <div class="page-kicker"><span class="live-dot" />实时任务</div>
+          <h1 class="toon-title">任务中心</h1>
+          <p class="toon-subtitle">自动追踪图片、分镜和导出任务，页面每 5 秒同步一次。</p>
+        </div>
+        <Space class="task-toolbar" wrap>
+          <Select v-model:value="category" :options="categoryOptions" class="task-filter task-filter--type" />
+          <Select v-model:value="state" :options="[{label:'全部状态',value:'all'},{label:'处理中',value:'running'},{label:'已完成',value:'completed'},{label:'失败',value:'failed'}]" class="task-filter" />
+          <Button :loading="loading" @click="load()">刷新任务</Button>
+        </Space>
+      </div>
+      <div class="task-stats">
+        <div class="stat-card total"><span class="stat-label">全部任务</span><strong>{{ taskStats.total }}</strong><small>累计记录</small></div>
+        <div class="stat-card running"><span class="stat-label">处理中</span><strong>{{ taskStats.running }}</strong><small>正在执行</small></div>
+        <div class="stat-card success"><span class="stat-label">已完成</span><strong>{{ taskStats.success }}</strong><small>执行成功</small></div>
+        <div class="stat-card failed"><span class="stat-label">失败</span><strong>{{ taskStats.failed }}</strong><small>需要处理</small></div>
+      </div>
       <Empty v-if="!loading && visibleTasks.length === 0" description="暂无匹配任务" />
-      <Table v-else :columns="columns" :data-source="visibleTasks" :loading="loading" :pagination="{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20','50','100'], showTotal: (total: number) => `共 ${total} 个任务` }" row-key="id">
-        <template #bodyCell="{column,record}"><Tag v-if="column.dataIndex === 'taskClass'">{{ typeLabel(record.taskClass) }}</Tag><template v-else-if="column.dataIndex === 'model'">{{ modelLabel(record.model) }}</template><template v-else-if="column.key === 'progress'"><span v-if="progress(record as ToonflowApi.Task) !== undefined">{{ progress(record as ToonflowApi.Task) }}% <small class="progress-count">({{ record.progressCurrent ?? 0 }}/{{ record.progressTotal }})</small></span><span v-else>—</span></template><Tag v-else-if="column.dataIndex === 'state'" :color="color(record.state)">{{ stateLabel(record.state) }}</Tag><template v-else-if="column.key === 'startTime'">{{ record.startTime ? new Date(record.startTime).toLocaleString() : '—' }}</template><Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">详情</Button></template>
+      <Table v-else class="task-table" :columns="columns" :data-source="visibleTasks" :loading="loading" :pagination="{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20','50','100'], showTotal: (total: number) => `共 ${total} 个任务` }" :scroll="{ x: 1280 }" row-key="id" size="middle">
+        <template #bodyCell="{column,record}">
+          <div v-if="column.dataIndex === 'description'" class="task-name"><span class="task-name__icon">✦</span><div><strong>{{ record.description || '未命名任务' }}</strong><small>#{{ record.id }}</small></div></div>
+          <div v-else-if="column.dataIndex === 'projectName'" class="project-name"><span class="project-mark">P</span><span>{{ record.projectName || '未关联项目' }}</span></div>
+          <Tag v-else-if="column.dataIndex === 'taskClass'" class="type-tag">{{ typeLabel(record.taskClass) }}</Tag>
+          <template v-else-if="column.dataIndex === 'model'"><span class="model-name">{{ modelLabel(record.model) }}</span></template>
+          <div v-else-if="column.key === 'progress'" class="progress-cell"><template v-if="progress(record as ToonflowApi.Task) !== undefined"><Progress :percent="progress(record as ToonflowApi.Task)" :status="record.state?.toLowerCase() === 'failed' ? 'exception' : undefined" :show-info="false" size="small" /><small>{{ record.progressCurrent ?? 0 }}/{{ record.progressTotal }}</small></template><span v-else class="muted">未提供</span></div>
+          <span v-else-if="column.dataIndex === 'relatedObjects'" class="related-object">{{ record.relatedObjects || '—' }}</span>
+          <template v-else-if="column.key === 'startTime'"><span class="time-text">{{ record.startTime ? new Date(record.startTime).toLocaleString() : '—' }}</span></template>
+          <Tag v-else-if="column.dataIndex === 'state'" :color="color(record.state)" class="state-tag"><span class="state-dot" />{{ stateLabel(record.state) }}</Tag>
+          <Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">查看详情</Button>
+        </template>
       </Table>
     </Card>
     <Drawer :open="!!detail" title="任务详情" width="480" @close="detail = undefined">
@@ -61,4 +87,20 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
   </Page>
 </template>
 
-<style scoped>.task-stats{display:grid;margin-bottom:20px;gap:14px;grid-template-columns:repeat(4,minmax(0,1fr))}.stat-card{position:relative;display:flex;min-height:104px;flex-direction:column;justify-content:center;overflow:hidden;padding:16px 18px;border:1px solid var(--ant-color-border-secondary);border-radius:14px;background:var(--ant-color-bg-container);box-shadow:0 3px 12px rgb(15 23 42 / 4%)}.stat-card::before{position:absolute;inset:0 auto 0 0;width:4px;content:"";background:var(--stat-color,#bfbfbf)}.stat-card.total{--stat-color:#8c8c8c}.stat-card.running{--stat-color:#1677ff}.stat-card.success{--stat-color:#52c41a}.stat-card.failed{--stat-color:#ff4d4f}.stat-label{color:var(--ant-color-text-secondary);font-size:13px}.stat-card strong{margin-top:5px;color:var(--ant-color-text);font-size:28px;font-weight:650;line-height:1.1}.stat-card small{margin-top:5px;color:var(--ant-color-text-tertiary);font-size:11px}@media (max-width:720px){.task-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}@media (max-width:420px){.task-stats{grid-template-columns:1fr}}.task-detail { display: grid; gap: 5px; }.task-detail label { margin-top: 12px; color: #8c8c8c; font-size: 12px; }.task-detail p { margin: 0; }.task-detail pre { padding: 12px; border-radius: 10px; white-space: pre-wrap; background: #f5f5f5; }.task-detail pre.error { color: #a8071a; background: #fff1f0; }</style>
+<style scoped>
+.page-kicker { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; color: var(--ant-color-text-tertiary); font-size: 11px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #52c41a; box-shadow: 0 0 0 4px rgb(82 196 26 / 12%); }
+.task-toolbar { justify-content: flex-end; }
+.task-filter { width: 130px; }
+.task-filter--type { width: 180px; }
+.task-stats { display: grid; margin-bottom: 20px; gap: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.stat-card { position: relative; display: flex; min-height: 104px; flex-direction: column; justify-content: center; overflow: hidden; padding: 16px 18px; border: 1px solid var(--ant-color-border-secondary); border-radius: 14px; background: var(--ant-color-bg-container); box-shadow: 0 3px 12px rgb(15 23 42 / 4%); }
+.stat-card::before { position: absolute; inset: 0 auto 0 0; width: 4px; content: ''; background: var(--stat-color, #bfbfbf); }
+.stat-card.total { --stat-color: #8c8c8c; }.stat-card.running { --stat-color: #1677ff; }.stat-card.success { --stat-color: #52c41a; }.stat-card.failed { --stat-color: #ff4d4f; }
+.stat-label { color: var(--ant-color-text-secondary); font-size: 13px; }.stat-card strong { margin-top: 5px; color: var(--ant-color-text); font-size: 28px; font-weight: 650; line-height: 1.1; }.stat-card small { margin-top: 5px; color: var(--ant-color-text-tertiary); font-size: 11px; }
+.task-table { overflow: hidden; border: 1px solid var(--toon-line); border-radius: 14px; }.task-table :deep(.ant-table-thead > tr > th) { color: var(--ant-color-text-secondary); background: #fafaf8; font-size: 12px; font-weight: 650; }.task-table :deep(.ant-table-tbody > tr > td) { padding-top: 14px; padding-bottom: 14px; }
+.task-name, .project-name { display: flex; align-items: center; gap: 9px; min-width: 0; }.task-name__icon, .project-mark { display: grid; flex: 0 0 auto; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #1677ff; background: #eaf3ff; font-size: 13px; }.task-name strong { display: block; overflow: hidden; max-width: 210px; text-overflow: ellipsis; white-space: nowrap; }.task-name small { display: block; margin-top: 3px; color: var(--ant-color-text-tertiary); font-size: 10px; }.project-mark { width: 24px; height: 24px; color: #7b61ff; background: #f0edff; font-size: 11px; font-weight: 700; }.project-name span:last-child, .related-object { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.model-name, .time-text, .muted { color: var(--ant-color-text-secondary); font-size: 12px; }.related-object { display: block; max-width: 180px; color: var(--ant-color-text-secondary); font-size: 12px; }.type-tag, .state-tag { margin-inline-end: 0; }.state-dot { display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentcolor; vertical-align: middle; }.progress-cell { display: grid; width: 120px; align-items: center; grid-template-columns: 1fr auto; gap: 8px; }.progress-cell :deep(.ant-progress) { margin: 0; }.progress-cell small { color: var(--ant-color-text-secondary); font-size: 11px; white-space: nowrap; }
+.task-detail { display: grid; gap: 5px; }.task-detail label { margin-top: 12px; color: #8c8c8c; font-size: 12px; }.task-detail p { margin: 0; }.task-detail pre { padding: 12px; border-radius: 10px; white-space: pre-wrap; background: #f5f5f5; }.task-detail pre.error { color: #a8071a; background: #fff1f0; }
+@media (max-width: 720px) { .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .task-toolbar { justify-content: flex-start; width: 100%; } .task-filter, .task-filter--type { width: min(100%, 220px); } }
+@media (max-width: 420px) { .task-stats { grid-template-columns: 1fr; } }
+</style>

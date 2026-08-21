@@ -295,8 +295,9 @@ pub async fn generate_flow_image(
         &req.ratio,
         references.len(),
     );
-    let url = ai_client::image_with_references(
+    let url = ai_client::image_with_references_for_project(
         &state.pool,
+        Some(req.project_id),
         &req.model,
         &prompt,
         &req.quality,
@@ -445,8 +446,9 @@ async fn generate_storyboard_job(
         return false;
     }
     let generation_prompt = crate::toonflow_asset_prompt::storyboard_generation_prompt(&job.prompt);
-    match ai_client::image_with_references(
+    match ai_client::image_with_references_for_project(
         &pool,
+        Some(project_id),
         &model,
         &generation_prompt,
         &storyboard_image_size(&quality, &ratio),

@@ -726,14 +726,14 @@ async fn run_with_tools(
     system: &str,
     run_id: i64,
 ) -> Result<String, String> {
-    let dynamic_skills =
-        toonflow_agent_runtime::dynamic_skills(&state.pool, request.project_id).await?;
-    let skill_guide = if dynamic_skills.is_empty() {
+    let available_skills =
+        toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id).await?;
+    let skill_guide = if available_skills.is_empty() {
         String::new()
     } else {
         format!(
-            "\n动态 Skill：{}。需要专项技法时调用 use_skill({{path}})。",
-            dynamic_skills
+            "\n可用 Skill（仅在需要时调用 use_skill 加载完整内容）：{}。加载 Skill 后可调用 read_skill_file 读取其资源文件。",
+            available_skills
                 .iter()
                 .map(|(path, name, description)| format!("{name}（{description}）={path}"))
                 .collect::<Vec<_>>()
@@ -827,8 +827,7 @@ async fn perform_run(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let skill = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
-    let system = format!("{skill}\n\n{context}\n{memory}");
+    let system = format!("{context}\n{memory}");
     match run_with_tools(state, request, agent_key, &system, run_id).await {
         Ok(output) => {
             add_memory(
@@ -877,16 +876,19 @@ pub(crate) async fn run_with_emitter(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let skill = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
-    let dynamic_skills =
-        toonflow_agent_runtime::dynamic_skills(&state.pool, request.project_id).await?;
+    let available_skills = toonflow_agent_runtime::available_skills(
+        &state.pool,
+        agent_key,
+        request.project_id,
+    )
+    .await?;
 
-    let skill_guide = if dynamic_skills.is_empty() {
+    let skill_guide = if available_skills.is_empty() {
         String::new()
     } else {
         format!(
-            "\n动态 Skill：{}。需要专项技法时调用 use_skill({{path}})。",
-            dynamic_skills
+            "\n可用 Skill（仅在需要时调用 use_skill 加载完整内容）：{}。加载 Skill 后可调用 read_skill_file 读取其资源文件。",
+            available_skills
                 .iter()
                 .map(|(path, name, description)| format!("{name}（{description}）={path}"))
                 .collect::<Vec<_>>()
@@ -896,7 +898,7 @@ pub(crate) async fn run_with_emitter(
 
     let pipeline_rule = pipeline_rule(&request.agent_type);
     let system = format!(
-        "{skill}\n\n{context}\n{memory}\n{}{}\n{}{pipeline_rule}",
+        "{context}\n{memory}\n{}{}\n{}{pipeline_rule}",
         tool_guide(&request.agent_type),
         skill_guide,
         thinking_instruction(request.think, request.think_level),

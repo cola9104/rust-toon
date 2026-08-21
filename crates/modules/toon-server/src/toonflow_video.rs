@@ -767,7 +767,7 @@ pub(crate) async fn create_prompt(
         model.to_string()
     };
     let prompt_name = video_prompt_name(&resolved_model, mode);
-    let base:Option<(String,Option<String>)>=sqlx::query_as("SELECT data,use_data FROM toonflow.prompts WHERE source_key IS NOT NULL OR type='videoPromptGeneration' ORDER BY CASE WHEN source_key=$1 THEN 0 WHEN source_key='universal_multi_parameter' THEN 1 ELSE 2 END,id LIMIT 1").bind(prompt_name).fetch_optional(pool).await.map_err(|e|e.to_string())?;
+    let base:Option<(String,Option<String>)>=sqlx::query_as("SELECT data,use_data FROM toonflow.prompts WHERE source_key IS NOT NULL OR type='videoPromptGeneration' ORDER BY CASE WHEN source_key=$1 THEN 0 WHEN source_key=(SELECT prompt_source_key FROM toonflow.agent_deployments WHERE key='videoGeneration') THEN 1 WHEN source_key='videoPromptGeneration' THEN 2 WHEN source_key='universal_multi_parameter' THEN 3 ELSE 4 END,id LIMIT 1").bind(prompt_name).fetch_optional(pool).await.map_err(|e|e.to_string())?;
     let system = base
         .map(|r| r.0)
         .unwrap_or_else(|| "根据分镜生成专业视频提示词，只输出提示词正文。".into());

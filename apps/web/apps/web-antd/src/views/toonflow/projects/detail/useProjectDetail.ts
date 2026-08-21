@@ -310,6 +310,22 @@ function scriptAssetGroups(script: ToonflowApi.Script) {
   return groups.filter((group) => group.items.length > 0);
 }
 
+function scriptExtractLabel(script: ToonflowApi.Script) {
+  if (script.extractState === 1) return `已提取 · ${script.relatedAssets.length} 项资产`;
+  if (script.extractState === 0) return '提取中';
+  if (script.extractState === 2) return '排队中';
+  if (script.extractState === -1) return '提取失败';
+  return '待提取';
+}
+
+function scriptExtractColor(script: ToonflowApi.Script) {
+  if (script.extractState === 1) return 'green';
+  if (script.extractState === -1) return 'red';
+  if (script.extractState === 0) return 'blue';
+  if (script.extractState === 2) return 'orange';
+  return 'default';
+}
+
 const scriptOptions = computed(() =>
   orderedScripts.value.map((item) => ({ label: item.name, value: item.id })),
 );
@@ -522,6 +538,7 @@ async function batchExtractScriptAssets() {
   const ids = [...selectedScriptIds];
   if (!ids.length) return;
   const result = await extractScriptAssets(projectId.value, ids);
+  await loadScripts();
   message.success(`已提交 ${ids.length} 个剧本的资产提取任务 #${result.taskId}`);
 }
 
@@ -1531,7 +1548,7 @@ const panelContext = reactive({
   saveAgentWorkspace, workspaceActiveTab, workspaceTabs, renderMarkdown,
   assets, visibleScripts, scriptAssetGroups, scriptSearch, selectedScriptIds, importScriptFiles,
   toggleAllScripts, batchExportScripts, batchExtractScriptAssets, batchRemoveScripts,
-  toggleScript, extractAssetsFromScript, removeScript,
+  toggleScript, extractAssetsFromScript, removeScript, scriptExtractLabel, scriptExtractColor,
   selectedScriptId, scriptOptions, productionAssets, flowText, selectedScript, storyboards,
   storyboardBusy, storyboardProgressCurrent, storyboardProgressTotal, storyboardNodeRunState,
   videoTracks, workflowNodeRuns, rebuildingStoryboardPanel, productionAgentCollapsed,

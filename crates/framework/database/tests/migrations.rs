@@ -14,9 +14,16 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 27);
+    assert_eq!(applied, 33);
 
-    for source_key in ["script_ai_regex", "script_prompt_polish"] {
+    for source_key in [
+        "script_ai_regex",
+        "script_prompt_polish",
+        "eventExtraction",
+        "scriptAssetExtraction",
+        "videoPromptGeneration",
+        "audioBindPrompt",
+    ] {
         let seeded: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM toonflow.prompts WHERE source_key=$1 AND data<>'')",
         )

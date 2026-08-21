@@ -219,9 +219,16 @@ async fn extract_group(
         .map(|row| format!("===== 剧本ID:{} {} =====\n{}", row.0, row.1, row.2))
         .collect::<Vec<_>>()
         .join("\n\n");
-    let system_prompt =
-        toonflow_prompt_store::load(pool, "script_asset_extraction", ASSET_EXTRACTION_FALLBACK)
-            .await;
+    let system_prompt = toonflow_prompt_store::load_for_agent(
+        pool,
+        "scriptAgent",
+        "scriptAssetExtraction",
+        ASSET_EXTRACTION_FALLBACK,
+    )
+    .await;
+    let system_prompt = format!(
+        "{system_prompt}\n\n## Rust 输出适配器（优先级最高）\n不要调用 resultTool 或其他工具。最终只输出完整 JSON 对象，字段为 newAssets、existingAssetRefs、appearances；字段结构必须符合当前 Rust 资产提取接口。"
+    );
     let user_prompt = format!("已有资产：{existing}\n\n{content}");
     let mut parse_error = String::new();
     let mut result = None;

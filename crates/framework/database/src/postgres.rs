@@ -3,9 +3,13 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use crate::DatabaseConfig;
 
 // SQLx embeds the migration directory at compile time.
-// 0001_initial.sql is the consolidated baseline. Add new migrations after it
+// 0001_initial.sql is the consolidated baseline. Add new migrations after it.
+// Keep this file tied to the migration directory so newly added migrations are
+// embedded when the gateway is rebuilt.
 // and never edit a migration after it has been released.
 // Recompile this crate whenever the migration catalog changes.
+// Migration catalog currently includes 0033_skill_attributions.sql.
+// Skill ownership is now loaded from toonflow.skill_attributions.
 //
 // Migrations are the sole source of truth for database schema and baseline data.
 // sql/bootstrap/current.sql is a reference-only pg_dump snapshot kept for

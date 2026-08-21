@@ -1833,7 +1833,6 @@ pub struct AgentDeployment {
     pub model_config_id: Option<i64>,
     pub model_type: String,
     pub prompt_source_key: Option<String>,
-    pub skill_path: Option<String>,
     pub memory_scope: String,
     pub write_permissions: serde_json::Value,
 }
@@ -1846,7 +1845,7 @@ pub async fn list_agent_deployments(
     let rows = sqlx::query_as::<_, AgentDeployment>(
         r#"SELECT d.id,d.key,d.description,d.name,
                   d.temperature,d.max_output_tokens,d.disabled,d.model_config_id,d.model_type,
-                  d.prompt_source_key,d.skill_path,d.memory_scope,d.write_permissions
+                  d.prompt_source_key,d.memory_scope,d.write_permissions
            FROM toonflow.agent_deployments d ORDER BY d.id"#,
     )
     .fetch_all(&state.pool)
@@ -1864,7 +1863,6 @@ pub struct UpdateAgentDeploymentRequest {
     pub disabled: Option<bool>,
     pub model_config_id: Option<i64>,
     pub prompt_source_key: Option<String>,
-    pub skill_path: Option<String>,
     pub memory_scope: Option<String>,
     pub write_permissions: Option<serde_json::Value>,
 }
@@ -1894,14 +1892,13 @@ pub async fn update_agent_deployment(
     if !valid_model {
         return Err(AppError::bad_request("模型未启用或类型与当前用途不匹配"));
     }
-    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5,prompt_source_key=coalesce($6,prompt_source_key),skill_path=coalesce($7,skill_path),memory_scope=coalesce($8,memory_scope),write_permissions=coalesce($9,write_permissions) WHERE id=$1"#)
+    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5,prompt_source_key=coalesce($6,prompt_source_key),memory_scope=coalesce($7,memory_scope),write_permissions=coalesce($8,write_permissions) WHERE id=$1"#)
     .bind(request.id)
     .bind(request.temperature)
     .bind(request.max_output_tokens)
     .bind(request.disabled)
     .bind(model_id)
     .bind(request.prompt_source_key)
-    .bind(request.skill_path)
     .bind(request.memory_scope)
     .bind(request.write_permissions)
     .execute(&state.pool)

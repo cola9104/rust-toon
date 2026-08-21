@@ -419,6 +419,8 @@ pub async fn repair_interrupted_state(pool: &PgPool) -> Result<(), sqlx::Error> 
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
         .execute(&mut *tx).await?;
+    sqlx::query("UPDATE toonflow.tasks SET state='failed',reason='服务重启导致失败' WHERE state='running'")
+        .execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(())
 }

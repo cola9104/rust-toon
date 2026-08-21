@@ -253,14 +253,21 @@ pub(crate) async fn execute_inner(
             .get("path")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::bad_request("缺少 Skill path"))?;
-        // Support any dynamic skill: production_skills/, art_skills/, story_skills/
-        if !path.contains('/')
-            || path.starts_with("script_")
-            || path.starts_with("production_agent")
-        {
+        if path.starts_with('/') || path.contains("..") || path.contains('\\') {
             return Err(AppError::bad_request(
-                "只能加载动态 Skill（production_skills/、art_skills/ 等路径）",
+                "Skill 路径无效",
             ));
+        }
+        let available = toonflow_agent_runtime::available_skills(
+            &state.pool,
+            &request.agent_type,
+            request.project_id,
+        )
+        .await
+        .map_err(AppError::bad_request)?;
+        let is_known_main_skill = path.starts_with("script_") || path.starts_with("production_agent");
+        if !is_known_main_skill && !available.iter().any(|(available_path, _, _)| available_path == path) {
+            return Err(AppError::bad_request("该 Skill 不属于当前 Agent 或项目上下文"));
         }
         let content = toonflow_agent_runtime::load_skill(&state.pool, path)
             .await

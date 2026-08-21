@@ -374,7 +374,15 @@ pub async fn list_prompts(
 ) -> Result<Json<ApiResponse<Vec<Prompt>>>, AppError> {
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, Prompt>(
-        "SELECT id,name,type as type_,data,use_data,source_key FROM toonflow.prompts ORDER BY id DESC",
+        "SELECT id,name,type as type_,data,use_data,source_key
+         FROM toonflow.prompts
+         ORDER BY CASE source_key
+           WHEN 'eventExtraction' THEN 0
+           WHEN 'scriptAssetExtraction' THEN 1
+           WHEN 'videoPromptGeneration' THEN 2
+           WHEN 'audioBindPrompt' THEN 3
+           ELSE 10
+         END, id DESC",
     )
     .fetch_all(&state.pool)
     .await

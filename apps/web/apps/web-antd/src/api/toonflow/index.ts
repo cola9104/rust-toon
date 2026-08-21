@@ -127,7 +127,6 @@ export namespace ToonflowApi {
     modelConfigId?: number;
     modelType: 'chat' | 'image' | 'speech' | 'video';
     promptSourceKey?: string;
-    skillPath?: string;
     memoryScope?: string;
     writePermissions?: string[];
   }

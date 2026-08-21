@@ -160,28 +160,22 @@ fn parse_id_array(value: &str) -> HashSet<i64> {
         .collect()
 }
 
-pub(crate) fn skill_path(agent_key: &str) -> Option<&'static str> {
-    match agent_key {
-        "scriptAgent:decisionAgent" => Some("script_agent_decision.md"),
-        "scriptAgent:supervisionAgent" => Some("script_agent_supervision.md"),
-        "scriptAgent:storySkeletonAgent" => Some("script_execution_skeleton.md"),
-        "scriptAgent:adaptationStrategyAgent" => Some("script_execution_adaptation.md"),
-        "scriptAgent:scriptAgent" => Some("script_execution_script.md"),
-        "productionAgent:decisionAgent" => Some("production_agent_decision.md"),
-        "productionAgent:supervisionAgent" => Some("production_agent_supervision.md"),
-        "productionAgent:deriveAssetsAgent" => Some("production_execution_derive_assets.md"),
-        "productionAgent:generateAssetsAgent" => Some("production_execution_generate_assets.md"),
-        "productionAgent:directorPlanAgent" => Some("production_execution_director_plan.md"),
-        "productionAgent:storyboardGenAgent" => Some("production_execution_storyboard_gen.md"),
-        "productionAgent:storyboardPanelAgent" => Some("production_execution_storyboard_panel.md"),
-        "productionAgent:storyboardTableAgent" => Some("production_execution_storyboard_table.md"),
-        _ => None,
-    }
-}
-
 pub(crate) async fn load_agent_skill(pool: &PgPool, agent_key: &str) -> Result<String, String> {
-    let path = skill_path(agent_key).ok_or_else(|| format!("Agent {agent_key} 没有对应 Skill"))?;
-    load_skill(pool, path).await
+    let (_, name, description, path): (String, String, String, String) = sqlx::query_as(
+        "SELECT a.skill_path,s.name,s.description,a.skill_path
+         FROM toonflow.skill_attributions a
+         JOIN toonflow.skill_list s ON s.path=a.skill_path
+         WHERE a.agent_key=$1 AND s.state=1
+         ORDER BY a.priority,a.skill_path LIMIT 1",
+    )
+    .bind(agent_key)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("Agent {agent_key} 没有可用 Skill"))?;
+    Ok(format!(
+        "可用 Skill（仅在需要时调用 use_skill 加载完整内容）：{name}（{description}）={path}。加载后可调用 read_skill_file 读取资源文件。"
+    ))
 }
 
 pub(crate) async fn load_skill(pool: &PgPool, path: &str) -> Result<String, String> {
@@ -214,6 +208,28 @@ pub(crate) async fn dynamic_skills(
     .fetch_all(pool)
     .await
     .map_err(|error| error.to_string())
+}
+
+pub(crate) async fn available_skills(
+    pool: &PgPool,
+    agent_key: &str,
+    project_id: i64,
+) -> Result<Vec<(String, String, String)>, String> {
+    let mut skills = Vec::new();
+    skills.extend(sqlx::query_as::<_, (String, String, String)>(
+        "SELECT a.skill_path,s.name,s.description
+         FROM toonflow.skill_attributions a
+         JOIN toonflow.skill_list s ON s.path=a.skill_path
+         WHERE a.agent_key=$1 AND s.state=1 ORDER BY a.priority,a.skill_path",
+    )
+    .bind(agent_key)
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?);
+    skills.extend(dynamic_skills(pool, project_id).await?);
+    skills.sort_by(|left, right| left.0.cmp(&right.0));
+    skills.dedup_by(|left, right| left.0 == right.0);
+    Ok(skills)
 }
 
 fn terms(value: &str) -> HashSet<String> {
@@ -356,7 +372,7 @@ pub(crate) async fn expand_related_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{ThinkingPart, ThinkingStream, parse_id_array, skill_path, strip_xml_tags};
+    use super::{ThinkingPart, ThinkingStream, parse_id_array, strip_xml_tags};
 
     #[test]
     fn strips_agent_protocol_xml_without_losing_text() {
@@ -415,15 +431,4 @@ mod tests {
         assert!(parse_id_array("not json").is_empty());
     }
 
-    #[test]
-    fn maps_every_agent_to_the_imported_skill() {
-        assert_eq!(
-            skill_path("scriptAgent:storySkeletonAgent"),
-            Some("script_execution_skeleton.md")
-        );
-        assert_eq!(
-            skill_path("productionAgent:storyboardTableAgent"),
-            Some("production_execution_storyboard_table.md")
-        );
-    }
 }

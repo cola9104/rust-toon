@@ -10,10 +10,12 @@ import { Page } from '@vben/common-ui';
 
 import {
   Button,
+  Card,
   Checkbox,
   Col,
   Empty,
   Form,
+  Image,
   Input,
   message,
   Modal,
@@ -623,12 +625,18 @@ watch(() => route.query.projectId, (value) => {
             <Card class="asset-card" hoverable>
               <template #cover>
                 <div class="asset-cover">
-                  <Checkbox class="asset-selector" :checked="selectedAssetIds.has(item.id)" @change="toggleAsset(item.id, $event.target.checked)" />
+                  <Checkbox
+                    class="asset-selector"
+                    :checked="selectedAssetIds.has(item.id)"
+                    @click.stop
+                    @change="toggleAsset(item.id, $event.target.checked)"
+                  />
                   <div v-if="generatingAssetIds.has(item.id)" class="asset-progress"><span />生成中</div>
-                  <img
+                  <Image
                     v-if="imagePath(item) && !failedImageIds.has(item.id)"
                     :alt="item.name"
                     :src="assetFileUrl(imagePath(item))"
+                    :preview="true"
                     class="asset-thumb"
                     @error="failedImageIds.add(item.id)"
                   />
@@ -770,12 +778,12 @@ watch(() => route.query.projectId, (value) => {
   width: 100%;
 }
 .asset-cover :deep(.ant-image-img) {
+  display: block;
   height: 100%;
   object-fit: contain;
   object-position: center;
   width: 100%;
 }
-.asset-thumb { display: block; width: 100%; height: 100%; object-fit: contain; object-position: center; }
 .asset-placeholder {
   align-items: center;
   background: var(--ant-color-fill-secondary);

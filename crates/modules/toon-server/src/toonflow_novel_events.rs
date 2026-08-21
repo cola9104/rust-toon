@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{FromRow, PgPool};
 
-use crate::{ToonState, ai_client, shared::require};
+use crate::{ToonState, ai_client, shared::require, toonflow_prompt_store};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,15 +109,8 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     if task_tx.commit().await.is_err() {
         return;
     }
-    // Try loading custom prompt from prompts table, fall back to built-in
-    let system = sqlx::query_scalar::<_,String>(
-        "SELECT data FROM toonflow.prompts WHERE type='eventExtraction' AND use_data=true ORDER BY id DESC LIMIT 1",
-    )
-    .fetch_optional(pool)
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| r#"你是小说文本分析助手。用户每次提供一个章节的原文，你提取该章的结构化事件信息。
+    // The Agent binding is the default route; this key is the compatibility fallback.
+    let system = toonflow_prompt_store::load_for_agent(pool, "universalAi", "eventExtraction", r#"你是小说文本分析助手。用户每次提供一个章节的原文，你提取该章的结构化事件信息。
 
 ## ⚠️ 输出约束（最高优先级，违反任何一条即为失败）
 1. 只输出纯 JSON 数组，第一个字符必须是 `[`
@@ -142,7 +135,10 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
 - 忠于原文，不推测不脑补，不加入原文未出现的情节
 - 多条平行事件线时，选对主角影响最大的，其余简要带过
 - 对话密集章节，关注对话推动了什么结果，而非复述对话内容
-- 每3000字提取3-5个事件，短章节至少2个"#.to_string());
+- 每3000字提取3-5个事件，短章节至少2个"#).await;
+    let system = format!(
+        "{system}\n\n## Rust 输出适配器（优先级最高）\n不要调用工具。最终只输出 JSON 数组，字段为 name、detail、characters、mainline、density、duration、mood。"
+    );
     match ai_client::project_text_untracked(
         pool,
         "universalAi",

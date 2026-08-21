@@ -415,7 +415,16 @@ async fn make_image(
         managed_instruction.as_deref(),
     );
     let references = item.base64.clone().into_iter().collect();
-    match ai_client::image_with_references(pool, model, &prompt, resolution, references).await {
+    match ai_client::image_with_references_for_project(
+        pool,
+        Some(project_id),
+        model,
+        &prompt,
+        resolution,
+        references,
+    )
+    .await
+    {
         Ok(path) => {
             let path = persist_remote_image(&path, item.id).await?;
             let updated = sqlx::query("UPDATE toonflow.images SET file_path=$2,state='已完成' WHERE id=$1 AND state='生成中'")

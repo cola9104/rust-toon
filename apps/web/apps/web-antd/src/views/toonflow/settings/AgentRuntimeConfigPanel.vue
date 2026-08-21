@@ -11,7 +11,6 @@ const props = defineProps<{
 }>();
 
 const promptOptions = computed(() => props.prompts.map((item) => ({ label: item.name, value: item.sourceKey || String(item.id) })));
-const skillOptions = computed(() => props.skills.map((item) => ({ label: item.name, value: item.path })));
 const permissionOptions = [
   { label: '读取资产', value: 'asset:read' },
   { label: '写入资产', value: 'asset:write' },
@@ -32,7 +31,6 @@ const columns = [
   { title: 'Agent', dataIndex: 'name', width: 190 },
   { title: '层级', key: 'role', width: 100 },
   { title: 'Prompt', key: 'prompt', width: 190 },
-  { title: 'Skill', key: 'skill', width: 190 },
   { title: '记忆范围', key: 'memory', width: 120 },
   { title: '写入权限', key: 'permissions', width: 260 },
 ];
@@ -45,12 +43,11 @@ const columns = [
       <template #bodyCell="{ column, record }">
         <Tag v-if="column.key === 'role'" :color="role(record.key) === '监督 Agent' ? 'orange' : record.key.includes(':') ? 'blue' : 'green'">{{ role(record.key) }}</Tag>
         <Select v-else-if="column.key === 'prompt'" v-model:value="record.promptSourceKey" :options="promptOptions" allow-clear placeholder="选择 Prompt" style="width: 175px" />
-        <Select v-else-if="column.key === 'skill'" v-model:value="record.skillPath" :options="skillOptions" allow-clear placeholder="选择 Skill" style="width: 175px" />
         <Select v-else-if="column.key === 'memory'" v-model:value="record.memoryScope" :options="[{ label: '项目', value: 'project' }, { label: '剧本', value: 'script' }, { label: '节点', value: 'node' }]" style="width: 105px" />
         <Select v-else-if="column.key === 'permissions'" v-model:value="record.writePermissions" :options="permissionOptions" mode="multiple" placeholder="选择权限" style="min-width: 240px" />
       </template>
     </Table>
-    <Space class="panel-hint">配置会随 Agent 模型映射一起保存；未配置的 Prompt、Skill 和权限保持后端默认行为。</Space>
+    <Space class="panel-hint">Prompt 可按 Agent 覆盖；Skill 按 Toonflow-app 规则由 Agent 类型和项目上下文自动加载，不在这里绑定。</Space>
   </Card>
 </template>
 

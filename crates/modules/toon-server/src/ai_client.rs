@@ -36,13 +36,28 @@ async fn recorded<T, F>(
 where
     F: std::future::Future<Output = Result<T, String>>,
 {
+    recorded_with_context(pool, None, None, task_class, model, description, future).await
+}
+
+async fn recorded_with_context<T, F>(
+    pool: &PgPool,
+    project_id: Option<i64>,
+    progress_total: Option<i32>,
+    task_class: &str,
+    model: &str,
+    description: &str,
+    future: F,
+) -> Result<T, String>
+where
+    F: std::future::Future<Output = Result<T, String>>,
+{
     let id = task_id();
-    sqlx::query("INSERT INTO toonflow.tasks(id,task_class,model,description,state,start_time) VALUES($1,$2,$3,$4,'running',$5)")
-        .bind(id).bind(task_class).bind(model).bind(description).bind(chrono::Utc::now().timestamp_millis())
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,model,description,state,start_time,progress_current,progress_total) VALUES($1,$2,$3,$4,$5,'running',$6,0,$7)")
+        .bind(id).bind(project_id).bind(task_class).bind(model).bind(description).bind(chrono::Utc::now().timestamp_millis()).bind(progress_total)
         .execute(pool).await.map_err(|error| format!("创建 AI 任务记录失败：{error}"))?;
     match future.await {
         Ok(value) => {
-            sqlx::query("UPDATE toonflow.tasks SET state='success',reason=NULL WHERE id=$1")
+            sqlx::query("UPDATE toonflow.tasks SET state='success',progress_current=coalesce(progress_total,progress_current),reason=NULL WHERE id=$1")
                 .bind(id)
                 .execute(pool)
                 .await
@@ -296,8 +311,19 @@ pub async fn image_with_references(
     size: &str,
     references: Vec<String>,
 ) -> Result<String, String> {
+    image_with_references_for_project(pool, None, configured, prompt, size, references).await
+}
+
+pub async fn image_with_references_for_project(
+    pool: &PgPool,
+    project_id: Option<i64>,
+    configured: &str,
+    prompt: &str,
+    size: &str,
+    references: Vec<String>,
+) -> Result<String, String> {
     let model = model_id(configured, "图片")?;
-    recorded(pool, "image", &model.to_string(), "图片生成", async move {
+    recorded_with_context(pool, project_id, Some(1), "image", &model.to_string(), "图片生成", async move {
         let mut last_error = String::new();
         for attempt in 1..=3 {
             match rust_toon_ai_server::AiModelFactory::new(pool.clone())
