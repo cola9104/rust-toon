@@ -197,6 +197,10 @@ async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
             .to_ascii_lowercase()
             .as_str()
         {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
             "mp3" | "mpeg" => "audio/mpeg",
             "wav" => "audio/wav",
             "m4a" => "audio/mp4",
