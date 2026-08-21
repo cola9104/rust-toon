@@ -638,7 +638,10 @@ pub fn routes(state: ToonState) -> Router {
         .route("/api/agents/events", post(toonflow_agents::events))
         .route("/api/agents/retry", post(toonflow_agents::retry))
         .route("/api/agents/memories", post(toonflow_agents::memories))
-        .route("/api/agents/getMemory", post(toonflow_agents::memories))
+        .route(
+            "/api/agents/getMemory",
+            post(toonflow_agents::get_memory_compat),
+        )
         .route("/api/agents/runs", post(toonflow_agents::runs))
         .route("/api/agents/clearMemory", post(toonflow_agents::clear))
         .route(
@@ -1059,7 +1062,10 @@ pub fn routes(state: ToonState) -> Router {
         .route("/agents/events", post(toonflow_agents::events))
         .route("/agents/retry", post(toonflow_agents::retry))
         .route("/agents/memories", post(toonflow_agents::memories))
-        .route("/agents/getMemory", post(toonflow_agents::memories))
+        .route(
+            "/agents/getMemory",
+            post(toonflow_agents::get_memory_compat),
+        )
         .route("/agents/runs", post(toonflow_agents::runs))
         .route("/agents/clearMemory", post(toonflow_agents::clear))
         .route("/agents/deleteAllMemory", post(toonflow_agents::clear_all))

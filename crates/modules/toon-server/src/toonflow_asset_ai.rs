@@ -371,7 +371,7 @@ async fn make_image(
             .map_err(|e| e.to_string())?
             .unwrap_or(false);
     let visual_description = item.prompt.clone();
-    let prompt_key = match (item.type_.as_str(), derivative) {
+    let default_prompt_key = match (item.type_.as_str(), derivative) {
         ("role", false) => "asset_image_role_base",
         ("role", true) => "asset_image_role_derivative",
         ("scene", _) => "asset_image_scene",
@@ -379,6 +379,26 @@ async fn make_image(
         ("costume", _) => "asset_image_costume",
         _ => "",
     };
+    // A model-level mapping is an explicit override configured in the AI
+    // console. Keep the type-derived prompt as the safe fallback when no
+    // mapping exists (or when the model value is not a numeric config id).
+    let mapped_prompt_key: Option<String> = if let Ok(model_id) = model.parse::<i64>() {
+        sqlx::query_scalar::<_, String>(
+            "SELECT prompt_key FROM ai.model_prompt_maps
+             WHERE model_config_id=$1 AND enabled=true
+             ORDER BY update_time DESC, id DESC LIMIT 1",
+        )
+        .bind(model_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?
+    } else {
+        None
+    };
+    let prompt_key = mapped_prompt_key
+        .as_deref()
+        .filter(|key| !key.trim().is_empty())
+        .unwrap_or(default_prompt_key);
     let managed_instruction = if prompt_key.is_empty() {
         None
     } else {

@@ -51,6 +51,12 @@ pub struct SessionRequest {
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LegacyMemoryRequest {
+    agent_type: String,
+    project_id: i64,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClearMemoryRequest {
     agent_type: String,
     isolation_key: String,
@@ -1194,6 +1200,34 @@ pub async fn memories(
     let rows=sqlx::query_as("SELECT id,role,content,memory_type,create_time FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 ORDER BY create_time").bind(request.agent_type).bind(request.isolation_key).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list memories"))?;
     Ok(Json(ApiResponse::new(rows)))
 }
+
+/// Compatibility shape used by the original Toonflow HTTP client.
+/// Legacy callers identify a project rather than an isolation key; support
+/// the current `agentType:projectId[:scriptId]` key family without exposing
+/// memories from other projects.
+pub async fn get_memory_compat(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<LegacyMemoryRequest>,
+) -> Result<Json<ApiResponse<Vec<MemoryRow>>>, AppError> {
+    require(&user, "toon:project:read")?;
+    validate_agent(&request.agent_type)?;
+    let exact_key = format!("{}:{}", request.agent_type, request.project_id);
+    let prefix = format!("{}:{}:%", request.agent_type, request.project_id);
+    let rows = sqlx::query_as(
+        "SELECT id,role,content,memory_type,create_time
+         FROM toonflow.agent_memories
+         WHERE agent_type=$1 AND (isolation_key=$2 OR isolation_key LIKE $3)
+         ORDER BY create_time",
+    )
+    .bind(request.agent_type)
+    .bind(exact_key)
+    .bind(prefix)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to list memories"))?;
+    Ok(Json(ApiResponse::new(rows)))
+}
 pub async fn runs(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -1238,17 +1272,20 @@ pub async fn clear_all(
     State(state): State<ToonState>,
     Json(request): Json<ClearAllMemoryRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:project:update")?;
-    if let Some(agent_type) = request.agent_type.as_deref() {
-        validate_agent(agent_type)?;
+    if !user.role_codes.iter().any(|role| role == "super_admin") {
+        return Err(AppError::forbidden("仅超级管理员可清理 Agent 全部记忆"));
     }
-    let rows = sqlx::query(
-        "DELETE FROM toonflow.agent_memories WHERE ($1::text IS NULL OR agent_type=$1)",
-    )
-    .bind(request.agent_type.as_deref())
-    .execute(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to clear all agent memories"))?;
+    let agent_type = request
+        .agent_type
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| AppError::bad_request("agentType 必须指定"))?;
+    validate_agent(agent_type)?;
+    let rows = sqlx::query("DELETE FROM toonflow.agent_memories WHERE agent_type=$1")
+        .bind(agent_type)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to clear all agent memories"))?;
     Ok(Json(ApiResponse::new(json!({
         "deleted": rows.rows_affected()
     }))))
