@@ -231,7 +231,18 @@ pub(crate) async fn load_generate_data(
     let boards=sqlx::query_as::<_,(i64,Option<i64>,Option<String>,String,Option<String>,i32,Option<i64>)>("SELECT id,track_id,file_path,prompt,video_desc,coalesce(index,0),flow_id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 ORDER BY index,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboards"))?;
     let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32)>("SELECT id,prompt,state,duration,video_id,sort_order FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
     let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
-    let list=tracks.into_iter().map(|t|json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"medias":boards.iter().filter(|b|b.1==Some(t.0)).map(|b|json!({"id":b.0,"src":b.2,"prompt":b.4,"fileType":"image","sources":"storyboard","index":b.5,"flowId":b.6})).collect::<Vec<_>>(),"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>() })).collect::<Vec<_>>();
+    let asset_media: Vec<(i64, i64, String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT ast.storyboard_id,a.id,a.name,a.type,img.file_path,audio.file_path FROM toonflow.assets_storyboards ast JOIN toonflow.assets a ON a.id=ast.asset_id LEFT JOIN toonflow.images img ON img.id=a.image_id LEFT JOIN LATERAL (SELECT aa.file_path FROM toonflow.asset_audio_bindings b JOIN toonflow.assets aa ON aa.id=b.asset_audio_id WHERE b.asset_role_id=a.id ORDER BY b.create_time DESC LIMIT 1) audio ON true WHERE a.project_id=$1 AND ast.storyboard_id IN (SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2) ORDER BY ast.storyboard_id,ast.sort_order").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboard asset media"))?;
+    let list = tracks.into_iter().map(|t| {
+        let mut medias = Vec::new();
+        for board in boards.iter().filter(|b| b.1 == Some(t.0)) {
+            medias.push(json!({"id":board.0,"src":board.2,"prompt":board.4,"fileType":"image","sources":"storyboard","index":board.5,"flowId":board.6}));
+            for asset in asset_media.iter().filter(|a| a.0 == board.0) {
+                if let Some(src) = &asset.4 { medias.push(json!({"id":asset.1,"name":asset.2,"type":asset.3,"src":src,"fileType":"image","sources":"assets","storyboardId":board.0})); }
+                if let Some(src) = &asset.5 { medias.push(json!({"id":asset.1,"name":asset.2,"type":asset.3,"src":src,"fileType":"audio","sources":"assets","storyboardId":board.0})); }
+            }
+        }
+        json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"medias":medias,"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>()})
+    }).collect::<Vec<_>>();
     Ok(
         json!({"storyboardList":boards.into_iter().map(|b|json!({"id":b.0,"trackId":b.1,"src":b.2,"prompt":b.3,"videoDesc":b.4,"index":b.5,"flowId":b.6})).collect::<Vec<_>>(),"trackList":list}),
     )
