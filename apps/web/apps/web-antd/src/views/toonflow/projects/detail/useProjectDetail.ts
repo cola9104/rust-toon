@@ -345,6 +345,7 @@ async function loadProject() {
 }
 
 async function loadNovels() {
+  if (!Number.isSafeInteger(projectId.value) || projectId.value <= 0) return;
   novels.value = await getNovelData(projectId.value);
 }
 
@@ -430,7 +431,7 @@ function scheduleProductionAssetRefresh() {
 }
 
 async function loadAll() {
-  if (!projectId.value || isNaN(projectId.value)) return;
+  if (!Number.isSafeInteger(projectId.value) || projectId.value <= 0) return;
   loading.value = true;
   try {
     await Promise.all([loadProject(), loadNovels(), loadScripts(), loadAssets()]);

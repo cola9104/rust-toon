@@ -209,6 +209,9 @@ export function addNovel(projectId: number, data: Array<Partial<ToonflowApi.Nove
 }
 
 export function getNovelData(projectId: number) {
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    return Promise.resolve([] as ToonflowApi.NovelChapter[]);
+  }
   return requestClient.post<ToonflowApi.NovelChapter[]>('/toonflow/novel/getNovelData', {
     projectId,
   });
