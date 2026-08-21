@@ -423,8 +423,7 @@ async fn handle_socket(
     let mut think_level: i32 = 0;
 
     // Abort controller
-    let (mut abort_tx, abort_rx) = watch::channel(false);
-    let mut current_abort_rx = abort_rx.clone();
+    let (mut abort_tx, _abort_rx) = watch::channel(false);
 
     // Restore historical messages as chat bubbles
     let memories: Vec<toonflow_agents::MemoryRow> = sqlx::query_as(
@@ -480,11 +479,6 @@ async fn handle_socket(
 
     // Main message loop
     loop {
-        // Check abort
-        if *current_abort_rx.borrow() {
-            break;
-        }
-
         let msg_result =
             match tokio::time::timeout(std::time::Duration::from_secs(90), ws_rx.next()).await {
                 Ok(Some(result)) => result,
@@ -540,9 +534,11 @@ async fn handle_socket(
                 };
 
                 // Create fresh abort channel for this run
+                // Cancel the previous run, but keep this WebSocket session
+                // alive so the user can immediately submit another message.
+                let _ = abort_tx.send(true);
                 let (new_abort_tx, new_abort_rx) = watch::channel(false);
                 abort_tx = new_abort_tx;
-                current_abort_rx = new_abort_rx.clone();
 
                 // Spawn agent execution
                 let exec_emitter = emitter.clone();
