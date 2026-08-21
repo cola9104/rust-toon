@@ -702,6 +702,19 @@ pub(crate) async fn execute_inner(
                 };
                 return Ok(changed_flow_data(&request.isolation_key, key, value));
             }
+            if key == "storyboard" {
+                let data = crate::toonflow_video::load_generate_data(
+                    &state.pool,
+                    request.project_id,
+                    script_id,
+                )
+                .await?;
+                return Ok(changed_flow_data(
+                    &request.isolation_key,
+                    key,
+                    data["storyboardList"].clone(),
+                ));
+            }
             let data:Option<Value>=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get flow data"))?;
             let data = data.unwrap_or_else(|| json!({}));
             let value = if key.is_empty() {
