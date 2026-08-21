@@ -374,6 +374,30 @@ impl ToonState {
         .await
         .map(|result| result.rows_affected())
     }
+
+    pub async fn recover_storage_cleanup_tasks(&self) -> Result<u64, sqlx::Error> {
+        let rows: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id,object_path FROM toonflow.storage_cleanup_tasks
+             WHERE state='pending' ORDER BY update_time LIMIT 100",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut completed = 0;
+        for (id, path) in rows {
+            match crate::toonflow_storage::delete_asset_file(&path).await {
+                Ok(()) => {
+                    sqlx::query("UPDATE toonflow.storage_cleanup_tasks SET state='completed',update_time=$2 WHERE id=$1")
+                        .bind(id).bind(chrono::Utc::now().timestamp_millis()).execute(&self.pool).await?;
+                    completed += 1;
+                }
+                Err(error) => {
+                    sqlx::query("UPDATE toonflow.storage_cleanup_tasks SET attempts=attempts+1,error_reason=$2,update_time=$3 WHERE id=$1")
+                        .bind(id).bind(error).bind(chrono::Utc::now().timestamp_millis()).execute(&self.pool).await?;
+                }
+            }
+        }
+        Ok(completed)
+    }
 }
 
 /// Marks work interrupted by a process restart as failed before serving traffic.

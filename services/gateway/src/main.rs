@@ -35,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let infra_state = rust_toon_infra_server::InfraState::new(database.clone());
     let ai_state = rust_toon_ai_server::AiState::new(database.clone(), tokens.clone());
     let toon_state = rust_toon_toon_server::ToonState::new(database.clone(), tokens.clone());
+    let recovered_cleanup = toon_state.recover_storage_cleanup_tasks().await?;
+    tracing::info!(recovered_cleanup, "storage cleanup tasks recovered");
     let media_state = rust_toon_media_server::MediaState::new(database.clone(), tokens);
     system_state.bootstrap().await?;
     let recovered_images = toon_state.recover_interrupted_image_tasks().await?;
