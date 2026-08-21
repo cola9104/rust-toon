@@ -10,7 +10,6 @@ import { Page } from '@vben/common-ui';
 
 import {
   Button,
-  Card,
   Checkbox,
   Col,
   Empty,
@@ -532,18 +531,10 @@ watch(() => route.query.projectId, (value) => {
 
 <template>
   <Page auto-content-height class="toon-page">
-    <Card
-      :bordered="false"
-      class="toonflow-page-card h-full toon-surface"
-    >
-      <template #title>
-        <Space>
-          <Typography.Text strong>资产库</Typography.Text>
-          <Tag>{{ assets.length }} 项项目资产</Tag>
-        </Space>
-      </template>
-      <template #extra>
-        <Space>
+    <div class="toonflow-page-shell">
+      <div class="toon-header asset-header">
+        <div class="asset-heading"><div class="asset-heading-title"><h1 class="toon-title">资产库</h1><Tag :bordered="false">{{ assets.length }} 项项目资产</Tag></div><p class="toon-subtitle">按项目管理角色、场景、道具和服装资产。</p></div>
+        <Space wrap>
           <Select
             :options="projectOptions"
             :value="selectedProjectId"
@@ -561,7 +552,7 @@ watch(() => route.query.projectId, (value) => {
           <Button :disabled="!selectedProjectId" @click="materialInput?.click()">上传素材</Button>
           <Button :disabled="!selectedProjectId" type="primary" @click="openAsset()">新增资产</Button>
         </Space>
-      </template>
+      </div>
 
       <Typography.Paragraph class="asset-library-tip" type="secondary">
         资产按项目隔离；选择项目后，只显示并使用该项目创建的资产。
@@ -687,7 +678,7 @@ watch(() => route.query.projectId, (value) => {
           </main>
         </div>
       </template>
-    </Card>
+    </div>
 
     <Modal v-model:open="assetModalOpen" title="资产" width="760px" @ok="saveAssetForm">
       <Form :label-col="{ span: 4 }">
@@ -736,6 +727,12 @@ watch(() => route.query.projectId, (value) => {
 </template>
 
 <style scoped>
+.toonflow-page-shell { display: flex; min-width: 0; height: 100%; min-height: 100%; flex-direction: column; overflow: auto; padding: 4px 2px 20px; }
+.asset-header { align-items: flex-start; gap: 16px; }
+.asset-heading { min-width: 0; }
+.asset-heading-title { display: flex; align-items: center; gap: 10px; }
+.asset-heading-title .toon-title { margin: 0; }
+.asset-heading-title .ant-tag { margin: 0; border-radius: 999px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); }
 .asset-library-tip { margin-bottom: 16px; }.asset-category-tabs { margin-bottom: 4px; }
 .category-count { margin-inline-end: 0; }
 .asset-toolbar {
@@ -809,6 +806,9 @@ watch(() => route.query.projectId, (value) => {
 .asset-actions { border-top: 1px solid var(--ant-color-border-secondary); margin-top: auto; padding-top: 8px; }
 .asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 220px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 16px; z-index: 4; display: grid; max-height: calc(100vh - 132px); overflow: auto; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: color-mix(in srgb, #fafaf8 92%, transparent); box-shadow: 0 8px 24px rgb(15 23 42 / 7%); gap: 8px; }.batch-title,.batch-selection { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.batch-selection { padding: 6px 0 9px; border-bottom: 1px solid var(--toon-line); }.batch-selection span { color: #8c8c8c; font-size: 11px; white-space: nowrap; }.batch-progress { padding: 7px 9px; border-radius: 7px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); font-size: 12px; text-align: center; }.batch-sidebar label { margin-top: 7px; color: #8c8c8c; font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: rgb(255 255 255 / 90%); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
 @media (max-width: 640px) {
+  .asset-header { align-items: stretch; flex-direction: column; }
+  .asset-header > .ant-space { width: 100%; }
+  .asset-header .ant-select { width: 100% !important; }
   .asset-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
   .asset-workspace { grid-template-columns: 1fr; }.batch-sidebar { position: static; }
 }
