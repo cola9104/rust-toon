@@ -64,6 +64,12 @@ const routes: RouteRecordRaw[] = [
           icon: 'lucide:bot',
         },
       },
+      {
+        path: '/toonflow/settings/model-map',
+        component: () => import('#/views/toonflow/settings/model-map.vue'),
+        name: 'ToonflowModelPromptMap',
+        meta: { title: '模型 Prompt 映射', icon: 'lucide:link-2' },
+      },
     ],
   },
 ];

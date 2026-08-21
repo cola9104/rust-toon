@@ -137,6 +137,7 @@ pub struct StartWorkflowNodeRequest {
     pub node_id: String,
     #[serde(default = "empty_object")]
     pub input: Value,
+    pub agent_run_id: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,6 +150,7 @@ pub struct NodeRunIdRequest {
 pub struct WorkflowNodeRunResponse {
     pub id: i64,
     pub workflow_run_id: i64,
+    pub agent_run_id: Option<i64>,
     pub node_id: String,
     pub node_type: String,
     pub attempt: i32,
@@ -935,10 +937,15 @@ async fn launch_standard_node(
                     tool_name,
                     arguments: json!({"prompt":prompt}),
                 };
-                let plan_output = toonflow_agent_tools::execute_recorded(&task_state, &request)
+                let (plan_run_id, plan_output) = toonflow_agent_tools::execute_recorded(&task_state, &request)
                     .await
-                    .map(|(_, output)| output)
                     .map_err(|error| format!("{error:?}"))?;
+                sqlx::query("UPDATE toonflow.workflow_node_runs SET agent_run_id=$2 WHERE id=$1")
+                    .bind(node_run_id)
+                    .bind(plan_run_id)
+                    .execute(&task_state.pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
                 if !materialize_storyboard_panel {
                     Ok(plan_output)
                 } else {
@@ -964,13 +971,13 @@ async fn launch_standard_node(
                         tool_name: "run_sub_agent_storyboard_panel".into(),
                         arguments: json!({"prompt":"读取刚生成的最新分镜表，按项目当前模式完整写入分镜面板。必须逐项调用写入工具，不得只返回文字说明。"}),
                     };
-                    let panel_output = match toonflow_agent_tools::execute_recorded(
+                    let (panel_run_id, panel_output) = match toonflow_agent_tools::execute_recorded(
                         &task_state,
                         &panel_request,
                     )
                     .await
                     {
-                        Ok((_, output)) => output,
+                        Ok((run_id, output)) => (run_id, output),
                         Err(error) => {
                             rollback_partial_storyboard_panel(
                                 &task_state.pool,
@@ -982,6 +989,12 @@ async fn launch_standard_node(
                             return Err(format!("分镜表已生成，但自动写入面板失败：{error:?}"));
                         }
                     };
+                    sqlx::query("UPDATE toonflow.workflow_node_runs SET agent_run_id=$2 WHERE id=$1")
+                        .bind(node_run_id)
+                        .bind(panel_run_id)
+                        .execute(&task_state.pool)
+                        .await
+                        .map_err(|error| error.to_string())?;
                     let current_ids = storyboard_ids(&task_state.pool, project_id, script_id).await?;
                     let new_ids = current_ids
                         .into_iter()
@@ -1363,6 +1376,14 @@ pub async fn start_node(
     .await
     .map_err(|_| AppError::internal("failed to find workflow node run"))?
     .ok_or_else(|| AppError::not_found("workflow node run not found"))?;
+    if let Some(agent_run_id) = request.agent_run_id {
+        sqlx::query("UPDATE toonflow.workflow_node_runs SET agent_run_id=$2 WHERE id=$1")
+            .bind(node_run_id)
+            .bind(agent_run_id)
+            .execute(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to link agent run"))?;
+    }
     let response = launch_node(&state, node_run_id, request.input).await?;
     Ok(Json(ApiResponse::new(response)))
 }
@@ -1375,7 +1396,7 @@ pub async fn node_state(
     require(&user, "toon:scene:read")?;
     recover_stale_node_runs(&state).await;
     let row = sqlx::query_as::<_, WorkflowNodeRunResponse>(
-        "SELECT id,workflow_run_id,node_id,node_type,attempt,state,input,output,error_reason,
+        "SELECT id,workflow_run_id,agent_run_id,node_id,node_type,attempt,state,input,output,error_reason,
                 progress_current,progress_total,retry_of_id,start_time,finish_time,create_time
          FROM toonflow.workflow_node_runs WHERE id=$1",
     )
@@ -1420,7 +1441,7 @@ pub async fn run_state(
     .ok_or_else(|| AppError::not_found("workflow run not found"))?;
     let nodes = sqlx::query_as::<_, WorkflowNodeRunResponse>(
         "SELECT DISTINCT ON(node_id)
-                id,workflow_run_id,node_id,node_type,attempt,state,input,output,error_reason,
+                id,workflow_run_id,agent_run_id,node_id,node_type,attempt,state,input,output,error_reason,
                 progress_current,progress_total,retry_of_id,start_time,finish_time,create_time
          FROM toonflow.workflow_node_runs WHERE workflow_run_id=$1
          ORDER BY node_id,attempt DESC",

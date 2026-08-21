@@ -101,6 +101,15 @@ const routes: RouteRecordRaw[] = [
         },
       },
       {
+        path: 'console/model',
+        component: () => import('#/views/ai/model/model/index.vue'),
+        name: 'AiConsoleModel',
+        meta: {
+          title: '模型配置',
+          hideInMenu: true,
+        },
+      },
+      {
         path: 'model/chat-role',
         component: () => import('#/views/ai/model/chatRole/index.vue'),
         name: 'AiModelChatRole',

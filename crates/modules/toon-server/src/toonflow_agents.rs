@@ -81,6 +81,7 @@ pub struct RunRow {
     think_level: i32,
     start_time: i64,
     finish_time: Option<i64>,
+    retry_of_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -1094,7 +1095,7 @@ pub async fn run_state(
     Json(request): Json<RunIdRequest>,
 ) -> Result<Json<ApiResponse<RunRow>>, AppError> {
     require(&user, "toon:project:read")?;
-    let row=sqlx::query_as("SELECT id,agent_type,isolation_key,project_id,script_id,input,output,state,error_reason,think,think_level,start_time,finish_time FROM toonflow.agent_runs WHERE id=$1").bind(request.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get agent run"))?.ok_or_else(||AppError::not_found("agent run not found"))?;
+    let row=sqlx::query_as("SELECT id,agent_type,isolation_key,project_id,script_id,input,output,state,error_reason,think,think_level,start_time,finish_time,retry_of_id FROM toonflow.agent_runs WHERE id=$1").bind(request.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to get agent run"))?.ok_or_else(||AppError::not_found("agent run not found"))?;
     Ok(Json(ApiResponse::new(row)))
 }
 
@@ -1160,6 +1161,12 @@ pub async fn retry(
         think_level,
     };
     let run_id = create_run(&state, &request).await?;
+    sqlx::query("UPDATE toonflow.agent_runs SET retry_of_id=$2 WHERE id=$1")
+        .bind(run_id)
+        .bind(source.id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to link retry run"))?;
     let task_state = state.clone();
     let handle = tokio::spawn(async move {
         let _ = perform_run(&task_state, &request, run_id).await;
@@ -1194,7 +1201,7 @@ pub async fn runs(
 ) -> Result<Json<ApiResponse<Vec<RunRow>>>, AppError> {
     require(&user, "toon:project:read")?;
     validate_agent(&request.agent_type)?;
-    let rows=sqlx::query_as("SELECT id,agent_type,isolation_key,project_id,script_id,input,output,state,error_reason,think,think_level,start_time,finish_time FROM toonflow.agent_runs WHERE agent_type=$1 AND isolation_key=$2 ORDER BY start_time DESC LIMIT 50").bind(request.agent_type).bind(request.isolation_key).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list agent runs"))?;
+    let rows=sqlx::query_as("SELECT id,agent_type,isolation_key,project_id,script_id,input,output,state,error_reason,think,think_level,start_time,finish_time,retry_of_id FROM toonflow.agent_runs WHERE agent_type=$1 AND isolation_key=$2 ORDER BY start_time DESC LIMIT 50").bind(request.agent_type).bind(request.isolation_key).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list agent runs"))?;
     Ok(Json(ApiResponse::new(rows)))
 }
 pub async fn clear(
@@ -1218,6 +1225,33 @@ pub async fn clear(
     )
     .await?;
     Ok(Json(ApiResponse::new(json!(true))))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClearAllMemoryRequest {
+    pub agent_type: Option<String>,
+}
+
+pub async fn clear_all(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<ClearAllMemoryRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if let Some(agent_type) = request.agent_type.as_deref() {
+        validate_agent(agent_type)?;
+    }
+    let rows = sqlx::query(
+        "DELETE FROM toonflow.agent_memories WHERE ($1::text IS NULL OR agent_type=$1)",
+    )
+    .bind(request.agent_type.as_deref())
+    .execute(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to clear all agent memories"))?;
+    Ok(Json(ApiResponse::new(json!({
+        "deleted": rows.rows_affected()
+    }))))
 }
 
 pub(crate) async fn clear_memory_records(

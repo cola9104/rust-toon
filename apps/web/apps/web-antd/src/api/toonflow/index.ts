@@ -121,16 +121,20 @@ export namespace ToonflowApi {
     disabled: boolean;
     modelConfigId?: number;
     modelType: 'chat' | 'image' | 'speech' | 'video';
+    promptSourceKey?: string;
+    skillPath?: string;
+    memoryScope?: string;
+    writePermissions?: string[];
   }
 
   export interface ArtStyle { id: number; name: string; fileUrl: string; label: string; prompt: string; createTime: number }
-  export interface Task { id: number; projectId?: number; projectName?: string; taskClass: string; relatedObjects: string; model: string; description: string; state: string; startTime?: number; reason?: string }
+  export interface Task { id: number; projectId?: number; projectName?: string; taskClass: string; relatedObjects: string; model: string; description: string; state: string; startTime?: number; reason?: string; input?: Record<string, any>; retryOfId?: number; progressCurrent?: number; progressTotal?: number }
   export interface Prompt { id: number; name: string; type: string; data: string; useData?: string; sourceKey?: string }
   export interface Skill { id: string; name: string; description: string; type: string; path: string; state: number; createTime: number; updateTime: number }
   export interface ProjectStatistics { roleCount: number; scriptCount: number; videoCount: number; storyboardCount: number }
   export interface CreativeManual { id: number; kind: 'director' | 'visual'; name: string; path: string; images: string[]; data: Array<{ label: string; value: string; data: string }>; createTime: number; updateTime: number }
   export interface AgentMemory { id: number; role: string; content: string; memoryType: 'message' | 'summary'; createTime: number }
-  export interface AgentRun { id: number; agentType: string; isolationKey: string; projectId: number; scriptId?: number; input: string; output?: string; state: string; errorReason?: string; startTime: number; finishTime?: number }
+  export interface AgentRun { id: number; agentType: string; isolationKey: string; projectId: number; scriptId?: number; input: string; output?: string; state: string; errorReason?: string; startTime: number; finishTime?: number; retryOfId?: number }
   export interface AgentRunEvent { id: number; runId: number; eventType: string; data: { text?: string }; createTime: number }
 }
 
@@ -153,6 +157,7 @@ export const pollScriptAssets = (ids: number[]) => requestClient.post<Array<{ id
 export const polishAssetPrompt = (data: { assetsId: number; projectId: number; type: string; name: string; describe: string }) => requestClient.post<{ prompt: string; assetsId: number }>('/assetsGenerate/polishAssetsPrompt', data);
 export const generateAssetImage = (data: { projectId: number; model: number | string; resolution: string; id: number; type: string; name: string; prompt: string; base64?: string }) => requestClient.post<{ path: string; assetsId: number }>('/assetsGenerate/generateAssets', data);
 export const queueAssetImages = (data: { projectId: number; model: number | string; resolution: string; concurrentCount?: number; items: Array<{ id: number; type: string; name: string; prompt: string; base64?: string }> }) => requestClient.post<{ total: number }>('/assetsGenerate/batchGenerateImageAssets', data);
+export const retryAssetImages = (data: { projectId: number; ids: number[]; concurrentCount?: number }) => requestClient.post<{ total: number; ids: number[] }>('/assetsGenerate/retryImageAssets', data);
 export const pollAssetImages = (ids: number[]) => requestClient.post<Array<{ id: number; state: string; filePath?: string; errorReason?: string; imageId: number }>>('/assets/pollingImageAssets', { ids });
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
@@ -347,12 +352,14 @@ export interface WorkflowNodeRun {
   startTime?: number;
   state: string;
   workflowRunId: number;
+  agentRunId?: number;
 }
 
 export function startWorkflowNode(data: {
   input: Record<string, any>;
   nodeId: string;
   workflowRunId: number;
+  agentRunId?: number;
 }) {
   return requestClient.post<{
     id: number;
@@ -460,7 +467,7 @@ export const reorderVideoTracks = (projectId: number, scriptId: number, trackIds
 export const bindTrackStoryboards = (trackId: number, storyboardIds: number[]) => requestClient.post('/production/workbench/bindStoryboards', { trackId, storyboardIds });
 export const cancelTrackVideo = (id: number) => requestClient.post('/production/workbench/cancelVideo', { id });
 export const retryTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/retryVideo', data);
-export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
+export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string; retryOfId?: number }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
 export const exportFinalVideo = (projectId: number, scriptId: number) => requestClient.post<{ taskId: number; state: string }>('/production/workbench/exportVideo', { projectId, scriptId });
 export const selectTrackVideo = (trackId: number, videoId: number) => requestClient.post('/production/workbench/selectVideo', { trackId, videoId });
 export const deleteTrackVideo = (id: number) => requestClient.post('/production/workbench/delVideo', { id });
@@ -480,6 +487,7 @@ export const retryAgent = (id: number) => requestClient.post<{ id: number; state
 export const getAgentMemories = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string) => requestClient.post<ToonflowApi.AgentMemory[]>('/agents/memories', { agentType, isolationKey });
 export const getAgentRuns = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string) => requestClient.post<ToonflowApi.AgentRun[]>('/agents/runs', { agentType, isolationKey });
 export const clearAgentMemory = (agentType: 'productionAgent' | 'scriptAgent', isolationKey: string, memoryType: 'all' | 'message' | 'summary' = 'all') => requestClient.post('/agents/clearMemory', { agentType, isolationKey, memoryType });
+export const clearAllAgentMemory = (agentType?: 'productionAgent' | 'scriptAgent') => requestClient.post<{ deleted: number }>('/agents/deleteAllMemory', { agentType });
 export const getScriptAgentPlan = (projectId: number) => requestClient.post<{ id: number; data: { storySkeleton: string; adaptationStrategy: string; script: Array<{ id: number; name: string; content: string }> } }>('/scriptAgent/getPlanData', { projectId, agentType: 'scriptAgent' });
 export const saveScriptAgentPlan = (projectId: number, data: Record<string, any>) => requestClient.post<{ id: number }>('/scriptAgent/setPlanData', { projectId, agentType: 'scriptAgent', data });
 export const executeAgentTool = (data: { agentType: 'productionAgent' | 'scriptAgent'; projectId: number; scriptId?: number; toolName: string; arguments?: Record<string, any> }) => requestClient.post<{ callId: number; result: any }>('/agents/tools/execute', data);

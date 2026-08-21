@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import { Page } from '@vben/common-ui';
 
-import { Button, Card, Col, Row, Space, Statistic, Tag, Typography } from 'ant-design-vue';
+import { Button, Card, Col, Row, Space, Statistic, Typography } from 'ant-design-vue';
 
 import StageNav from '../components/StageNav.vue';
 import { useProjectDetail } from './detail/useProjectDetail';
@@ -15,11 +15,11 @@ const view = useProjectDetail();
 
 <template>
   <Page auto-content-height class="toon-page">
-    <Card :bordered="false" :loading="view.loading" class="toonflow-page-card h-full toon-surface">
-      <template #title>
-        <Space><Button @click="view.router.back()">返回</Button><Typography.Text strong>{{ view.project?.name || '项目详情' }}</Typography.Text><Tag>{{ view.project?.videoRatio || '16:9' }}</Tag></Space>
-      </template>
-      <template #extra><Button @click="view.loadAll">刷新</Button></template>
+    <div class="toonflow-detail-shell" :class="{ loading: view.loading }">
+      <header class="detail-header">
+        <Space><Button @click="view.router.back()">返回</Button><Typography.Text strong>{{ view.project?.name || '项目详情' }}</Typography.Text><span class="detail-ratio-badge">{{ view.project?.videoRatio || '16:9' }}</span></Space>
+        <Button @click="view.loadAll">刷新</Button>
+      </header>
 
       <Row :gutter="16" class="mb-4">
         <Col :span="6"><Card size="small"><Statistic title="角色资产" :value="view.statistics.roleCount" /></Card></Col>
@@ -30,7 +30,7 @@ const view = useProjectDetail();
 
       <StageNav v-model="view.activeTab" :stages="view.stages" />
       <component :is="view.activePanelComponent" :context="view.panelContext" />
-    </Card>
+    </div>
   </Page>
 </template>
 

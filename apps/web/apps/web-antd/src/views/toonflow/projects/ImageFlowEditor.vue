@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import type { Edge, Node } from '@vue-flow/core';
+import type { Connection, Edge, Node, NodeChange, EdgeChange } from '@vue-flow/core';
 
 import { ref } from 'vue';
 
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
-import { Handle, Position, VueFlow } from '@vue-flow/core';
+import { applyEdgeChanges, applyNodeChanges, Handle, Position, VueFlow } from '@vue-flow/core';
 import { MiniMap } from '@vue-flow/minimap';
 import { Button, Card, Image, Input, Select, Space, Tag } from 'ant-design-vue';
 
@@ -31,7 +31,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   add: [type: 'generated' | 'prompt' | 'upload'];
   agent: [nodeId: string];
-  connect: [connection: any];
+  connect: [connection: Connection];
   generate: [nodeId: string];
   remove: [nodeId: string];
   save: [];
@@ -64,6 +64,14 @@ function onUpload(event: Event) {
   input.value = '';
   if (file && uploadNodeId.value) emit('upload', uploadNodeId.value, file);
 }
+
+function onNodesChange(changes: NodeChange[]) {
+  emit('update:nodes', applyNodeChanges(changes, props.nodes as any) as Node[]);
+}
+
+function onEdgesChange(changes: EdgeChange[]) {
+  emit('update:edges', applyEdgeChanges(changes, props.edges as any) as Edge[]);
+}
 </script>
 
 <template>
@@ -84,8 +92,8 @@ function onUpload(event: Event) {
       :min-zoom="0.2"
       :max-zoom="2"
       @connect="emit('connect', $event)"
-      @edges-change="emit('update:edges', props.edges)"
-      @nodes-change="emit('update:nodes', props.nodes)"
+      @edges-change="onEdgesChange"
+      @nodes-change="onNodesChange"
     >
       <Background pattern-color="#d9d9d9" :gap="20" />
       <Controls />

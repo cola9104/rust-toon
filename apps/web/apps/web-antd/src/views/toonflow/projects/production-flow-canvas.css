@@ -1,7 +1,7 @@
 .production-flow-shell {
   position: relative;
-  height: calc(100vh - 250px);
-  min-height: 720px;
+  height: max(760px, calc(100vh - 210px));
+  min-height: 760px;
   overflow: hidden;
   border: 1px solid var(--ant-color-border-secondary);
   border-radius: 10px;

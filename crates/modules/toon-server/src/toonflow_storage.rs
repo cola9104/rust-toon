@@ -228,6 +228,21 @@ pub(crate) fn is_asset_image_path(file_path: &str) -> bool {
     asset_image_key(file_path).is_some()
 }
 
+pub(crate) async fn delete_asset_file(file_path: &str) -> Result<(), String> {
+    let Some(key) = asset_image_key(file_path) else {
+        return Ok(());
+    };
+    let response = signed_request(Method::DELETE, Some(key), Vec::new()).await?;
+    if response.status().is_success() || response.status().as_u16() == 404 {
+        Ok(())
+    } else {
+        Err(format!(
+            "删除 MinIO 资产文件失败：HTTP {}",
+            response.status()
+        ))
+    }
+}
+
 fn asset_image_key(file_path: &str) -> Option<&str> {
     file_path
         .strip_prefix("/toonflow/assets/files/")

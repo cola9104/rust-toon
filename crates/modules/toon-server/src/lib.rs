@@ -173,8 +173,8 @@ mod storyboard_database_tests {
                 video_desc: "edited shot".into(),
                 duration: Some(7),
                 track: Some("secondary".into()),
-                should_generate_image: 1,
-                associate_assets_ids: vec![],
+                should_generate_image: Some(1),
+                associate_assets_ids: Some(vec![]),
             }),
         )
         .await
@@ -586,6 +586,10 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_asset_ai::batch_generate_images),
         )
         .route(
+            "/api/assetsGenerate/retryImageAssets",
+            post(toonflow_asset_ai::retry_images),
+        )
+        .route(
             "/api/assets/pollingImageAssets",
             post(toonflow_asset_ai::poll_images),
         )
@@ -634,8 +638,13 @@ pub fn routes(state: ToonState) -> Router {
         .route("/api/agents/events", post(toonflow_agents::events))
         .route("/api/agents/retry", post(toonflow_agents::retry))
         .route("/api/agents/memories", post(toonflow_agents::memories))
+        .route("/api/agents/getMemory", post(toonflow_agents::memories))
         .route("/api/agents/runs", post(toonflow_agents::runs))
         .route("/api/agents/clearMemory", post(toonflow_agents::clear))
+        .route(
+            "/api/agents/deleteAllMemory",
+            post(toonflow_agents::clear_all),
+        )
         .route(
             "/api/agents/tools/execute",
             post(toonflow_agent_tools::execute),
@@ -653,10 +662,22 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_agent_tools::update_plan),
         )
         .route(
+            "/scriptAgent/updateData",
+            post(toonflow_agent_tools::update_plan),
+        )
+        .route(
             "/script/extractAssets",
             post(toonflow_script_ai::extract_assets),
         )
         .route("/script/pollScriptAssets", post(toonflow_script_ai::poll))
+        .route(
+            "/api/script/extractAssets",
+            post(toonflow_script_ai::extract_assets),
+        )
+        .route(
+            "/api/script/pollScriptAssets",
+            post(toonflow_script_ai::poll),
+        )
         .route(
             "/api/production/editImage/getImageFlow",
             post(toonflow_image_workflow::get_flow),
@@ -922,6 +943,14 @@ pub fn routes(state: ToonState) -> Router {
             "/toonflow/setting/settings",
             get(toonflow::list_settings).post(toonflow::save_setting),
         )
+        .route(
+            "/toonflow/setting/getAgentUseMode",
+            get(toonflow::get_agent_use_mode),
+        )
+        .route(
+            "/toonflow/setting/updateAgentUseMode",
+            post(toonflow::update_agent_use_mode),
+        )
         .route("/api/project/getProject", post(toonflow::list_projects))
         .route("/api/project/addProject", post(toonflow::create_project))
         .route("/api/project/editProject", post(toonflow::update_project))
@@ -941,6 +970,7 @@ pub fn routes(state: ToonState) -> Router {
             "/api/script/batchAddScript",
             post(toonflow::batch_add_scripts),
         )
+        .route("/script/batchAddScript", post(toonflow::batch_add_scripts))
         .route("/api/script/getScrptApi", post(toonflow::list_scripts))
         .route("/api/script/updateScript", post(toonflow::update_script))
         .route("/api/script/delScript", post(toonflow::delete_scripts))
@@ -953,7 +983,10 @@ pub fn routes(state: ToonState) -> Router {
             "/api/script/exportScript",
             post(toonflow_script_ai::export_scripts),
         )
-        .route("/api/assets/getAssetsApi", post(toonflow::list_assets))
+        .route(
+            "/api/assets/getAssetsApi",
+            post(toonflow::list_assets_compat),
+        )
         .route("/api/assets/saveAssets", post(toonflow::save_asset))
         .route("/api/assets/addAssets", post(toonflow::save_asset))
         .route("/api/assets/updateAssets", post(toonflow::save_asset))
@@ -1026,8 +1059,10 @@ pub fn routes(state: ToonState) -> Router {
         .route("/agents/events", post(toonflow_agents::events))
         .route("/agents/retry", post(toonflow_agents::retry))
         .route("/agents/memories", post(toonflow_agents::memories))
+        .route("/agents/getMemory", post(toonflow_agents::memories))
         .route("/agents/runs", post(toonflow_agents::runs))
         .route("/agents/clearMemory", post(toonflow_agents::clear))
+        .route("/agents/deleteAllMemory", post(toonflow_agents::clear_all))
         .route("/project/getProject", post(toonflow::list_projects))
         .route("/project/addProject", post(toonflow::create_project))
         .route("/project/editProject", post(toonflow::update_project))
@@ -1072,7 +1107,7 @@ pub fn routes(state: ToonState) -> Router {
             "/script/exportScript",
             post(toonflow_script_ai::export_scripts),
         )
-        .route("/assets/getAssetsApi", post(toonflow::list_assets))
+        .route("/assets/getAssetsApi", post(toonflow::list_assets_compat))
         .route("/assets/saveAssets", post(toonflow::save_asset))
         .route("/assets/addAssets", post(toonflow::save_asset))
         .route("/assets/updateAssets", post(toonflow::save_asset))
@@ -1120,6 +1155,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/assetsGenerate/batchGenerateImageAssets",
             post(toonflow_asset_ai::batch_generate_images),
+        )
+        .route(
+            "/assetsGenerate/retryImageAssets",
+            post(toonflow_asset_ai::retry_images),
         )
         .route(
             "/assets/pollingImageAssets",

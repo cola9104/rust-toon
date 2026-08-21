@@ -836,6 +836,7 @@ function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
 
 async function openAssetImageFlow(asset: ToonflowApi.Asset) {
   if (!selectedScriptId.value) return message.warning('请先选择剧本');
+  productionFlowCanvasRef.value?.focusNode('script');
   editingAssetId.value = asset.id;
   editingStoryboardId.value = undefined;
   editingAssetName.value = asset.name;
@@ -894,6 +895,7 @@ async function openAssetImageFlow(asset: ToonflowApi.Asset) {
 
 async function openStoryboardImageFlow(storyboard: ToonflowApi.Storyboard) {
   if (!selectedScriptId.value) return message.warning('请先选择剧本');
+  productionFlowCanvasRef.value?.focusNode('storyboard');
   editingAssetId.value = undefined;
   editingStoryboardId.value = storyboard.id;
   editingStoryboard.value = storyboard;
@@ -1463,6 +1465,7 @@ async function saveStoryboardOrder(ids: number[]) {
 async function openVideoTrack(trackId: number) {
   const track = videoTracks.value.find((item: any) => item.id === trackId);
   if (!track) return message.warning('未找到对应的视频轨道');
+  productionFlowCanvasRef.value?.focusNode('workbench');
   openTrackBinding(track);
 }
 function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=[...new Set<number>((track.medias??[]).map((media:any)=>media.id))];trackBindingOpen.value=true}
@@ -1550,6 +1553,7 @@ const panelContext = reactive({
   setAgentChatRef: (instance: InstanceType<typeof AgentChat> | null) => { agentChatRef.value = instance; },
   setProductionAgentChatRef: (instance: InstanceType<typeof AgentChat> | null) => { productionAgentChatRef.value = instance; },
   setProductionFlowCanvasRef: (instance: InstanceType<typeof ProductionFlowCanvas> | null) => { productionFlowCanvasRef.value = instance; },
+  focusProductionNode: (nodeId: string) => productionFlowCanvasRef.value?.focusNode(nodeId),
   assetOptions, reloadScriptsAndFlow: async () => { await loadScripts(); await loadFlow(); },
   reloadFlow: loadFlow,
   flowImageModalOpen, editingAssetName, imageFlowEditorKey, imageFlowNodes,

@@ -90,7 +90,7 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
             name: "第1集".into(),
             content: "雨夜车站，主角回头。".into(),
             project_id: Some(project_id),
-            assets: vec![],
+            assets: Some(vec![]),
         }),
     )
     .await
@@ -104,12 +104,14 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
             id: None,
             project_id,
             name: "雨夜车站".into(),
-            prompt: "wet railway platform at night".into(),
+            prompt: Some("wet railway platform at night".into()),
             remark: None,
-            r#type: "scene".into(),
-            description: "雨水反射站台灯光".into(),
+            r#type: Some("scene".into()),
+            description: Some("雨水反射站台灯光".into()),
             script_id: Some(script_id),
             parent_asset_id: None,
+            image_id: None,
+            base64: None,
         }),
     )
     .await

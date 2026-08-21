@@ -88,6 +88,7 @@ const emit = defineEmits<{
   generateTrackVideo: [track: any];
   generateVideoPrompt: [track: any];
   openVideoTrack: [trackId: number];
+  openAgentRun: [runId: number];
   retryStoryboards: [];
   retryNode: [nodeId: string];
   retryTrackVideo: [video: any, track: any];
@@ -107,7 +108,10 @@ const spacePressed = ref(false);
 const editorOpen = ref(false);
 const workbenchOpen = ref(false);
 const selectedNodeId = ref<string>();
+const selectedNodeIds = ref<string[]>([]);
 const nodeConfigDraft = ref<Record<string, any>>({});
+const layoutHistory = ref<Record<string, { x: number; y: number }>[]>([]);
+const layoutFuture = ref<Record<string, { x: number; y: number }>[]>([]);
 const editorKey = ref<'scriptPlan' | 'storyboardTable'>('scriptPlan');
 const editorValue = ref('');
 const flowData = computed<Record<string, any>>(() => {
@@ -200,6 +204,32 @@ function selectNode(event: { node: Node }) {
   };
 }
 
+function updateSelection(selection: { nodes?: Node[] }) {
+  selectedNodeIds.value = (selection.nodes ?? []).map((node) => node.id);
+}
+
+function runSelectedNodes() {
+  const ids = selectedNodeIds.value.filter((id) => workflow.value.nodes.some((node) => node.id === id));
+  if (!ids.length) return message.info('请先框选要运行的节点');
+  emit('runSequence', ids);
+}
+
+const selectedRunningCount = computed(() => selectedNodeIds.value.filter((id) => props.workflowNodeRuns?.[id]?.state === 'running').length);
+const selectedRetryableCount = computed(() => selectedNodeIds.value.filter((id) => ['failed', 'cancelled'].includes(props.workflowNodeRuns?.[id]?.state ?? '')).length);
+function cancelSelectedNodes() {
+  selectedNodeIds.value.filter((id) => props.workflowNodeRuns?.[id]?.state === 'running').forEach((id) => emit('cancelNode', id));
+}
+function retrySelectedNodes() {
+  selectedNodeIds.value.filter((id) => ['failed', 'cancelled'].includes(props.workflowNodeRuns?.[id]?.state ?? '')).forEach((id) => emit('retryNode', id));
+}
+function selectPath(direction: 'upstream' | 'downstream') {
+  const nodeId = selectedNodeId.value;
+  if (!nodeId) return message.info('请先点击一个节点');
+  const ids = workflowPath(workflow.value, nodeId, direction);
+  selectedNodeIds.value = ids;
+  flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = ids.includes(node.id); });
+}
+
 function saveWorkflow(definition: ProductionWorkflowDefinition) {
   emit('saveWorkflow', definition);
 }
@@ -268,6 +298,17 @@ function deleteEdges(deleted: Edge[]) {
   });
 }
 
+function deleteNodes(deleted: Node[]) {
+  const deletedIds = new Set(deleted.map((node) => node.id));
+  saveWorkflow({
+    ...workflow.value,
+    nodes: workflow.value.nodes.filter((node) => !deletedIds.has(node.id)),
+    edges: workflow.value.edges.filter((edge) => !deletedIds.has(edge.source) && !deletedIds.has(edge.target)),
+  });
+  selectedNodeIds.value = selectedNodeIds.value.filter((id) => !deletedIds.has(id));
+  if (selectedNodeId.value && deletedIds.has(selectedNodeId.value)) selectedNodeId.value = undefined;
+}
+
 function arrangeNodes() {
   const defaults = defaultProductionWorkflow();
   const defaultPositions = new Map(defaults.nodes.map((node) => [node.id, node.position]));
@@ -320,6 +361,7 @@ function saveNodePositions(event: any) {
   }
   if (event?.node) positions[event.node.id] = event.node.position;
   emit('savePositions', positions);
+  rememberLayout();
 }
 
 function focusStage(stageId: string) {
@@ -331,12 +373,99 @@ function focusStage(stageId: string) {
   });
 }
 
-defineExpose({ focusStage });
+function agentForNode(type: string) {
+  if (type.startsWith('director.') || type.startsWith('storyboard.')) return 'ProductionAgent · 导演/分镜子 Agent';
+  if (type.startsWith('asset.') || type.startsWith('image.')) return 'ProductionAgent · 资产/图片子 Agent';
+  if (type.startsWith('video.')) return 'ProductionAgent · 视频生产子 Agent';
+  return 'ProductionAgent';
+}
+
+function saveCanvasLayout() {
+  saveNodePositions({ nodes: flowInstance.value?.getNodes?.() || [] });
+}
+
+function currentCanvasPositions() {
+  return Object.fromEntries((flowInstance.value?.getNodes?.() || []).map((node: any) => [node.id, { x: node.position.x, y: node.position.y }]));
+}
+
+function rememberLayout() {
+  const current = currentCanvasPositions();
+  const previous = layoutHistory.value.at(-1);
+  if (previous && JSON.stringify(previous) === JSON.stringify(current)) return;
+  layoutHistory.value = [...layoutHistory.value.slice(-29), current];
+  layoutFuture.value = [];
+}
+
+function restoreLayout(positions: Record<string, { x: number; y: number }>) {
+  for (const node of flowInstance.value?.getNodes?.() || []) {
+    if (positions[node.id]) node.position = { ...positions[node.id] };
+  }
+  emit('savePositions', positions);
+}
+
+function undoLayout() {
+  if (layoutHistory.value.length < 2) return;
+  const current = layoutHistory.value.at(-1)!;
+  const previous = layoutHistory.value.at(-2)!;
+  layoutFuture.value = [...layoutFuture.value, current];
+  layoutHistory.value = layoutHistory.value.slice(0, -1);
+  restoreLayout(previous);
+}
+
+function redoLayout() {
+  const next = layoutFuture.value.at(-1);
+  if (!next) return;
+  layoutFuture.value = layoutFuture.value.slice(0, -1);
+  layoutHistory.value = [...layoutHistory.value, next];
+  restoreLayout(next);
+}
+
+function focusNode(nodeId: string) {
+  selectedNodeId.value = nodeId;
+  flowInstance.value?.setCenter?.(
+    workflow.value.nodes.find((node) => node.id === nodeId)?.position?.x ?? 0,
+    workflow.value.nodes.find((node) => node.id === nodeId)?.position?.y ?? 0,
+    { zoom: 0.8, duration: 350 },
+  );
+}
+
+defineExpose({ focusNode, focusStage });
 
 function handleSpaceDown(event: KeyboardEvent) {
-  if (event.code !== 'Space' || event.repeat) return;
   const target = event.target as HTMLElement | null;
   if (target?.matches('input, textarea, [contenteditable="true"]')) return;
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+    event.preventDefault();
+    saveCanvasLayout();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
+    event.preventDefault();
+    selectedNodeIds.value = workflow.value.nodes.map((node) => node.id);
+    flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = true; });
+    return;
+  }
+  if (event.key === 'Escape') {
+    selectedNodeIds.value = [];
+    flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = false; });
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+    event.preventDefault();
+    if (event.shiftKey) redoLayout(); else undoLayout();
+    return;
+  }
+  if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'y') {
+    event.preventDefault();
+    redoLayout();
+    return;
+  }
+  if (event.key === '0') {
+    event.preventDefault();
+    void flowInstance.value?.fitView?.({ duration: 350, padding: 0.08 });
+    return;
+  }
+  if (event.code !== 'Space' || event.repeat) return;
   event.preventDefault();
   spacePressed.value = true;
 }
@@ -360,13 +489,23 @@ onBeforeUnmount(() => {
         <Typography.Text strong>节点工作流</Typography.Text>
         <Tag>{{ workflow.nodes.length }} 节点</Tag>
         <Tag>{{ workflow.edges.length }} 连线</Tag>
+        <Tag v-if="selectedNodeIds.length" color="blue">已选 {{ selectedNodeIds.length }} 节点</Tag>
         <Button size="small" @click="flowInstance?.fitView?.({ duration: 350, padding: 0.08 })">
           适应画布
         </Button>
         <Button size="small" @click="arrangeNodes">整理布局</Button>
+        <Button size="small" @click="saveCanvasLayout">保存布局</Button>
+        <Button size="small" :disabled="layoutHistory.length < 2" @click="undoLayout">撤销</Button>
+        <Button size="small" :disabled="layoutFuture.length === 0" @click="redoLayout">重做</Button>
         <Button size="small" type="primary" ghost @click="validateCurrentWorkflow">校验工作流</Button>
+        <Button size="small" :disabled="!selectedNodeIds.length" @click="runSelectedNodes">运行选中节点</Button>
+        <Button size="small" danger :disabled="selectedRunningCount === 0" @click="cancelSelectedNodes">取消运行{{ selectedRunningCount ? `（${selectedRunningCount}）` : '' }}</Button>
+        <Button size="small" :disabled="selectedRetryableCount === 0" @click="retrySelectedNodes">批量重试{{ selectedRetryableCount ? `（${selectedRetryableCount}）` : '' }}</Button>
+        <Button v-if="selectedNodeIds.length" size="small" type="link" @click="selectedNodeIds = []">清除选择</Button>
+        <Button size="small" :disabled="!selectedNodeId" @click="selectPath('upstream')">选中上游</Button>
+        <Button size="small" :disabled="!selectedNodeId" @click="selectPath('downstream')">选中下游</Button>
       </Space>
-      <Typography.Text type="secondary">拖动端口连接节点 · 选中连线后按 Delete 删除 · 任务提交后由后端持续运行</Typography.Text>
+      <Typography.Text type="secondary">拖动端口连接节点 · 按 Shift 框选/多选节点 · 选中连线后按 Delete 删除 · 任务提交后由后端持续运行</Typography.Text>
     </div>
     <VueFlow
       :nodes="nodes"
@@ -377,6 +516,9 @@ onBeforeUnmount(() => {
       :pan-on-scroll="true"
       :zoom-on-scroll="false"
       :nodes-draggable="!spacePressed"
+      :selection-on-drag="true"
+      selection-key-code="Shift"
+      multi-selection-key-code="Shift"
       :pan-on-drag="spacePressed ? [0] : true"
       :nodes-connectable="true"
       :edges-updatable="false"
@@ -384,8 +526,10 @@ onBeforeUnmount(() => {
       class="production-flow"
       @connect="connectNodes"
       @edges-delete="deleteEdges"
+      @nodes-delete="deleteNodes"
       @init="flowInstance = $event"
       @node-click="selectNode"
+      @selection-change="updateSelection"
       @node-drag-stop="saveNodePositions"
     >
       <Background :gap="18" :size="1" pattern-color="#cbd5e1" />
@@ -531,6 +675,7 @@ onBeforeUnmount(() => {
         <Descriptions bordered size="small" :column="1">
           <Descriptions.Item label="节点 ID">{{ selectedWorkflowNode.id }}</Descriptions.Item>
           <Descriptions.Item label="节点类型">{{ selectedWorkflowNode.type }}</Descriptions.Item>
+          <Descriptions.Item label="执行 Agent">{{ agentForNode(selectedWorkflowNode.type) }}</Descriptions.Item>
           <Descriptions.Item label="运行状态">
             <Tag :color="runtimeState(selectedWorkflowNode.id).color">
               {{ runtimeState(selectedWorkflowNode.id).label }}
@@ -548,6 +693,18 @@ onBeforeUnmount(() => {
             label="执行次数"
           >
             {{ workflowNodeRuns[selectedWorkflowNode.id]!.attempt }}
+          </Descriptions.Item>
+          <Descriptions.Item
+            v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.workflowRunId"
+            label="工作流运行"
+          >
+            #{{ workflowNodeRuns[selectedWorkflowNode.id]!.workflowRunId }} · 节点运行 #{{ workflowNodeRuns[selectedWorkflowNode.id]!.id }}
+          </Descriptions.Item>
+          <Descriptions.Item
+            v-if="workflowNodeRuns?.[selectedWorkflowNode.id]?.agentRunId"
+            label="Agent 运行"
+          >
+            <Space><span>#{{ workflowNodeRuns[selectedWorkflowNode.id]!.agentRunId }}</span><Button size="small" type="link" @click="emit('openAgentRun', workflowNodeRuns[selectedWorkflowNode.id]!.agentRunId!)">查看事件</Button></Space>
           </Descriptions.Item>
         </Descriptions>
         <Typography.Paragraph

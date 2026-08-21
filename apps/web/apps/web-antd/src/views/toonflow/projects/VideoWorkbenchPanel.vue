@@ -51,8 +51,10 @@ const emit = defineEmits<{
 const activeTrackId = ref<number>();
 const activeTab = ref('preview');
 const previewVideo = ref<any>();
+const compareOpen = ref(false);
+const compareIds = ref<number[]>([]);
 const addReferenceOpen = ref(false);
-const videoModelOptions = ref<Array<{ label: string; value: number }>>([]);
+const videoModelOptions = ref<Array<{ label: string; value: number; supportsAudio: boolean }>>([]);
 const activeEditorIndex = ref(0);
 const playingSequence = ref(false);
 const editorVolume = ref(100);
@@ -85,7 +87,35 @@ const activePreviewVideo = computed(() => {
     ?? videos.find((video: any) => video.src);
 });
 const referenceAssets = computed(() => props.assets.filter((asset) => previewUrl(asset)));
+const compareVideos = computed(() => {
+  const videos = activeTrack.value?.videoList ?? [];
+  return compareIds.value.map((id) => videos.find((video: any) => video.id === id)).filter(Boolean);
+});
+const activeModelSupportsAudio = computed(() => {
+  if (!activeTrack.value) return true;
+  const model = videoModelOptions.value.find((item) => item.value === generation(activeTrack.value).model);
+  return model?.supportsAudio ?? true;
+});
 const selectedTracks = computed(() => props.tracks.filter((track) => selectedTrackIds.value.includes(track.id)));
+const selectedTrackCount = computed(() => selectedTracks.value.length);
+
+function successfulVideos(track: any) {
+  return (track.videoList ?? []).filter((video: any) => ['生成成功', '已完成'].includes(video.state));
+}
+
+function isSelectedVideo(track: any, video: any) {
+  return track.selectVideoId === video.id;
+}
+
+function toggleCompare(video: any) {
+  if (!['生成成功', '已完成'].includes(video.state)) return;
+  if (compareIds.value.includes(video.id)) {
+    compareIds.value = compareIds.value.filter((id) => id !== video.id);
+  } else if (compareIds.value.length < 2) {
+    compareIds.value = [...compareIds.value, video.id];
+  }
+  if (compareIds.value.length === 2) compareOpen.value = true;
+}
 
 function toggleTrack(id: number, checked: boolean) {
   selectedTrackIds.value = checked ? [...new Set([...selectedTrackIds.value, id])] : selectedTrackIds.value.filter((value) => value !== id);
@@ -174,6 +204,10 @@ function syncEditorVolume() {
 watch(selectedClips, (clips) => {
   activeEditorIndex.value = Math.min(activeEditorIndex.value, Math.max(0, clips.length - 1));
 });
+watch(() => props.tracks.map((track) => track.id), (ids) => {
+  selectedTrackIds.value = selectedTrackIds.value.filter((id) => ids.includes(id));
+}, { deep: true });
+watch(activeTrackId, () => { compareIds.value = []; compareOpen.value = false; });
 watch(editorVolume, (volume) => {
   if (editorPlayer.value) editorPlayer.value.volume = volume / 100;
 });
@@ -181,9 +215,9 @@ watch(editorVolume, (volume) => {
 onMounted(async () => {
   try {
     const models = await getModelSimpleList(AiModelTypeEnum.VIDEO);
-    videoModelOptions.value = models.map((model) => ({ label: model.name || model.model, value: model.id }));
+    videoModelOptions.value = models.map((model) => ({ label: model.name || model.model, value: model.id, supportsAudio: model.config?.capabilities ? (model.config.capabilities as any).audio !== false : true }));
   } catch {
-    if (props.videoModel) videoModelOptions.value = [{ label: `项目模型 #${props.videoModel}`, value: props.videoModel }];
+    if (props.videoModel) videoModelOptions.value = [{ label: `项目模型 #${props.videoModel}`, value: props.videoModel, supportsAudio: true }];
   }
 });
 </script>
@@ -251,15 +285,15 @@ onMounted(async () => {
                   <label><span>分辨率</span><Select v-model:value="generation(activeTrack).resolution" :options="[{label:'720p',value:'720p'},{label:'1080p',value:'1080p'}]" size="small" /></label>
                   <label><span>时长（秒）</span><InputNumber v-model:value="generation(activeTrack).duration" :min="1" :max="30" size="small" /></label>
                 </div>
-                <div class="generate-actions"><label class="audio-setting"><span>生成音频</span><Switch v-model:checked="generation(activeTrack).audio" /></label><Button type="primary" :disabled="!activeTrack.prompt?.trim()" :loading="activeTrack.state === '生成中'" @click="emit('generateVideo', activeTrack)">生成视频</Button></div>
+                <div class="generate-actions"><label v-if="activeModelSupportsAudio" class="audio-setting"><span>生成音频</span><Switch v-model:checked="generation(activeTrack).audio" /></label><span v-else class="audio-unavailable">当前视频模型不支持原生音频</span><Button type="primary" :disabled="!activeTrack.prompt?.trim()" :loading="activeTrack.state === '生成中'" @click="emit('generateVideo', activeTrack)">生成视频</Button></div>
               </section>
 
               <section class="history-section setting-block">
-                <div class="section-heading"><div><b>历史版本</b><span>选择一个结果作为当前轨道视频</span></div><Tag :color="stateColor(activeTrack.state)">{{ activeTrack.state || '未生成' }}</Tag></div>
+                <div class="section-heading"><div><b>历史版本</b><span>{{ successfulVideos(activeTrack).length }} 个可用候选 · 选择一个结果作为当前轨道视频</span></div><Tag :color="stateColor(activeTrack.state)">{{ activeTrack.state || '未生成' }}</Tag></div>
                 <div v-if="activeTrack.videoList?.length" class="video-grid">
-                  <article v-for="video in activeTrack.videoList" :key="video.id" class="video-card">
-                    <button class="video-preview" type="button" @click="previewVideo = video"><video v-if="video.src" :src="assetFileUrl(video.src)" muted /><div v-else class="video-placeholder">{{ video.state }}</div><Tag class="video-state" :color="stateColor(video.state)">{{ video.state }}</Tag></button>
-                    <div class="video-actions"><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" @click="emit('selectVideo', activeTrack, video)">{{ activeTrack.selectVideoId === video.id ? '已选中' : '选中' }}</Button><Button v-if="video.state === '生成中'" size="small" @click="emit('cancelVideo', video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" @click="emit('retryVideo', video, activeTrack)">重试</Button><Button danger size="small" type="text" @click="emit('deleteVideo', video)">删除</Button></div>
+                  <article v-for="(video, versionIndex) in activeTrack.videoList" :key="video.id" class="video-card" :class="{ 'video-card--selected': isSelectedVideo(activeTrack, video) }">
+                    <button class="video-preview" type="button" @click="previewVideo = video"><video v-if="video.src" :src="assetFileUrl(video.src)" muted /><div v-else class="video-placeholder">{{ video.state }}</div><Tag class="video-state" :color="stateColor(video.state)">{{ video.state }}</Tag><Tag v-if="video.retryOfId" class="video-retry">重试自 V{{ video.retryOfId }}</Tag></button>
+                    <div class="video-actions"><span class="version-label">V{{ Number(versionIndex) + 1 }}</span><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" @click="emit('selectVideo', activeTrack, video)">{{ isSelectedVideo(activeTrack, video) ? '已选中' : '选中' }}</Button><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" :type="compareIds.includes(video.id) ? 'primary' : 'default'" @click="toggleCompare(video)">{{ compareIds.includes(video.id) ? '已加入对比' : '对比' }}</Button><Button v-if="video.state === '生成中'" size="small" @click="emit('cancelVideo', video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" @click="emit('retryVideo', video, activeTrack)">重试</Button><Button danger size="small" type="text" @click="emit('deleteVideo', video)">删除</Button></div>
                   </article>
                 </div>
                 <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无历史版本" />
@@ -268,7 +302,7 @@ onMounted(async () => {
           </section>
 
           <section class="track-filmstrip setting-block">
-            <div class="section-heading"><div><b>视频轨道</b><span>{{ selectedTracks.length }} 项已选</span></div><div class="batch-track-actions"><Button size="small" @click="toggleAllTracks">全选</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGeneratePrompts', selectedTracks)">批量生成提示词</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGenerateVideos', selectedTracks)">批量生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">批量下载</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
+            <div class="section-heading"><div><b>视频轨道</b><span>{{ selectedTrackCount }} 项已选</span></div><div class="batch-track-actions"><Button size="small" @click="toggleAllTracks">{{ selectedTrackCount === tracks.length ? '取消全选' : '全选' }}</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGeneratePrompts', selectedTracks)">批量生成提示词</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchGenerateVideos', selectedTracks)">批量生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">批量下载</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
             <div class="track-strip"><button v-for="(track,index) in tracks" :key="track.id" :class="{active:activeTrack.id===track.id}" @click="activateTrack(track)"><Checkbox class="track-check" :checked="selectedTrackIds.includes(track.id)" @click.stop @change="toggleTrack(track.id,$event.target.checked)" /><img v-if="mediaUrl(track.medias?.[0])" :src="mediaUrl(track.medias[0])" /><span>轨道 {{ index + 1 }} · {{ track.duration || 5 }}s</span></button></div>
           </section>
         </template>
@@ -317,6 +351,15 @@ onMounted(async () => {
 
     <Modal v-model:open="previewVideo" width="76vw" :footer="null" title="视频预览" destroy-on-close>
       <video v-if="previewVideo?.src" :src="assetFileUrl(previewVideo.src)" class="preview-player" controls autoplay />
+    </Modal>
+    <Modal v-model:open="compareOpen" width="90vw" title="候选版本对比" :footer="null" destroy-on-close>
+      <div class="compare-grid">
+        <article v-for="video in compareVideos" :key="video.id" class="compare-item">
+          <div class="compare-heading"><b>候选版本 #{{ video.id }}</b><Tag :color="isSelectedVideo(activeTrack, video) ? 'blue' : 'default'">{{ isSelectedVideo(activeTrack, video) ? '当前版本' : '候选' }}</Tag></div>
+          <video v-if="video.src" :src="assetFileUrl(video.src)" controls preload="metadata" />
+          <Button v-if="!isSelectedVideo(activeTrack, video)" type="primary" @click="emit('selectVideo', activeTrack, video); compareOpen = false">设为当前版本</Button>
+        </article>
+      </div>
     </Modal>
     <Modal v-model:open="addReferenceOpen" title="添加项目资产" width="760px" :footer="null">
       <div class="asset-picker">
@@ -380,10 +423,12 @@ onMounted(async () => {
 .prompt-section :deep(textarea) { resize: none; }.prompt-actions { margin-top: 12px; }.prompt-actions > span { color: var(--ant-color-text-secondary); font-size: 12px; }
 .video-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
 .video-card { overflow: hidden; border: 1px solid var(--ant-color-border-secondary); border-radius: 8px; }
+.video-card--selected { border-color: var(--ant-color-primary); box-shadow: 0 0 0 2px var(--ant-color-primary-bg); }
+.compare-grid { display:grid; gap:16px; grid-template-columns:repeat(2,minmax(0,1fr)); }.compare-item { padding:12px; border:1px solid var(--ant-color-border-secondary); border-radius:8px; }.compare-heading { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }.compare-item video { display:block; width:100%; max-height:60vh; aspect-ratio:16/9; margin-bottom:12px; background:#000; object-fit:contain; }
 .video-preview { position: relative; display: grid; width: 100%; overflow: hidden; aspect-ratio: 16 / 9; padding: 0; border: 0; color: #fff; background: #111827; cursor: pointer; place-items: center; }.video-preview video { width: 100%; height: 100%; object-fit: cover; }
 .video-placeholder { display: grid; gap: 8px; color: #cbd5e1; font-size: 12px; place-items: center; }.video-state { position: absolute; top: 8px; left: 8px; }.play-mark { position: absolute; display: grid; width: 38px; height: 38px; border-radius: 50%; background: rgb(0 0 0 / 50%); place-items: center; }
 .generating-ring { width: 24px; height: 24px; border: 2px solid rgb(255 255 255 / 25%); border-top-color: #fff; border-radius: 50%; animation: spin 0.9s linear infinite; }
-.error-reason { margin: 8px 10px 0; color: var(--ant-color-error); font-size: 11px; line-height: 1.4; }.video-actions { justify-content: flex-end; padding: 8px; }
+.error-reason { margin: 8px 10px 0; color: var(--ant-color-error); font-size: 11px; line-height: 1.4; }.video-actions { justify-content: flex-end; padding: 8px; }.version-label { margin-right: auto; color: var(--ant-color-text-tertiary); font-size: 11px; }
 .empty-workbench { grid-column: 1 / -1; align-self: center; }.preview-player { display: block; width: 100%; max-height: 72vh; background: #000; }
 .generation-page { display: grid; width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden; gap: 0; padding: 0; box-sizing: border-box; grid-template-rows: auto auto auto; }
 .generation-main { display: grid; width: 100%; max-width: 100%; min-width: 0; align-items: stretch; overflow: hidden; gap: 0; grid-template-columns: minmax(0, 56%) minmax(0, 44%); }

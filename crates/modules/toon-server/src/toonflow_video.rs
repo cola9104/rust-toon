@@ -251,6 +251,8 @@ pub struct Generate {
     audio: Option<bool>,
     track_id: i64,
     upload_data: Value,
+    #[serde(default)]
+    retry_of_id: Option<i64>,
 }
 
 /// Combines caller-provided frames with canonical asset images while preserving their first-use order.
@@ -509,7 +511,7 @@ pub async fn generate_video(
     .await
     .map_err(|_| AppError::internal("failed to load video asset references"))?;
     let references = references_for_mode(req.upload_data, asset_references, &req.mode);
-    sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
+    sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time,retry_of_id)VALUES($1,'生成中',$2,$3,$4,$1,$5)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).bind(req.retry_of_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
         let ratio: Option<(String,)> =
@@ -698,6 +700,7 @@ pub async fn retry_video(
             audio: req.audio,
             track_id,
             upload_data: req.upload_data,
+            retry_of_id: Some(req.id),
         }),
     )
     .await
@@ -716,10 +719,10 @@ pub async fn check_states(
     Json(req): Json<Check>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
-    let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>)>("SELECT id,state,error_reason,file_path FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 AND id=ANY($3) AND state IN('生成成功','生成失败')").bind(req.project_id).bind(req.script_id).bind(req.video_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check videos"))?;
+    let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>,Option<i64>)>("SELECT id,state,error_reason,file_path,retry_of_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 AND id=ANY($3) AND state IN('生成成功','生成失败')").bind(req.project_id).bind(req.script_id).bind(req.video_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check videos"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()
-            .map(|r| json!({"id":r.0,"state":r.1,"errorReason":r.2,"filePath":r.3,"src":r.3}))
+            .map(|r| json!({"id":r.0,"state":r.1,"errorReason":r.2,"filePath":r.3,"src":r.3,"retryOfId":r.4}))
             .collect(),
     )))
 }

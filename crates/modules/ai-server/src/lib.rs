@@ -4,6 +4,7 @@ mod factory;
 mod knowledge;
 mod media;
 mod midjourney;
+mod model_prompt_map;
 mod provider;
 mod tools;
 mod vector;
@@ -73,6 +74,12 @@ pub fn routes(state: AiState) -> Router {
         .route("/ai/model/test", post(test))
         .route("/ai/model/discover", post(discover_models))
         .route("/ai/model/platforms", get(platforms))
+        .route("/ai/model-prompt-map/list", post(model_prompt_map::list))
+        .route("/ai/model-prompt-map/save", post(model_prompt_map::save))
+        .route(
+            "/ai/model-prompt-map/delete",
+            post(model_prompt_map::remove),
+        )
         .merge(chat::routes())
         .merge(chat_role::routes())
         .merge(midjourney::routes())
@@ -120,7 +127,18 @@ async fn page(
     let type_filter = query.type_.as_deref().and_then(normalize_type);
     let rows=sqlx::query("SELECT id,name,key,platform,type,model,api_key,url,status,config FROM ai.model_configs WHERE ($1::text IS NULL OR name ILIKE '%'||$1||'%') AND ($2::text IS NULL OR model ILIKE '%'||$2||'%') AND ($3::text IS NULL OR platform=$3) AND ($4::text IS NULL OR type=$4) AND ($5::integer IS NULL OR status=$5) ORDER BY id DESC LIMIT $6 OFFSET $7").bind(&query.name).bind(&query.model).bind(&query.platform).bind(type_filter).bind(query.status).bind(size).bind((page-1)*size).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list AI models"))?;
     let total:i64=sqlx::query_scalar("SELECT count(*) FROM ai.model_configs WHERE ($1::text IS NULL OR name ILIKE '%'||$1||'%') AND ($2::text IS NULL OR model ILIKE '%'||$2||'%') AND ($3::text IS NULL OR platform=$3) AND ($4::text IS NULL OR type=$4) AND ($5::integer IS NULL OR status=$5)").bind(&query.name).bind(&query.model).bind(&query.platform).bind(type_filter).bind(query.status).fetch_one(&state.pool).await.map_err(|_|AppError::internal("failed to count AI models"))?;
-    let list = rows.into_iter().map(row_model).collect::<Vec<_>>();
+    let list = rows
+        .into_iter()
+        .map(row_model)
+        .map(|model| {
+            let capabilities = capability_tags(&model);
+            let mut value = serde_json::to_value(model).unwrap_or_else(|_| json!({}));
+            if let Some(object) = value.as_object_mut() {
+                object.insert("capabilities".into(), json!(capabilities));
+            }
+            value
+        })
+        .collect::<Vec<_>>();
     Ok(Json(ApiResponse::new(json!({"list":list,"total":total}))))
 }
 #[derive(Deserialize)]
@@ -157,6 +175,28 @@ fn row_model(row: sqlx::postgres::PgRow) -> ModelConfig {
         status: row.get("status"),
         config: row.get("config"),
     }
+}
+
+fn capability_tags(model: &ModelConfig) -> Vec<String> {
+    let mut tags = match model.type_.as_str() {
+        "chat" => vec!["文本对话".into(), "Agent".into()],
+        "image" => vec!["图片生成".into(), "批量生成".into()],
+        "video" => vec!["视频生成".into(), "首尾帧".into()],
+        "speech" => vec!["语音合成".into()],
+        "transcription" => vec!["语音识别".into()],
+        "embedding" => vec!["向量检索".into()],
+        "rerank" => vec!["结果重排".into()],
+        "music" => vec!["音乐生成".into()],
+        _ => Vec::new(),
+    };
+    if let Some(extra) = model.config.get("capabilities").and_then(Value::as_array) {
+        for value in extra.iter().filter_map(Value::as_str) {
+            if !tags.iter().any(|tag| tag == value) {
+                tags.push(value.to_string());
+            }
+        }
+    }
+    tags
 }
 #[derive(Deserialize)]
 struct IdQuery {

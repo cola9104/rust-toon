@@ -202,6 +202,10 @@ pub struct Task {
     state: String,
     start_time: Option<i64>,
     reason: Option<String>,
+    input: serde_json::Value,
+    retry_of_id: Option<i64>,
+    progress_current: Option<i32>,
+    progress_total: Option<i32>,
 }
 
 pub async fn list_tasks(
@@ -209,7 +213,7 @@ pub async fn list_tasks(
     State(state): State<ToonState>,
 ) -> Result<Json<ApiResponse<Vec<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
+    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
         .fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to list tasks"))?;
     Ok(Json(ApiResponse::new(rows)))
 }
@@ -252,7 +256,7 @@ pub async fn query_tasks(
     let rows = sqlx::query_as::<_, Task>(
         r#"SELECT t.id,t.project_id,p.name project_name,t.task_class,
                   coalesce(n.chapter,t.related_objects) related_objects,
-                  coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason
+                  coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total
            FROM toonflow.tasks t
            LEFT JOIN toonflow.projects p ON p.id=t.project_id
            LEFT JOIN toonflow.agent_deployments d ON d.key=t.model
@@ -293,7 +297,7 @@ pub async fn task_details(
     Json(request): Json<TaskId>,
 ) -> Result<Json<ApiResponse<Option<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.id=$1")
+    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.id=$1")
         .bind(request.task_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to get task"))?;
     Ok(Json(ApiResponse::new(row)))
 }

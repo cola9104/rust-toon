@@ -9,7 +9,6 @@ import { AiModelTypeEnum } from '@vben/constants';
 
 import {
   Button,
-  Card,
   Empty,
   Form,
   Input,
@@ -120,6 +119,10 @@ async function loadModels() {
 function modelLabel(options: Array<{ label: string; value: number }>, id?: number) {
   return options.find((option) => option.value === id)?.label || '未配置';
 }
+function ratioLabel(ratio?: string) {
+  const value = ratio || '16:9';
+  return value === '9:16' ? `竖屏 · ${value}` : value === '1:1' ? `方形 · ${value}` : `横屏 · ${value}`;
+}
 
 async function openCreate() {
   resetForm();
@@ -187,7 +190,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 
 <template>
   <Page auto-content-height class="toon-page">
-    <Card :bordered="false" class="toonflow-page-card h-full toon-surface">
+    <div class="toonflow-page-shell">
       <div class="toon-header">
         <div><h1 class="toon-title">项目工作台</h1><p class="toon-subtitle">从故事到成片，继续你的创作。</p></div>
         <Space>
@@ -199,13 +202,13 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
       <div v-if="loading" class="project-loading">正在加载项目…</div>
       <Empty v-else-if="projects.length === 0" description="暂无项目" />
       <div v-else class="toon-grid project-grid">
-        <ToonCard v-for="record in projects" :key="record.id" clickable class="project-card" @click="openProject(record)">
+        <ToonCard v-for="record in projects" :key="record.id" clickable padding="none" class="project-card" @click="openProject(record)">
           <div class="project-card__cover toon-dots">
             <span>{{ record.name.slice(0, 1) }}</span>
-            <Tag>{{ record.videoRatio || '16:9' }}</Tag>
+            <span class="ratio-badge">{{ ratioLabel(record.videoRatio) }}</span>
           </div>
           <div class="project-card__body">
-            <div class="project-card__heading"><h3>{{ record.name }}</h3><Tag color="orange">{{ record.type || '短剧' }}</Tag></div>
+            <div class="project-card__heading"><h3>{{ record.name }}</h3><span class="project-type">{{ record.type || '短剧' }}</span></div>
             <p>{{ record.intro || '还没有项目简介，进入项目开始创作。' }}</p>
             <div class="project-card__tags"><Tag>{{ record.artStyle || '默认视觉' }}</Tag><Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag></div>
             <div class="project-card__models"><span>对话 · {{ modelLabel(chatModels, record.chatModel) }}</span><span>图像 · {{ modelLabel(imageModels, record.imageModel) }}</span><span>视频 · {{ modelLabel(videoModels, record.videoModel) }}</span></div>
@@ -217,7 +220,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
           </div>
         </ToonCard>
       </div>
-    </Card>
+    </div>
 
     <Modal
       v-model:open="modalOpen"
@@ -282,6 +285,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 </template>
 
 <style scoped>
+.toonflow-page-shell { min-height: 100%; height: 100%; min-width: 0; overflow: auto; padding: 4px 2px 20px; }
 .project-name {
   font-weight: 600;
 }
@@ -297,10 +301,12 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 }
 .project-loading { display: grid; min-height: 280px; color: #737373; place-items: center; }
 .project-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important; }
-.project-card { padding: 0 !important; overflow: hidden; }
-.project-card__cover { position: relative; display: grid; height: 138px; place-items: center; }
-.project-card__cover > span { display: grid; width: 58px; height: 58px; border-radius: 18px; color: #fff; background: #171717; font-size: 26px; font-weight: 750; place-items: center; }
-.project-card__cover > .ant-tag { position: absolute; top: 12px; right: 12px; margin: 0; background: rgb(255 255 255 / 88%); }
+.project-card { padding: 0 !important; overflow: hidden; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
+.project-card:hover { box-shadow: none !important; transform: none; }
+.project-card__cover { position: relative; display: grid; height: 138px; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 55%, #eef2ff 100%); place-items: center; }
+.project-card__cover > span { display: grid; width: 54px; height: 54px; border: 1px solid rgb(255 255 255 / 80%); border-radius: 16px; color: #2563eb; background: rgb(255 255 255 / 85%); font-size: 24px; font-weight: 700; box-shadow: 0 6px 16px rgb(37 99 235 / 12%); place-items: center; }
+.project-card__cover > .ratio-badge { position: absolute; top: 12px; right: 12px; margin: 0; padding: 2px 8px; border-radius: 999px; color: #334155; background: rgb(255 255 255 / 88%); font-size: 11px; }
 .project-card__body { padding: 17px; }.project-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.project-card__heading h3 { overflow: hidden; margin: 0; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }.project-card__body > p { height: 40px; overflow: hidden; margin: 9px 0 12px; color: #737373; font-size: 12px; line-height: 20px; }
+.project-type { flex: none; margin: 0; padding: 2px 8px; border-radius: 999px; color: #2563eb; background: #eff6ff; font-size: 11px; }
 .project-card__tags { display: flex; flex-wrap: wrap; gap: 5px; }.project-card__models { display: grid; margin-top: 14px; color: #8a8a8a; font-size: 11px; gap: 4px; }.project-card__actions { display: flex; justify-content: flex-end; margin: 13px -8px -7px; border-top: 1px solid #f0f0f0; padding-top: 8px; }
 </style>

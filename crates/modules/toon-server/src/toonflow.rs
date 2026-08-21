@@ -12,6 +12,8 @@ use sqlx::{FromRow, PgPool, Row};
 use crate::{
     ToonState,
     shared::{affected, current_user_id, require},
+    toonflow_materials::save_asset_cover_data_url,
+    toonflow_storage::delete_asset_file,
 };
 
 fn now_ms() -> i64 {
@@ -346,6 +348,14 @@ pub async fn add_novel(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to add novel chapters"))?;
+    let pool = state.pool.clone();
+    let project_id = request.project_id;
+    let event_ids = ids.clone();
+    tokio::spawn(async move {
+        for id in event_ids {
+            crate::toonflow_novel_events::process_chapter(&pool, project_id, id).await;
+        }
+    });
     Ok(Json(ApiResponse::with_message(
         json!({ "ids": ids }),
         "新增原文成功",
@@ -603,8 +613,7 @@ pub struct SaveScriptRequest {
     pub name: String,
     pub content: String,
     pub project_id: Option<i64>,
-    #[serde(default)]
-    pub assets: Vec<i64>,
+    pub assets: Option<Vec<i64>>,
 }
 
 pub async fn add_script(
@@ -633,7 +642,7 @@ pub async fn add_script(
     .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to create script"))?;
-    sync_script_assets(&mut tx, id, &request.assets).await?;
+    sync_script_assets(&mut tx, id, request.assets.as_deref().unwrap_or(&[])).await?;
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to create script"))?;
@@ -665,7 +674,9 @@ pub async fn update_script(
         .await
         .map_err(|_| AppError::internal("failed to update script"))?;
     affected(result.rows_affected(), "script")?;
-    sync_script_assets(&mut tx, id, &request.assets).await?;
+    if let Some(assets) = request.assets.as_deref() {
+        sync_script_assets(&mut tx, id, assets).await?;
+    }
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to update script"))?;
@@ -709,11 +720,29 @@ pub async fn delete_scripts(
     if request.ids.is_empty() {
         return Err(AppError::bad_request("script ids are required"));
     }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin script deletion"))?;
+    sqlx::query("DELETE FROM toonflow.script_assets WHERE script_id = ANY($1)")
+        .bind(&request.ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to clear script assets"))?;
+    sqlx::query("UPDATE toonflow.assets SET script_id=NULL WHERE script_id = ANY($1)")
+        .bind(&request.ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to detach script assets"))?;
     sqlx::query("DELETE FROM toonflow.scripts WHERE id = ANY($1)")
         .bind(&request.ids)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete scripts"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit script deletion"))?;
     Ok(Json(ApiResponse::with_message((), "删除剧本成功")))
 }
 
@@ -794,15 +823,16 @@ pub struct SaveAssetRequest {
     pub id: Option<i64>,
     pub project_id: i64,
     pub name: String,
-    #[serde(default)]
-    pub prompt: String,
+    pub prompt: Option<String>,
     pub remark: Option<String>,
-    #[serde(default)]
-    pub r#type: String,
-    #[serde(alias = "desc", alias = "describe", default)]
-    pub description: String,
+    pub r#type: Option<String>,
+    #[serde(alias = "desc", alias = "describe")]
+    pub description: Option<String>,
     pub script_id: Option<i64>,
     pub parent_asset_id: Option<i64>,
+    pub image_id: Option<i64>,
+    #[serde(alias = "base64Data")]
+    pub base64: Option<String>,
 }
 
 pub async fn list_assets(
@@ -828,6 +858,108 @@ pub async fn list_assets(
     Ok(Json(ApiResponse::new(rows)))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompatAssetListRequest {
+    pub project_id: i64,
+    #[serde(alias = "pageNo", alias = "current")]
+    pub page: Option<i64>,
+    pub page_size: Option<i64>,
+    pub r#type: Option<String>,
+}
+
+/// Compatibility shape for the legacy getAssetsApi contract.
+/// The newer Toonflow UI continues using list_assets' flat array response.
+pub async fn list_assets_compat(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<CompatAssetListRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:read")?;
+    let rows = sqlx::query_as::<_, AssetRow>(
+        r#"SELECT a.id, a.name, a.prompt, a.remark, a.type as type_, a.description,
+                  a.script_id, a.image_id, i.file_path as image_file_path,
+                  a.parent_asset_id, a.project_id, a.flow_id, a.prompt_state,
+                  a.audio_bind_state, a.prompt_error_reason
+           FROM toonflow.assets a
+           LEFT JOIN toonflow.images i ON i.id = a.image_id
+           WHERE a.project_id = $1 AND a.parent_asset_id IS NULL
+             AND ($2::text IS NULL OR a.type=$2)
+           ORDER BY a.id DESC"#,
+    )
+    .bind(request.project_id)
+    .bind(request.r#type.as_deref())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to list compatible assets"))?;
+    let total = rows.len() as i64;
+    let parent_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
+    let child_rows = sqlx::query_as::<_, AssetRow>(
+        r#"SELECT a.id, a.name, a.prompt, a.remark, a.type as type_, a.description,
+                  a.script_id, a.image_id, i.file_path as image_file_path,
+                  a.parent_asset_id, a.project_id, a.flow_id, a.prompt_state,
+                  a.audio_bind_state, a.prompt_error_reason
+           FROM toonflow.assets a
+           LEFT JOIN toonflow.images i ON i.id = a.image_id
+           WHERE a.project_id = $1 AND a.parent_asset_id = ANY($2)
+           ORDER BY a.id DESC"#,
+    )
+    .bind(request.project_id)
+    .bind(&parent_ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to list compatible child assets"))?;
+    let mut son_assets = std::collections::HashMap::<i64, Vec<Value>>::new();
+    for child in child_rows {
+        let parent_id = child.parent_asset_id;
+        let image_url = child.image_file_path.clone();
+        let mut item = serde_json::to_value(child).unwrap_or_else(|_| json!({}));
+        if let Some(object) = item.as_object_mut() {
+            object.insert("sonAssets".into(), json!([]));
+            object.insert("sex".into(), Value::Null);
+            object.insert(
+                "imageUrl".into(),
+                image_url.map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        if let Some(parent_id) = parent_id {
+            son_assets.entry(parent_id).or_default().push(item);
+        }
+    }
+    let page = request.page.unwrap_or(1).max(1);
+    let page_size = request.page_size.unwrap_or(20).clamp(1, 200);
+    let start = ((page - 1) * page_size) as usize;
+    let list = rows
+        .into_iter()
+        .skip(start)
+        .take(page_size as usize)
+        .map(|row| {
+            let asset_id = row.id;
+            let image_url = row.image_file_path.clone();
+            let mut item = serde_json::to_value(row).unwrap_or_else(|_| json!({}));
+            if let Some(object) = item.as_object_mut() {
+                object.insert(
+                    "sonAssets".into(),
+                    Value::Array(son_assets.get(&asset_id).cloned().unwrap_or_default()),
+                );
+                object.insert("sex".into(), Value::Null);
+                object.insert(
+                    "imageUrl".into(),
+                    image_url.map(Value::String).unwrap_or(Value::Null),
+                );
+            }
+            item
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(ApiResponse::new(json!({
+        "data": list.clone(),
+        "list": list,
+        "total": total,
+        "page": page,
+        "pageSize": page_size,
+    }))))
+}
+
 pub async fn save_asset(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -835,6 +967,26 @@ pub async fn save_asset(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     let id = request.id.unwrap_or_else(|| next_id(0));
+    if let Some(image_id) = request.image_id {
+        let valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM toonflow.images i JOIN toonflow.assets a ON a.id=i.assets_id WHERE i.id=$1 AND a.project_id=$2)",
+        )
+        .bind(image_id)
+        .bind(request.project_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to validate asset cover"))?;
+        if !valid {
+            return Err(AppError::bad_request("imageId 不属于当前项目"));
+        }
+    }
+    let uploaded_cover = match request.base64.as_deref() {
+        Some(data) if !data.trim().is_empty() => {
+            Some(save_asset_cover_data_url(data, request.project_id).await?)
+        }
+        _ => None,
+    };
+    let uploaded_image_id = uploaded_cover.as_ref().map(|_| next_id(1));
     let mut tx = state
         .pool
         .begin()
@@ -842,22 +994,28 @@ pub async fn save_asset(
         .map_err(|_| AppError::internal("failed to begin asset transaction"))?;
     sqlx::query(
         r#"INSERT INTO toonflow.assets
-           (id, project_id, name, prompt, remark, type, description, script_id, parent_asset_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           (id, project_id, name, prompt, remark, type, description, script_id, parent_asset_id, image_id)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
            ON CONFLICT (id) DO UPDATE SET
-             name=excluded.name, prompt=excluded.prompt, remark=excluded.remark, type=excluded.type,
-             description=excluded.description, script_id=excluded.script_id,
-             parent_asset_id=excluded.parent_asset_id"#,
+             name=excluded.name,
+             prompt=coalesce(excluded.prompt, toonflow.assets.prompt),
+             remark=coalesce(excluded.remark, toonflow.assets.remark),
+             type=coalesce(nullif(excluded.type,''), toonflow.assets.type),
+             description=coalesce(excluded.description, toonflow.assets.description),
+             script_id=coalesce(excluded.script_id, toonflow.assets.script_id),
+             parent_asset_id=coalesce(excluded.parent_asset_id, toonflow.assets.parent_asset_id),
+             image_id=coalesce(excluded.image_id, toonflow.assets.image_id)"#,
     )
     .bind(id)
     .bind(request.project_id)
     .bind(request.name)
-    .bind(request.prompt)
+    .bind(request.prompt.unwrap_or_default())
     .bind(request.remark)
-    .bind(request.r#type)
-    .bind(request.description)
+    .bind(request.r#type.unwrap_or_default())
+    .bind(request.description.unwrap_or_default())
     .bind(request.script_id)
     .bind(request.parent_asset_id)
+    .bind(request.image_id)
     .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to save asset"))?;
@@ -870,6 +1028,21 @@ pub async fn save_asset(
     .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to link saved asset"))?;
+    if let (Some(image_id), Some(file_path)) = (uploaded_image_id, uploaded_cover) {
+        sqlx::query("INSERT INTO toonflow.images(id,file_path,type,assets_id,state) VALUES($1,$2,'asset',$3,'已完成')")
+            .bind(image_id)
+            .bind(file_path)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to save asset cover"))?;
+        sqlx::query("UPDATE toonflow.assets SET image_id=$2 WHERE id=$1")
+            .bind(id)
+            .bind(image_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to bind asset cover"))?;
+    }
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit asset"))?;
@@ -892,11 +1065,56 @@ pub async fn delete_assets(
     if ids.is_empty() {
         return Err(AppError::bad_request("ids is required"));
     }
-    let result = sqlx::query("DELETE FROM toonflow.assets WHERE id = ANY($1)")
-        .bind(&ids)
-        .execute(&state.pool)
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin asset deletion"))?;
+    let file_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.id=i.assets_id WHERE a.id=ANY($1) OR a.parent_asset_id=ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to collect asset files"))?;
+    let all_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM toonflow.assets WHERE id=ANY($1) OR parent_asset_id=ANY($1)",
+    )
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to resolve asset descendants"))?;
+    sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE asset_id=ANY($1)")
+        .bind(&all_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to clear storyboard assets"))?;
+    sqlx::query("DELETE FROM toonflow.project_assets WHERE asset_id=ANY($1)")
+        .bind(&all_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to clear project assets"))?;
+    sqlx::query("UPDATE toonflow.assets SET image_id=NULL WHERE id=ANY($1)")
+        .bind(&all_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to detach asset images"))?;
+    sqlx::query("DELETE FROM toonflow.images WHERE assets_id=ANY($1)")
+        .bind(&all_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to delete asset images"))?;
+    let result = sqlx::query("DELETE FROM toonflow.assets WHERE id=ANY($1)")
+        .bind(&all_ids)
+        .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete assets"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit asset deletion"))?;
+    for path in file_paths {
+        let _ = delete_asset_file(&path).await;
+    }
     affected(result.rows_affected(), "asset")?;
     Ok(Json(ApiResponse::with_message((), "删除资产成功")))
 }
@@ -1343,10 +1561,8 @@ pub struct EditStoryboardInfoRequest {
     pub video_desc: String,
     pub duration: Option<i64>,
     pub track: Option<String>,
-    #[serde(default = "default_should_generate")]
-    pub should_generate_image: i32,
-    #[serde(default)]
-    pub associate_assets_ids: Vec<i64>,
+    pub should_generate_image: Option<i32>,
+    pub associate_assets_ids: Option<Vec<i64>>,
 }
 
 pub async fn edit_storyboard_info(
@@ -1360,22 +1576,25 @@ pub async fn edit_storyboard_info(
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
-    let current: Option<(i64, i64, Option<i64>, Option<String>)> = sqlx::query_as(
-        "SELECT project_id,script_id,track_id,track FROM toonflow.storyboards WHERE id=$1",
+    let current: Option<(i64, i64, Option<i64>, Option<String>, i32)> = sqlx::query_as(
+        "SELECT project_id,script_id,track_id,track,should_generate_image FROM toonflow.storyboards WHERE id=$1",
     )
     .bind(request.id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to load storyboard"))?;
-    let Some((project_id, script_id, old_track_id, old_track)) = current else {
+    let Some((project_id, script_id, old_track_id, old_track, current_should_generate)) = current
+    else {
         return Err(AppError::not_found("storyboard not found"));
     };
-    crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
-        &state.pool,
-        project_id,
-        &request.associate_assets_ids,
-    )
-    .await?;
+    if let Some(asset_ids) = request.associate_assets_ids.as_deref() {
+        crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
+            &state.pool,
+            project_id,
+            asset_ids,
+        )
+        .await?;
+    }
     let track = request.track.as_deref().unwrap_or("main").trim();
     let track = if track.is_empty() { "main" } else { track };
     let target_track_id: Option<i64> = sqlx::query_scalar(
@@ -1404,17 +1623,19 @@ pub async fn edit_storyboard_info(
     let result = sqlx::query("UPDATE toonflow.storyboards SET prompt=$2,video_desc=$3,duration=$4,track=$5,track_id=$6,should_generate_image=$7 WHERE id=$1")
         .bind(request.id).bind(request.prompt).bind(request.video_desc)
         .bind(request.duration.map(|value| value.to_string())).bind(track).bind(track_id)
-        .bind(request.should_generate_image).execute(&mut *tx).await
+        .bind(request.should_generate_image.unwrap_or(current_should_generate)).execute(&mut *tx).await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
-    sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE storyboard_id=$1")
-        .bind(request.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| AppError::internal("failed to update storyboard assets"))?;
-    for (sort_order, asset_id) in request.associate_assets_ids.iter().enumerate() {
-        sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order) VALUES($1,$2,$3)")
-            .bind(request.id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await
+    if let Some(asset_ids) = request.associate_assets_ids {
+        sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE storyboard_id=$1")
+            .bind(request.id)
+            .execute(&mut *tx)
+            .await
             .map_err(|_| AppError::internal("failed to update storyboard assets"))?;
+        for (sort_order, asset_id) in asset_ids.iter().enumerate() {
+            sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order) VALUES($1,$2,$3)")
+                .bind(request.id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await
+                .map_err(|_| AppError::internal("failed to update storyboard assets"))?;
+        }
     }
     let mut affected_track_ids = vec![track_id];
     if let Some(old_track_id) = old_track_id.filter(|id| *id != track_id) {
@@ -1583,6 +1804,10 @@ pub struct AgentDeployment {
     pub disabled: bool,
     pub model_config_id: Option<i64>,
     pub model_type: String,
+    pub prompt_source_key: Option<String>,
+    pub skill_path: Option<String>,
+    pub memory_scope: String,
+    pub write_permissions: serde_json::Value,
 }
 
 pub async fn list_agent_deployments(
@@ -1592,7 +1817,8 @@ pub async fn list_agent_deployments(
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, AgentDeployment>(
         r#"SELECT d.id,d.key,d.description,d.name,
-                  d.temperature,d.max_output_tokens,d.disabled,d.model_config_id,d.model_type
+                  d.temperature,d.max_output_tokens,d.disabled,d.model_config_id,d.model_type,
+                  d.prompt_source_key,d.skill_path,d.memory_scope,d.write_permissions
            FROM toonflow.agent_deployments d ORDER BY d.id"#,
     )
     .fetch_all(&state.pool)
@@ -1609,6 +1835,10 @@ pub struct UpdateAgentDeploymentRequest {
     pub max_output_tokens: Option<i32>,
     pub disabled: Option<bool>,
     pub model_config_id: Option<i64>,
+    pub prompt_source_key: Option<String>,
+    pub skill_path: Option<String>,
+    pub memory_scope: Option<String>,
+    pub write_permissions: Option<serde_json::Value>,
 }
 
 pub async fn update_agent_deployment(
@@ -1636,12 +1866,16 @@ pub async fn update_agent_deployment(
     if !valid_model {
         return Err(AppError::bad_request("模型未启用或类型与当前用途不匹配"));
     }
-    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5 WHERE id=$1"#)
+    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5,prompt_source_key=coalesce($6,prompt_source_key),skill_path=coalesce($7,skill_path),memory_scope=coalesce($8,memory_scope),write_permissions=coalesce($9,write_permissions) WHERE id=$1"#)
     .bind(request.id)
     .bind(request.temperature)
     .bind(request.max_output_tokens)
     .bind(request.disabled)
     .bind(model_id)
+    .bind(request.prompt_source_key)
+    .bind(request.skill_path)
+    .bind(request.memory_scope)
+    .bind(request.write_permissions)
     .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to update agent deployment"))?;
@@ -1689,6 +1923,40 @@ pub async fn save_setting(
     .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to save toonflow setting"))?;
+    Ok(Json(ApiResponse::new(())))
+}
+
+pub async fn get_agent_use_mode(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:read")?;
+    let mode = sqlx::query_scalar::<_, String>(
+        "SELECT value FROM toonflow.settings WHERE key='agentUseMode'",
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load agent use mode"))?
+    .unwrap_or_else(|| "workflow".into());
+    Ok(Json(ApiResponse::new(json!({ "mode": mode }))))
+}
+
+pub async fn update_agent_use_mode(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(request): Json<SaveSettingRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if request.value != "workflow" && request.value != "direct" && request.value != "hybrid" {
+        return Err(AppError::bad_request(
+            "agentUseMode 仅支持 workflow、direct、hybrid",
+        ));
+    }
+    sqlx::query("INSERT INTO toonflow.settings(key,value) VALUES('agentUseMode',$1) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+        .bind(request.value)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to save agent use mode"))?;
     Ok(Json(ApiResponse::new(())))
 }
 

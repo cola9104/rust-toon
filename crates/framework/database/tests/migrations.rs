@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 19);
+    assert_eq!(applied, 26);
 
     for source_key in ["script_ai_regex", "script_prompt_polish"] {
         let seeded: bool = sqlx::query_scalar(
@@ -74,7 +74,12 @@ async fn applies_all_migrations_to_empty_postgres() {
     .expect("inspect storyboard asset ordering column");
     assert!(storyboard_asset_order_exists);
 
-    for column in ["progress_current", "progress_total", "retry_of_id"] {
+    for column in [
+        "progress_current",
+        "progress_total",
+        "retry_of_id",
+        "agent_run_id",
+    ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                SELECT 1 FROM information_schema.columns
@@ -89,6 +94,39 @@ async fn applies_all_migrations_to_empty_postgres() {
         .expect("inspect workflow node run column");
         assert!(exists, "expected workflow node run column {column}");
     }
+
+    for column in ["input", "retry_of_id", "progress_current", "progress_total"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='toonflow' AND table_name='tasks' AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect task retry metadata column");
+        assert!(exists, "expected task column {column}");
+    }
+
+    let asset_image_retry_lineage_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema='toonflow' AND table_name='images' AND column_name='retry_of_id'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect asset image retry lineage column");
+    assert!(asset_image_retry_lineage_exists);
+
+    let model_prompt_map_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='ai' AND table_name='model_prompt_maps')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect model prompt map table");
+    assert!(model_prompt_map_exists);
 
     let project_defaults: (Option<String>, Option<String>) = sqlx::query_as(
         "SELECT

@@ -6,7 +6,6 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::path::PathBuf;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,12 +19,6 @@ pub struct UploadClipRequest {
 
 fn default_clip_type() -> String {
     "clip".into()
-}
-
-fn storage_dir() -> PathBuf {
-    std::env::var_os("INFRA_UPLOAD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("storage/uploads"))
 }
 
 fn decode_data_url(value: &str) -> Result<(&str, Vec<u8>), AppError> {
@@ -53,29 +46,24 @@ fn decode_data_url(value: &str) -> Result<(&str, Vec<u8>), AppError> {
 
 async fn save_data_url(
     base64_data: &str,
-    relative_prefix: &str,
+    project_id: i64,
+    category: &str,
     image_only: bool,
 ) -> Result<String, AppError> {
     let (extension, bytes) = decode_data_url(base64_data)?;
     if image_only && !["jpg", "png", "webp"].contains(&extension) {
         return Err(AppError::bad_request("仅支持 JPG、PNG、WebP 图片"));
     }
-    let relative = format!(
-        "{relative_prefix}/{}_{}.{}",
-        chrono::Utc::now().timestamp_millis(),
-        uuid::Uuid::new_v4(),
-        extension
-    );
-    let destination = storage_dir().join(&relative);
-    if let Some(parent) = destination.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| AppError::internal("failed to prepare upload directory"))?;
-    }
-    tokio::fs::write(&destination, bytes)
+    crate::toonflow_storage::persist_asset_bytes(project_id, category, extension, bytes)
         .await
-        .map_err(|_| AppError::internal("failed to save upload"))?;
-    Ok(format!("/upload/{relative}"))
+        .map_err(|_| AppError::internal("failed to save upload to MinIO"))
+}
+
+pub(crate) async fn save_asset_cover_data_url(
+    base64_data: &str,
+    project_id: i64,
+) -> Result<String, AppError> {
+    save_data_url(base64_data, project_id, "asset-covers", true).await
 }
 
 pub async fn upload_clip(
@@ -95,12 +83,7 @@ pub async fn upload_clip(
     }
     let id = chrono::Utc::now().timestamp_millis();
     let image_id = id + 1;
-    let url = save_data_url(
-        &request.base64_data,
-        &format!("toonflow/{}/assets", request.project_id),
-        false,
-    )
-    .await?;
+    let url = save_data_url(&request.base64_data, request.project_id, "materials", false).await?;
     let mut tx = state
         .pool
         .begin()
@@ -154,10 +137,8 @@ pub async fn upload_flow_image(
     require(&user, "toon:project:update")?;
     let url = save_data_url(
         &request.base64_data,
-        &format!(
-            "toonflow/{}/image-flow/{}",
-            request.project_id, request.script_id
-        ),
+        request.project_id,
+        &format!("image-flow/{}", request.script_id),
         true,
     )
     .await?;

@@ -209,6 +209,13 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       minWidth: 180,
     },
     {
+      title: '能力',
+      field: 'capabilities',
+      formatter: ({ cellValue }) =>
+        Array.isArray(cellValue) ? cellValue.join(' · ') : '—',
+      minWidth: 180,
+    },
+    {
       title: 'API 地址',
       field: 'url',
       minWidth: 140,

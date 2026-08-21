@@ -405,8 +405,9 @@ pub async fn extract_assets(
         return Err(AppError::not_found("部分剧本不存在，请刷新后重试"));
     }
     let related_objects = json!({"scriptIds":request.script_ids}).to_string();
-    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time) SELECT $1,$2,'scriptAssetExtraction',$3,coalesce(chat_model::text,'universalAi'),'剧本资产提取','running',$4 FROM toonflow.projects WHERE id=$2")
-        .bind(task_id).bind(request.project_id).bind(related_objects).bind(chrono::Utc::now().timestamp_millis()).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to create asset extraction task"))?;
+    let task_input = json!({"projectId":request.project_id,"scriptIds":request.script_ids,"groupSize":request.group_size.unwrap_or(5).clamp(1,20)});
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) SELECT $1,$2,'scriptAssetExtraction',$3,coalesce(chat_model::text,'universalAi'),'剧本资产提取','running',$4,$5,0,$6 FROM toonflow.projects WHERE id=$2")
+        .bind(task_id).bind(request.project_id).bind(related_objects).bind(chrono::Utc::now().timestamp_millis()).bind(task_input).bind(request.script_ids.len() as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to create asset extraction task"))?;
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to queue asset extraction"))?;
@@ -416,13 +417,18 @@ pub async fn extract_assets(
     let group_size = request.group_size.unwrap_or(5).clamp(1, 20);
     tokio::spawn(async move {
         let mut failure = None;
-        for group in ids.chunks(group_size) {
+        for (group_index, group) in ids.chunks(group_size).enumerate() {
             if let Err(reason) = extract_group(&pool, project_id, group).await {
                 let _=sqlx::query("UPDATE toonflow.scripts SET extract_state=-1,error_reason=$3 WHERE project_id=$1 AND id=ANY($2)").bind(project_id).bind(group).bind(&reason).execute(&pool).await;
                 if failure.is_none() {
                     failure = Some(reason);
                 }
             }
+            let _ = sqlx::query("UPDATE toonflow.tasks SET progress_current=$2 WHERE id=$1")
+                .bind(task_id)
+                .bind(((group_index + 1) * group_size).min(ids.len()) as i32)
+                .execute(&pool)
+                .await;
         }
         if let Some(reason) = failure {
             let _ = sqlx::query("UPDATE toonflow.tasks SET state='failed',reason=$2 WHERE id=$1")

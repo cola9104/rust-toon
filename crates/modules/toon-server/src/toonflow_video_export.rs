@@ -71,13 +71,25 @@ async fn run_export(
     if sources.is_empty() {
         return Err("请先为每条轨道选择已生成的视频".into());
     }
+    let _ =
+        sqlx::query("UPDATE toonflow.tasks SET progress_current=0,progress_total=$2 WHERE id=$1")
+            .bind(task_id)
+            .bind(sources.len() as i32)
+            .execute(&pool)
+            .await;
     let work_dir = storage_dir().join(format!("toonflow/{project_id}/exports/work-{task_id}"));
     tokio::fs::create_dir_all(&work_dir)
         .await
         .map_err(|error| error.to_string())?;
     let mut files = Vec::new();
     for (index, source) in sources.iter().enumerate() {
-        files.push(materialize_video(source, &work_dir, index).await?);
+        let file = materialize_video(source, &work_dir, index).await?;
+        files.push(file);
+        let _ = sqlx::query("UPDATE toonflow.tasks SET progress_current=$2 WHERE id=$1")
+            .bind(task_id)
+            .bind((index + 1) as i32)
+            .execute(&pool)
+            .await;
     }
     let list_path = work_dir.join("concat.txt");
     let list = files
@@ -88,8 +100,8 @@ async fn run_export(
     tokio::fs::write(&list_path, list)
         .await
         .map_err(|error| error.to_string())?;
-    let relative = format!("toonflow/{project_id}/exports/{script_id}_{task_id}.mp4");
-    let output_path = storage_dir().join(&relative);
+    let output_path = work_dir.join(format!("{script_id}_{task_id}.mp4"));
+    let ffmpeg_output_path = output_path.clone();
     if let Some(parent) = output_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -100,14 +112,14 @@ async fn run_export(
             .args(["-y", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list_path)
             .args(["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"])
-            .arg(&output_path)
+            .arg(&ffmpeg_output_path)
             .output()
     })
     .await
     .map_err(|error| format!("FFmpeg 任务异常：{error}"))?
     .map_err(|error| format!("启动 FFmpeg 失败：{error}"))?;
-    let _ = tokio::fs::remove_dir_all(&work_dir).await;
     if !output.status.success() {
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
         return Err(format!(
             "成片导出失败：{}",
             String::from_utf8_lossy(&output.stderr)
@@ -116,7 +128,13 @@ async fn run_export(
                 .unwrap_or("FFmpeg 执行失败")
         ));
     }
-    Ok(format!("/upload/{relative}"))
+    let bytes = tokio::fs::read(&output_path)
+        .await
+        .map_err(|error| format!("读取导出文件失败：{error}"))?;
+    let stored =
+        crate::toonflow_storage::persist_asset_bytes(project_id, "exports", "mp4", bytes).await?;
+    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    Ok(stored)
 }
 
 pub async fn export(
@@ -131,8 +149,8 @@ pub async fn export(
         ));
     }
     let task_id = chrono::Utc::now().timestamp_millis();
-    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time) VALUES($1,$2,'videoExport',$3,'ffmpeg','合并选中视频为最终成片','running',$1)")
-        .bind(task_id).bind(request.project_id).bind(json!({"scriptId":request.script_id}).to_string()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create export task"))?;
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'videoExport',$3,'ffmpeg','合并选中视频为最终成片','running',$1,$4,0,NULL)")
+        .bind(task_id).bind(request.project_id).bind(json!({"scriptId":request.script_id}).to_string()).bind(json!({"projectId":request.project_id,"scriptId":request.script_id})).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create export task"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
         match run_export(pool.clone(), request.project_id, request.script_id, task_id).await {

@@ -106,8 +106,22 @@ pub async fn set_plan(
                 .get("content")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let script_id = now_ms() * 1000 + index as i64;
-            sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time)VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,content=excluded.content").bind(item.get("id").and_then(Value::as_i64).unwrap_or(script_id)).bind(name).bind(content).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save agent script"))?;
+            let script_id = item
+                .get("id")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| now_ms() * 1000 + index as i64);
+            if let Some(existing_project_id) =
+                sqlx::query_scalar::<_, i64>("SELECT project_id FROM toonflow.scripts WHERE id=$1")
+                    .bind(script_id)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .map_err(|_| AppError::internal("failed to validate agent script"))?
+                && existing_project_id != request.project_id
+            {
+                return Err(AppError::bad_request("script 不属于当前项目"));
+            }
+            sqlx::query("INSERT INTO toonflow.scripts(id,name,content,project_id,create_time)VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET name=excluded.name,content=excluded.content WHERE toonflow.scripts.project_id=excluded.project_id")
+                .bind(script_id).bind(name).bind(content).bind(request.project_id).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save agent script"))?;
         }
     }
     Ok(Json(ApiResponse::new(json!({"id":id}))))

@@ -123,7 +123,7 @@ pub async fn latest_node_run(
     require(&user, "toon:scene:read")?;
     recover_stale_node_runs(&state).await;
     let row = sqlx::query_as::<_, WorkflowNodeRunResponse>(
-        "SELECT nr.id,nr.workflow_run_id,nr.node_id,nr.node_type,nr.attempt,nr.state,
+        "SELECT nr.id,nr.workflow_run_id,nr.agent_run_id,nr.node_id,nr.node_type,nr.attempt,nr.state,
                 nr.input,nr.output,nr.error_reason,nr.progress_current,nr.progress_total,
                 nr.retry_of_id,nr.start_time,nr.finish_time,nr.create_time
          FROM toonflow.workflow_node_runs nr
@@ -133,10 +133,13 @@ pub async fn latest_node_run(
     )
     .bind(query.project_id)
     .bind(query.script_id)
-    .bind(query.node_id)
+    .bind(&query.node_id)
     .fetch_optional(&state.pool)
     .await
-    .map_err(|_| AppError::internal("failed to load latest workflow node run"))?;
+    .map_err(|error| {
+        tracing::error!(?error, project_id = query.project_id, script_id = query.script_id, node_id = %query.node_id, "latest workflow node run query failed");
+        AppError::internal("failed to load latest workflow node run")
+    })?;
     Ok(Json(ApiResponse::new(row)))
 }
 

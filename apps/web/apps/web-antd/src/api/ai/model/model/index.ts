@@ -13,6 +13,7 @@ export namespace AiModelModelApi {
     apiKey: string; // API 密钥
     url: string; // API 地址
     config?: Record<string, unknown>; // 平台扩展配置
+    capabilities?: string[]; // Vendor 能力标签
     status: number; // 状态
   }
 
@@ -92,6 +93,30 @@ export function getModelPlatformCapabilities() {
   return requestClient.get<AiModelModelApi.PlatformCapabilities>(
     '/ai/model/platforms',
   );
+}
+
+export function getModelPromptMaps(modelConfigId?: number) {
+  return requestClient.post<Array<{
+    id: number;
+    modelConfigId: number;
+    promptKey: string;
+    enabled: boolean;
+    modelName: string;
+    model: string;
+  }>>('/ai/model-prompt-map/list', { modelConfigId });
+}
+
+export function saveModelPromptMap(data: {
+  id?: number;
+  modelConfigId: number;
+  promptKey: string;
+  enabled?: boolean;
+}) {
+  return requestClient.post('/ai/model-prompt-map/save', data);
+}
+
+export function deleteModelPromptMap(id: number) {
+  return requestClient.post('/ai/model-prompt-map/delete', { id });
 }
 
 /** 使用供应商 API Key 同步账号可用模型 */

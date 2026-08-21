@@ -330,6 +330,13 @@ pub struct BatchImageRequest {
     concurrent_count: Option<usize>,
     items: Vec<ImageItem>,
 }
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryImageRequest {
+    project_id: i64,
+    ids: Vec<i64>,
+    concurrent_count: Option<usize>,
+}
 async fn new_image(
     pool: &sqlx::PgPool,
     item: &ImageItem,
@@ -613,6 +620,63 @@ pub async fn batch_generate_images(
         }
     });
     Ok(Json(ApiResponse::new(json!({"total":total}))))
+}
+pub async fn retry_images(
+    user: CurrentUser,
+    State(state): State<ToonState>,
+    Json(req): Json<RetryImageRequest>,
+) -> Result<Json<ApiResponse<Value>>, AppError> {
+    require(&user, "toon:project:update")?;
+    if req.ids.is_empty() {
+        return Err(AppError::bad_request("ids不能为空"));
+    }
+    let rows: Vec<(i64, i64, String)> = sqlx::query_as(
+        "SELECT a.id, i.id, i.state FROM toonflow.assets a JOIN LATERAL (SELECT id,state FROM toonflow.images WHERE assets_id=a.id ORDER BY id DESC LIMIT 1) i ON true WHERE a.project_id=$1 AND a.id=ANY($2)",
+    )
+    .bind(req.project_id)
+    .bind(&req.ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load retryable image assets"))?;
+    let retry_ids = rows
+        .iter()
+        .filter(|(_, _, state)| state == "生成失败" || state == "已取消")
+        .map(|(id, _, _)| *id)
+        .collect::<Vec<_>>();
+    if retry_ids.is_empty() {
+        return Err(AppError::bad_request("没有可重试的失败图片任务"));
+    }
+    let scheduled = schedule_asset_generation(
+        &state.pool,
+        req.project_id,
+        &retry_ids,
+        req.concurrent_count.unwrap_or(5),
+    )
+    .await?;
+    let previous: std::collections::HashMap<i64, i64> = rows
+        .into_iter()
+        .filter(|(id, _, _)| retry_ids.contains(id))
+        .map(|(id, image_id, _)| (id, image_id))
+        .collect();
+    for item in &scheduled {
+        let asset_id = item.get("id").and_then(Value::as_i64);
+        let image_id = item.get("imageId").and_then(Value::as_i64);
+        if let (Some(asset_id), Some(image_id)) = (asset_id, image_id)
+            && let Some(previous_id) = previous.get(&asset_id)
+        {
+            sqlx::query("UPDATE toonflow.images SET retry_of_id=$2 WHERE id=$1")
+                .bind(image_id)
+                .bind(previous_id)
+                .execute(&state.pool)
+                .await
+                .map_err(|_| AppError::internal("failed to link image retry"))?;
+        }
+    }
+    Ok(Json(ApiResponse::new(json!({
+        "total": scheduled.len(),
+        "ids": retry_ids,
+        "items": scheduled,
+    }))))
 }
 pub async fn poll_images(
     user: CurrentUser,

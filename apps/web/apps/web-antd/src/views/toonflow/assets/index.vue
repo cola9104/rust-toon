@@ -29,6 +29,7 @@ import {
 
 import {
   batchBindAudio,
+  cancelAssetImage,
   deleteAssets,
   generateAssetDubbing,
   getAssetLibrary,
@@ -37,6 +38,7 @@ import {
   pollAssetImages,
   polishAssetPrompt,
   queueAssetImages,
+  retryAssetImages,
   saveAsset,
   uploadMaterial,
 } from '#/api/toonflow';
@@ -70,6 +72,7 @@ const assetSearch = ref('');
 const selectedAssetIds = reactive(new Set<number>());
 const batchResolution = ref('2K');
 const batchRunning = ref<'image' | 'prompt'>();
+const batchProgress = ref({ current: 0, total: 0 });
 
 const projectOptions = computed(() =>
   projects.value.map((item) => ({ label: item.name, value: item.id })),
@@ -97,6 +100,10 @@ const categoryCounts = computed(() =>
   ) as Record<AssetCategory, number>,
 );
 const selectedAssets = computed(() => assets.value.filter((asset) => selectedAssetIds.has(asset.id)));
+const failedSelectedAssets = computed(() => selectedAssets.value.filter((asset) => failedImageIds.has(asset.id)));
+const selectedVisibleCount = computed(() => filteredAssets.value.filter((asset) => selectedAssetIds.has(asset.id)).length);
+const allVisibleSelected = computed(() => filteredAssets.value.length > 0 && selectedVisibleCount.value === filteredAssets.value.length);
+const someVisibleSelected = computed(() => selectedVisibleCount.value > 0 && !allVisibleSelected.value);
 
 const assetForm = reactive({
   id: undefined as number | undefined,
@@ -313,6 +320,17 @@ function selectVisible(mode: 'all' | 'empty' | 'invert' | 'missing') {
   }
 }
 
+function toggleVisible(checked: boolean) {
+  for (const asset of filteredAssets.value) {
+    if (checked) selectedAssetIds.add(asset.id);
+    else selectedAssetIds.delete(asset.id);
+  }
+}
+
+function clearSelection() {
+  selectedAssetIds.clear();
+}
+
 function toggleAsset(id: number, checked: boolean) {
   checked ? selectedAssetIds.add(id) : selectedAssetIds.delete(id);
 }
@@ -320,22 +338,24 @@ function toggleAsset(id: number, checked: boolean) {
 async function batchPolish() {
   if (!selectedProjectId.value || !selectedAssets.value.length) return message.warning('请先选择资产');
   batchRunning.value = 'prompt';
+  batchProgress.value = { current: 0, total: selectedAssets.value.length };
   try {
     await Promise.all(selectedAssets.value.map(async (asset) => {
       polishingAssetIds.add(asset.id);
       try {
         const result = await polishAssetPrompt({ assetsId: asset.id, projectId: selectedProjectId.value!, type: asset.type, name: asset.name, describe: asset.description || '' });
         asset.prompt = result.prompt;
-      } finally { polishingAssetIds.delete(asset.id); }
+      } finally { polishingAssetIds.delete(asset.id); batchProgress.value.current += 1; }
     }));
     message.success(`已生成 ${selectedAssets.value.length} 条提示词`);
-  } finally { batchRunning.value = undefined; }
+  } finally { batchRunning.value = undefined; batchProgress.value = { current: 0, total: 0 }; }
 }
 
 async function batchGenerateImages() {
   if (!selectedProjectId.value || !project.value?.imageModel || !selectedAssets.value.length) return message.warning('请选择资产并配置图片模型');
   batchRunning.value = 'image';
   const targets = [...selectedAssets.value];
+  batchProgress.value = { current: 0, total: targets.length };
   targets.forEach((asset) => generatingAssetIds.add(asset.id));
   try {
     const items = await Promise.all(targets.map(async (asset) => {
@@ -355,15 +375,90 @@ async function batchGenerateImages() {
       for (const result of results) {
         if (result.state === '生成中') continue;
         pending.delete(result.id);
+        batchProgress.value.current += 1;
         generatingAssetIds.delete(result.id);
         if (result.state !== '已完成') failedImageIds.add(result.id);
       }
     }
+    // 超过轮询窗口仍未返回终态时，按失败处理，保证用户可以显式重试。
+    for (const id of pending) {
+      failedImageIds.add(id);
+      generatingAssetIds.delete(id);
+    }
     await loadAssets();
-    message.success('批量图片任务已完成');
+    const failedCount = targets.filter((asset) => failedImageIds.has(asset.id)).length;
+    if (failedCount) {
+      message.warning(`批量图片任务完成，${failedCount} 项失败，可在左侧重试`);
+    } else {
+      message.success('批量图片任务已完成');
+    }
   } finally {
     targets.forEach((asset) => generatingAssetIds.delete(asset.id));
     batchRunning.value = undefined;
+    batchProgress.value = { current: 0, total: 0 };
+  }
+}
+
+async function cancelBatchImages() {
+  if (batchRunning.value !== 'image') return;
+  const ids = [...generatingAssetIds];
+  if (!ids.length) return;
+  try {
+    await Promise.all(ids.map((id) => cancelAssetImage(id)));
+    ids.forEach((id) => {
+      generatingAssetIds.delete(id);
+      failedImageIds.add(id);
+    });
+    message.success(`已取消 ${ids.length} 项图片任务，可稍后重试`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '批量取消失败');
+  } finally {
+    batchRunning.value = undefined;
+    batchProgress.value = { current: 0, total: 0 };
+  }
+}
+
+async function retryFailedImages() {
+  const failedTargets = [...failedSelectedAssets.value];
+  if (!failedTargets.length) return message.info('当前没有失败的批量图片任务');
+  const previousSelection = new Set(selectedAssetIds);
+  selectedAssetIds.clear();
+  failedTargets.forEach((asset) => selectedAssetIds.add(asset.id));
+  failedTargets.forEach((asset) => failedImageIds.delete(asset.id));
+  batchRunning.value = 'image';
+  batchProgress.value = { current: 0, total: failedTargets.length };
+  failedTargets.forEach((asset) => generatingAssetIds.add(asset.id));
+  try {
+    await retryAssetImages({ projectId: selectedProjectId.value!, ids: failedTargets.map((asset) => asset.id), concurrentCount: 5 });
+    const pending = new Set(failedTargets.map((asset) => asset.id));
+    for (let attempt = 0; attempt < 180 && pending.size; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2000));
+      const results = await pollAssetImages([...pending]);
+      for (const result of results) {
+        if (result.state === '生成中') continue;
+        pending.delete(result.id);
+        batchProgress.value.current += 1;
+        generatingAssetIds.delete(result.id);
+        if (result.state !== '已完成') failedImageIds.add(result.id);
+      }
+    }
+    for (const id of pending) {
+      failedImageIds.add(id);
+      generatingAssetIds.delete(id);
+    }
+    await loadAssets();
+    const failedCount = failedTargets.filter((asset) => failedImageIds.has(asset.id)).length;
+    if (failedCount) message.warning(`${failedCount} 项图片重试失败，请稍后再次尝试`);
+    else message.success(`已重试 ${failedTargets.length} 项失败图片`);
+  } catch (error) {
+    failedTargets.forEach((asset) => failedImageIds.add(asset.id));
+    message.error(error instanceof Error ? error.message : '失败图片重试未提交');
+  } finally {
+    failedTargets.forEach((asset) => generatingAssetIds.delete(asset.id));
+    batchRunning.value = undefined;
+    batchProgress.value = { current: 0, total: 0 };
+    selectedAssetIds.clear();
+    previousSelection.forEach((id) => selectedAssetIds.add(id));
   }
 }
 
@@ -476,7 +571,8 @@ watch(() => route.query.projectId, (value) => {
       <template v-else>
         <div class="asset-workspace">
           <aside class="batch-sidebar">
-            <div><b>批量生产</b><span>{{ selectedAssets.length }} 项已选</span></div>
+            <div class="batch-title"><b>批量生产</b><Button type="link" size="small" :disabled="!selectedAssets.length" @click="clearSelection">清空</Button></div>
+            <div class="batch-selection"><Checkbox :checked="allVisibleSelected" :indeterminate="someVisibleSelected" @change="toggleVisible($event.target.checked)">当前分类全选</Checkbox><span>{{ selectedAssets.length }} 项已选</span></div>
             <label>快捷选择</label>
             <Button block @click="selectVisible('all')">全选当前分类</Button>
             <Button block @click="selectVisible('empty')">全选提示词为空</Button>
@@ -484,8 +580,11 @@ watch(() => route.query.projectId, (value) => {
             <Button block @click="selectVisible('invert')">反选当前分类</Button>
             <label>统一模型</label><Input :value="project?.imageModel ? `项目模型 #${project.imageModel}` : '未配置'" disabled />
             <label>分辨率</label><Select v-model:value="batchResolution" :options="['1K','2K','4K'].map(value=>({label:value,value}))" />
-            <Button block :loading="batchRunning==='prompt'" :disabled="!selectedAssets.length" @click="batchPolish">批量生成提示词</Button>
-            <Button block class="toon-primary" type="primary" :loading="batchRunning==='image'" :disabled="!selectedAssets.length" @click="batchGenerateImages">批量生成图片</Button>
+            <div v-if="batchRunning" class="batch-progress">{{ batchRunning === 'image' ? '图片生成' : '提示词生成' }}：{{ batchProgress.current }}/{{ batchProgress.total }}</div>
+            <Button v-if="batchRunning === 'image'" block danger @click="cancelBatchImages">取消当前图片任务</Button>
+            <Button block :loading="batchRunning==='prompt'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchPolish">批量生成提示词</Button>
+            <Button block class="toon-primary" type="primary" :loading="batchRunning==='image'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchGenerateImages">批量生成图片</Button>
+            <Button v-if="failedSelectedAssets.length" block danger :disabled="!!batchRunning" @click="retryFailedImages">重试失败图片（{{ failedSelectedAssets.length }}）</Button>
           </aside>
           <main class="asset-content">
         <Tabs v-model:active-key="activeCategory" class="asset-category-tabs">
@@ -708,7 +807,7 @@ watch(() => route.query.projectId, (value) => {
   -webkit-line-clamp: 3;
 }
 .asset-actions { border-top: 1px solid var(--ant-color-border-secondary); margin-top: auto; padding-top: 8px; }
-.asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 210px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 12px; display: grid; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: #fafaf8; gap: 8px; }.batch-sidebar > div { display: flex; justify-content: space-between; margin-bottom: 4px; }.batch-sidebar > div span { color: #8c8c8c; font-size: 11px; }.batch-sidebar label { margin-top: 7px; color: #8c8c8c; font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: rgb(255 255 255 / 90%); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
+.asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 220px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 16px; z-index: 4; display: grid; max-height: calc(100vh - 132px); overflow: auto; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: color-mix(in srgb, #fafaf8 92%, transparent); box-shadow: 0 8px 24px rgb(15 23 42 / 7%); gap: 8px; }.batch-title,.batch-selection { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.batch-selection { padding: 6px 0 9px; border-bottom: 1px solid var(--toon-line); }.batch-selection span { color: #8c8c8c; font-size: 11px; white-space: nowrap; }.batch-progress { padding: 7px 9px; border-radius: 7px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); font-size: 12px; text-align: center; }.batch-sidebar label { margin-top: 7px; color: #8c8c8c; font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: rgb(255 255 255 / 90%); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
 @media (max-width: 640px) {
   .asset-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
   .asset-workspace { grid-template-columns: 1fr; }.batch-sidebar { position: static; }

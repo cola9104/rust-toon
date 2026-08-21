@@ -48,7 +48,7 @@ pub async fn generate(
     Ok(Json(ApiResponse::new("生成事件成功")))
 }
 
-async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
+pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     let chapter: Option<(String, String)> = sqlx::query_as(
         "SELECT chapter,chapter_data FROM toonflow.novels WHERE id=$1 AND project_id=$2",
     )
@@ -62,7 +62,8 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
         return;
     };
     let task_id = chrono::Utc::now().timestamp_millis() * 1_000_000 + id % 1_000_000;
-    let _=sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5) ON CONFLICT(id) DO NOTHING").bind(task_id).bind(project_id).bind(id.to_string()).bind(format!("提取事件：{title}")).bind(chrono::Utc::now().timestamp_millis()).execute(pool).await;
+    let task_input = json!({"projectId":project_id,"novelId":id,"chapter":title});
+    let _=sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'novelEvent',$3,'universalAi',$4,'running',$5,$6,0,1) ON CONFLICT(id) DO NOTHING").bind(task_id).bind(project_id).bind(id.to_string()).bind(format!("提取事件：{title}")).bind(chrono::Utc::now().timestamp_millis()).bind(task_input).execute(pool).await;
     // Try loading custom prompt from prompts table, fall back to built-in
     let system = sqlx::query_scalar::<_,String>(
         "SELECT data FROM toonflow.prompts WHERE type='eventExtraction' AND use_data=true ORDER BY id DESC LIMIT 1",
@@ -110,10 +111,12 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
             if let Err(reason) = save_events(pool, id, &raw).await {
                 fail(pool, id, task_id, &reason).await
             } else {
-                let _ = sqlx::query("UPDATE toonflow.tasks SET state='success' WHERE id=$1")
-                    .bind(task_id)
-                    .execute(pool)
-                    .await;
+                let _ = sqlx::query(
+                    "UPDATE toonflow.tasks SET state='success',progress_current=1 WHERE id=$1",
+                )
+                .bind(task_id)
+                .execute(pool)
+                .await;
             }
         }
         Err(reason) => fail(pool, id, task_id, &reason).await,
