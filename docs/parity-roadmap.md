@@ -1,44 +1,29 @@
-# 等价迁移清单
+# 功能范围与验收口径
 
-本项目不重新设计 Yudao 或 Toonflow 的业务。Rust 服务端以参照工程的接口、字段、状态流转和权限行为为验收标准。
+本文档记录当前 Rust Toon 的实现边界。验收以仓库中的 Rust 路由、数据库迁移和 Toonflow 前端为准；外部项目只用于参考交互语义，不代表必须复制所有功能。
 
-## 基础后台（参照 `../yudao-cloud`）
+## 已实现模块
 
-- System：认证、用户、部门、岗位、角色、菜单、租户、字典、通知、OAuth2、社交登录
-- Infra：配置、文件与文件配置、定时任务、API 日志、错误日志、数据源、代码生成
-- BPM：模型、流程定义、流程实例、任务、抄送、表单、流程分类
-- AI：模型、聊天、知识库、绘画、音乐、工作流及对应管理能力
-- 横切能力：统一响应、校验、权限、租户隔离、审计、缓存、幂等、限流、导入导出
+- System：认证、用户、角色、权限、菜单、字典、租户和审计日志。
+- Infra：配置、文件、定时任务、代码生成、访问日志和监控。
+- AI：模型配置、对话、知识库、图片/视频/音乐/语音等媒体能力。
+- Media：媒体资产管理。
+- Toonflow：项目、小说、剧本、事件、资产、分镜、音视频、Agent、提示词、技能和任务中心。
 
-## 动漫工厂（参照 `../Toonflow-app`）
+## 当前边界
 
-Toonflow-app 仅作为功能、流程、字段与交互语义的参照。前端不复制其原 UI 技术实现，全部使用本项目的 Vben Admin 5、Vue 3 和 Ant Design Vue 重建，并接入统一菜单、权限、标签页与布局体系；后端全部使用 Rust 实现。
+- BPM/Yudao 工作流管理不在当前实现范围内；旧的 BPM 前端、API、菜单和字典数据已经移除。
+- NATS、租户和部分高级 Provider 保留为扩展点，是否启用取决于部署配置和模型配置。
+- 真实图片、视频和语音供应商需要有效凭据，默认测试不会调用付费服务。
 
-- 项目：项目、导演手册、视觉手册、模型选择
-- 小说与剧本：章节、事件、剧本、资产提取、Script Agent 计划
-- 资产：角色/场景/道具、图片、音频、批量生成、提示词润色
-- 生产：工作流、衍生资产、图片编辑、分镜、轨道、视频、配音
-- Agent：Script Agent、Production Agent、记忆、工具调用和执行状态
-- 设置：供应商、模型映射、提示词、Skill、Agent 部署、记忆、开发配置
-- 任务中心：筛选、分页、分类、详情、轮询及失败原因
-- API 层：Vben 调用 Rust 原生 `/toonflow/**` 接口；不保留会返回空对象或伪成功的通配兼容层
+## 验收方式
 
-### 下一轮最高优先级
+```bash
+cargo test --workspace
+bash script/test-database-migrations.sh
+bash script/test-ai-e2e.sh
+pnpm --dir apps/web --filter @vben/web-antd run typecheck
+pnpm --dir apps/web --filter @vben/web-antd run build
+```
 
-图片与视频生成稳定性作为下一轮 P0 工作，先修复参考图确定性映射、结构化镜头描述、模型专用 payload、生成前校验和生成后视觉质检，再继续调整自然语言提示词。详细实施顺序和验收标准见 [图片与视频生成稳定性优化计划](./media-generation-stability-plan.md)。
-
-## 完成标准
-
-每个条目必须同时具备 Rust 接口、数据库迁移、权限、前端入口或原页面调用兼容，并通过后端检查、前端类型检查和关键流程测试，才可标记完成。
-
-当前仓库的准确实现范围以实际 Rust 路由、数据库迁移和 Vben 菜单为准。未实现能力必须返回明确的 404 或业务错误，不能通过空数组、空对象或固定 `true` 冒充成功。
-
-## Toonflow 兼容端点状态
-
-- 已覆盖：`novel/getNovelIndex`、`novel/batchDeleteNovel`、`production/assets/updateAssetsUrl`、`production/assets/deleteAssetsDireve`、`script/getAiRegex`、`script/exportScript`、`artStyle/extractStylePrompt`、`assets/addAudioAssets`、`assets/updateAudioAssets`、`assets/delAssets`、`modelSelect/getModelList`、`modelSelect/getModelDetail`、`other/getVersion`。
-- 服务端专属能力：Agent WebSocket 支持 `updateContext`、心跳和断线超时；启动时会将被服务重启中断的生成任务标记为失败。
-- AI 错误对齐：上游 HTTP/网络错误保留 `code`、`category`、`status`、响应摘要与 `retryable`，HTTP 错误响应写入 `data`；Agent WebSocket 在兼容 `ext.error` 文案的同时提供 `errorCode`、`errorCategory`、`status` 和 `responseData`。
-- 剧本保存保证：数据库通过 `(project_id, name)` 唯一索引保证同项目剧本名称唯一，Agent 保存使用 `ON CONFLICT` 原子 upsert；升级时历史重名项保留为带 ID 的历史副本。
-- 剧本生成质量：剧本子 Agent 注入已有剧本/最新集/章节上下文，骨架与策略缺失 XML 会明确失败；`save_scripts` 拆分并清洗 `scriptItem`，校验文件头、集号、场号和场景动作；资产提取 JSON 解析失败自动重试一次。
-- 剧本提示词：`getAiRegex` 使用可维护的数据库 prompt，新增 `script/polishScriptPrompt` 将粗略要求润色为符合短剧结构与输出纪律的任务提示词。
-- 桌面端专属端点不移植：`checkUpdate`、`openFolder`、`selectFolder`、`openExternal` 等 Electron/本机文件管理能力。
+生产部署和环境变量请参阅 [deployment.md](deployment.md) 与 [configuration.md](configuration.md)。

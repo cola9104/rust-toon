@@ -5,10 +5,12 @@ mod scenes;
 mod shared;
 mod toonflow;
 mod toonflow_agent_episode_scope;
+mod toonflow_agent_events;
 mod toonflow_agent_plan;
 mod toonflow_agent_read_tools;
 mod toonflow_agent_runtime;
 mod toonflow_agent_tool_record;
+mod toonflow_agent_tool_utils;
 mod toonflow_agent_tools;
 mod toonflow_agents;
 mod toonflow_asset_ai;
@@ -23,10 +25,14 @@ mod toonflow_image_workflow;
 mod toonflow_manuals;
 mod toonflow_materials;
 mod toonflow_novel_events;
+mod toonflow_pagination;
 mod toonflow_project;
+mod toonflow_project_crud;
+mod toonflow_project_helpers;
 mod toonflow_prompt_store;
 mod toonflow_resources;
 mod toonflow_script_ai;
+mod toonflow_status;
 mod toonflow_storage;
 mod toonflow_storyboard_asset_validation;
 mod toonflow_storyboard_panel_validation;
@@ -36,6 +42,7 @@ mod toonflow_video_export;
 mod toonflow_workflow;
 mod toonflow_workflow_control;
 mod toonflow_workflow_definition;
+mod toonflow_workflow_utils;
 mod toonflow_ws;
 
 #[cfg(test)]
@@ -419,8 +426,11 @@ pub async fn repair_interrupted_state(pool: &PgPool) -> Result<(), sqlx::Error> 
         .execute(&mut *tx).await?;
     sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
         .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.tasks SET state='failed',reason='服务重启导致失败' WHERE state='running'")
-        .execute(&mut *tx).await?;
+    sqlx::query(
+        "UPDATE toonflow.tasks SET state='failed',reason='服务重启导致失败' WHERE state='running'",
+    )
+    .execute(&mut *tx)
+    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -451,7 +461,7 @@ pub fn routes(state: ToonState) -> Router {
             "/toon/scenes/{id}",
             put(scenes::update).delete(scenes::delete),
         )
-        .route("/toonflow/health", get(toonflow::health))
+        .route("/toonflow/health", get(toonflow_status::health))
         .route(
             "/toonflow/art-styles",
             get(toonflow_resources::list_art_styles).post(toonflow_resources::save_art_style),
@@ -849,7 +859,7 @@ pub fn routes(state: ToonState) -> Router {
         )
         .route(
             "/toonflow/projects",
-            get(toonflow::list_projects).post(toonflow::create_project),
+            get(toonflow::list_projects).post(toonflow_project_crud::create_project),
         )
         .route(
             "/toonflow/projects/{id}",
@@ -861,15 +871,15 @@ pub fn routes(state: ToonState) -> Router {
         )
         .route(
             "/toonflow/project/addProject",
-            post(toonflow::create_project),
+            post(toonflow_project_crud::create_project),
         )
         .route(
             "/toonflow/project/editProject",
-            post(toonflow::update_project),
+            post(toonflow_project_crud::update_project),
         )
         .route(
             "/toonflow/project/delProject",
-            post(toonflow::delete_project),
+            post(toonflow_project_crud::delete_project),
         )
         .route("/toonflow/novel/addNovel", post(toonflow::add_novel))
         .route("/toonflow/novel/getNovel", post(toonflow::list_novel))
@@ -989,9 +999,18 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow::update_agent_use_mode),
         )
         .route("/api/project/getProject", post(toonflow::list_projects))
-        .route("/api/project/addProject", post(toonflow::create_project))
-        .route("/api/project/editProject", post(toonflow::update_project))
-        .route("/api/project/delProject", post(toonflow::delete_project))
+        .route(
+            "/api/project/addProject",
+            post(toonflow_project_crud::create_project),
+        )
+        .route(
+            "/api/project/editProject",
+            post(toonflow_project_crud::update_project),
+        )
+        .route(
+            "/api/project/delProject",
+            post(toonflow_project_crud::delete_project),
+        )
         .route("/api/novel/addNovel", post(toonflow::add_novel))
         .route("/api/novel/getNovel", post(toonflow::list_novel))
         .route("/api/novel/getNovelData", post(toonflow::all_novel))
@@ -1104,9 +1123,18 @@ pub fn routes(state: ToonState) -> Router {
         .route("/agents/clearMemory", post(toonflow_agents::clear))
         .route("/agents/deleteAllMemory", post(toonflow_agents::clear_all))
         .route("/project/getProject", post(toonflow::list_projects))
-        .route("/project/addProject", post(toonflow::create_project))
-        .route("/project/editProject", post(toonflow::update_project))
-        .route("/project/delProject", post(toonflow::delete_project))
+        .route(
+            "/project/addProject",
+            post(toonflow_project_crud::create_project),
+        )
+        .route(
+            "/project/editProject",
+            post(toonflow_project_crud::update_project),
+        )
+        .route(
+            "/project/delProject",
+            post(toonflow_project_crud::delete_project),
+        )
         .route("/novel/addNovel", post(toonflow::add_novel))
         .route("/novel/getNovel", post(toonflow::list_novel))
         .route("/novel/getNovelData", post(toonflow::all_novel))

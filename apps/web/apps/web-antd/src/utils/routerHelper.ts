@@ -9,7 +9,7 @@ const modules = import.meta.glob('../views/**/*.{vue,tsx}');
 
 /**
  * 注册一个异步组件
- * @param componentPath 例:/bpm/oa/leave/detail
+ * @param componentPath 组件视图路径
  */
 export function registerComponent(componentPath: string) {
   for (const item in modules) {

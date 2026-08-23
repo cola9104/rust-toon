@@ -85,7 +85,8 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `SECRET_ENCRYPTION_KEY` | 回退 `JWT_SECRET`，再回退内置常量 `rust-toon-local-secret` | AI 模型 api_key、文件配置等敏感字段落库时的对称加密密钥（`enc:v1:` 前缀格式） | `system-server/src/management/compat.rs`、`infra-server/src/lib.rs` |
 | `TEST_DATABASE_URL` | 无 | 仅测试使用：迁移测试与分镜数据库集成测试 | `toon-server/src/lib.rs` 测试、`script/test-database-migrations.sh` |
 | `TEST_POSTGRES_PORT` | `55432` | 迁移测试脚本起临时 PostgreSQL 容器所用端口 | `script/test-database-migrations.sh` |
-| `AI_REQUEST_TIMEOUT_SECONDS` | `120` | AI Provider 单次 HTTP 请求总超时；连接超时固定为 15 秒，连接/超时/5xx 最多尝试 3 次 | `ai-server/src/provider.rs` |
+| `AI_REQUEST_TIMEOUT_SECONDS` | `120` | AI Provider 单次 HTTP 请求总超时，实际限制在 5～900 秒；连接超时固定为 15 秒 | `ai-server/src/provider.rs` |
+| `AI_REQUEST_RETRIES` | `2` | AI Provider 失败重试次数，实际最多 5 次；连接失败、超时、408/409/425/429 和 5xx 会指数退避重试，支持上游 `Retry-After` | `ai-server/src/provider.rs` |
 | `AI_VIDEO_POLL_INTERVAL_SECONDS` | `5` | 异步视频任务轮询间隔 | `toon-server/src/ai_client.rs` |
 | `AI_VIDEO_POLL_TIMEOUT_SECONDS` | `600` | 异步视频任务最长等待时间 | `toon-server/src/ai_client.rs` |
 

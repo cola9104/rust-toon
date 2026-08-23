@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 
 mod excel;
 mod monitor;
+mod object_storage;
 
 #[derive(Clone)]
 pub struct InfraState {
@@ -572,15 +573,10 @@ async fn file_upload(
     let date = Utc::now().format("%Y%m%d").to_string();
     let object_name = format!("{}_{}", Utc::now().timestamp_millis(), name);
     let relative_path = format!("{date}/{object_name}");
-    let storage_path = upload_storage_dir().join(&relative_path);
-    if let Some(parent) = storage_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|_| AppError::internal("failed to prepare upload directory"))?;
-    }
-    tokio::fs::write(&storage_path, &bytes)
+    let object_key = format!("infra/{relative_path}");
+    object_storage::put(&object_key, bytes.clone())
         .await
-        .map_err(|_| AppError::internal("failed to save upload file"))?;
+        .map_err(|_| AppError::internal("failed to save upload file to MinIO"))?;
     let path = format!("/upload/{relative_path}");
     let size = i32::try_from(bytes.len()).unwrap_or(i32::MAX);
     let id = sqlx::query_scalar::<_, i64>("INSERT INTO infra_file (id, name, path, url, type, size) VALUES (nextval('infra_file_seq'),$1,$2,$3,$4,$5) RETURNING id")
@@ -595,8 +591,7 @@ async fn file_download(Path(path): Path<String>) -> Result<Response, AppError> {
     if path.split('/').any(|part| part == ".." || part.is_empty()) {
         return Err(AppError::bad_request("invalid file path"));
     }
-    let storage_path = upload_storage_dir().join(&path);
-    let bytes = tokio::fs::read(&storage_path)
+    let bytes = object_storage::get(&format!("infra/{path}"))
         .await
         .map_err(|_| AppError::not_found("file not found"))?;
     let content_type = infer_content_type(&path);
@@ -604,12 +599,6 @@ async fn file_download(Path(path): Path<String>) -> Result<Response, AppError> {
         .header(header::CONTENT_TYPE, content_type)
         .body(Body::from(bytes))
         .map_err(|_| AppError::internal("failed to read file"))
-}
-
-fn upload_storage_dir() -> std::path::PathBuf {
-    env::var("INFRA_UPLOAD_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::path::PathBuf::from("storage/uploads"))
 }
 
 fn sanitize_file_name(value: &str) -> String {

@@ -277,6 +277,35 @@ fn asset_image_key(file_path: &str) -> Option<&str> {
         .filter(|key| !key.is_empty())
 }
 
+/// Check that a persisted Toonflow asset is readable from the configured object store.
+///
+/// This is intentionally shared with the production pipeline verification so tests validate
+/// the same MinIO-backed storage path used in production instead of assuming local `/upload`
+/// files.
+#[cfg(test)]
+pub(crate) async fn asset_exists(file_path: &str) -> Result<bool, String> {
+    let Some(key) = asset_image_key(file_path) else {
+        return Ok(false);
+    };
+    let response = signed_request(Method::GET, Some(key), Vec::new()).await?;
+    Ok(response.status().is_success())
+}
+
+pub(crate) async fn read_asset_bytes(file_path: &str) -> Result<Vec<u8>, String> {
+    let Some(key) = asset_image_key(file_path) else {
+        return Err("不支持的 MinIO 资产路径".into());
+    };
+    let response = signed_request(Method::GET, Some(key), Vec::new()).await?;
+    if !response.status().is_success() {
+        return Err(format!("读取 MinIO 资产失败：HTTP {}", response.status()));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+}
+
 fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")

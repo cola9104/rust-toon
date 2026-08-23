@@ -11,12 +11,6 @@ const props = defineProps<{
 }>();
 
 const promptOptions = computed(() => props.prompts.map((item) => ({ label: item.name, value: item.sourceKey || String(item.id) })));
-const permissionOptions = [
-  { label: '读取资产', value: 'asset:read' },
-  { label: '写入资产', value: 'asset:write' },
-  { label: '写入分镜', value: 'storyboard:write' },
-  { label: '生成视频', value: 'video:generate' },
-];
 const configuredCount = computed(() => props.agents.filter((item) => item.modelConfigId).length);
 const enabledCount = computed(() => props.agents.filter((item) => !item.disabled).length);
 
@@ -32,7 +26,6 @@ const columns = [
   { title: '层级', key: 'role', width: 100 },
   { title: 'Prompt', key: 'prompt', width: 190 },
   { title: '记忆范围', key: 'memory', width: 120 },
-  { title: '写入权限', key: 'permissions', width: 260 },
 ];
 </script>
 
@@ -44,7 +37,6 @@ const columns = [
         <Tag v-if="column.key === 'role'" :color="role(record.key) === '监督 Agent' ? 'orange' : record.key.includes(':') ? 'blue' : 'green'">{{ role(record.key) }}</Tag>
         <Select v-else-if="column.key === 'prompt'" v-model:value="record.promptSourceKey" :options="promptOptions" allow-clear placeholder="选择 Prompt" style="width: 175px" />
         <Select v-else-if="column.key === 'memory'" v-model:value="record.memoryScope" :options="[{ label: '项目', value: 'project' }, { label: '剧本', value: 'script' }, { label: '节点', value: 'node' }]" style="width: 105px" />
-        <Select v-else-if="column.key === 'permissions'" v-model:value="record.writePermissions" :options="permissionOptions" mode="multiple" placeholder="选择权限" style="min-width: 240px" />
       </template>
     </Table>
     <Space class="panel-hint">Prompt 可按 Agent 覆盖；Skill 按 Toonflow-app 规则由 Agent 类型和项目上下文自动加载，不在这里绑定。</Space>

@@ -91,7 +91,7 @@ Install prerequisites:
 
 - Rust stable with Rust 2024 edition support.
 - Docker and Docker Compose.
-- Node.js `22.18+` or `24.x`.
+- Node.js `22.18+`.
 - pnpm `11+` through Corepack.
 - Nginx or another reverse proxy for production frontend/API routing.
 

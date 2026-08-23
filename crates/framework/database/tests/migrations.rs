@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 33);
+    assert_eq!(applied, 40);
 
     for source_key in [
         "script_ai_regex",
@@ -257,27 +257,48 @@ async fn applies_all_migrations_to_empty_postgres() {
         "active route menus must not generate duplicate frontend route names"
     );
 
+    let active_bpm_menus: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM system_menu
+         WHERE deleted = 0
+           AND (id IN (1186, 1200) OR component LIKE 'bpm/%' OR permission LIKE 'bpm:%')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read active BPM menu count");
+    assert_eq!(
+        active_bpm_menus, 0,
+        "unimplemented BPM menus must stay hidden"
+    );
+
+    let bpm_dict_types: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM system_dict_type WHERE type LIKE 'bpm%'")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect BPM dictionary types");
+    assert_eq!(bpm_dict_types, 0, "legacy BPM dictionaries must be removed");
+
     let restored_menu_catalog: i64 =
         sqlx::query_scalar("SELECT count(*) FROM system_menu WHERE deleted = 0")
             .fetch_one(&pool)
             .await
             .expect("read restored menu catalog");
     assert!(
-        restored_menu_catalog >= 300,
+        restored_menu_catalog >= 250,
         "fresh bootstrap must include the complete backend menu and permission catalog"
     );
 
     let restored_navigation_roots: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM system_menu
-         WHERE id IN (1, 2, 1185, 2758) AND parent_id = 0
+         WHERE id IN (1, 2, 2758) AND parent_id = 0
            AND type = 1 AND status = 0 AND deleted = 0",
     )
     .fetch_one(&pool)
     .await
     .expect("read restored navigation roots");
     assert_eq!(
-        restored_navigation_roots, 4,
-        "system, infrastructure, workflow, and AI navigation roots must be available"
+        restored_navigation_roots, 3,
+        "system, infrastructure, and AI navigation roots must be available"
     );
 
     let orphaned_active_menus: i64 = sqlx::query_scalar(
@@ -315,6 +336,14 @@ async fn applies_all_migrations_to_empty_postgres() {
         assert!(exists, "expected management column {table}.{column}");
     }
 
+    let knowledge_status: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='ai' AND table_name='chat_messages' AND column_name='knowledge_status')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect chat knowledge status column");
+    assert!(knowledge_status, "expected chat knowledge status column");
+
     let department_leader_type: String = sqlx::query_scalar(
         "SELECT udt_name FROM information_schema.columns
          WHERE table_schema='public' AND table_name='system_dept'
@@ -341,7 +370,7 @@ async fn applies_all_migrations_to_empty_postgres() {
     .fetch_one(&pool)
     .await
     .expect("read hidden-page business menu links");
-    assert!(active_menu_links >= 14);
+    assert!(active_menu_links >= 10);
 
     let administrators: i64 = sqlx::query_scalar(
         "SELECT count(*)

@@ -14,6 +14,8 @@ for variable in "${required[@]}"; do
   fi
 done
 
+echo "Running paid provider smoke test with AI_REQUEST_TIMEOUT_SECONDS=${AI_REQUEST_TIMEOUT_SECONDS:-120} and AI_REQUEST_RETRIES=${AI_REQUEST_RETRIES:-2}" >&2
+
 cargo test -p rust-toon-toon-server \
   provider_e2e_tests::configured_image_and_video_providers_return_media_urls \
   -- --ignored --nocapture --exact

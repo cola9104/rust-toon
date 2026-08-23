@@ -7,65 +7,17 @@ use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::{FromRow, PgPool, Row};
+use sqlx::{FromRow, Row};
 
+pub use crate::toonflow_project_crud::list_projects;
 use crate::{
     ToonState,
-    shared::{affected, current_user_id, require},
+    shared::{affected, require},
     toonflow_materials::save_asset_cover_data_url,
+    toonflow_pagination::{PageData, default_limit, default_page},
+    toonflow_project_helpers::{default_should_generate, ensure_project, next_id, now_ms},
     toonflow_storage::{delete_asset_file, record_cleanup_failure},
 };
-
-fn now_ms() -> i64 {
-    chrono::Utc::now().timestamp_millis()
-}
-
-fn next_id(offset: i64) -> i64 {
-    now_ms() + offset
-}
-
-fn project_video_ratio(value: &str) -> &str {
-    if value.trim().is_empty() {
-        "16:9"
-    } else {
-        value
-    }
-}
-
-fn project_video_mode(value: &str) -> &str {
-    if value.trim().is_empty() {
-        "startEndRequired"
-    } else {
-        value
-    }
-}
-
-async fn ensure_project(pool: &PgPool, project_id: i64) -> Result<(), AppError> {
-    let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM toonflow.projects WHERE id = $1")
-        .bind(project_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|_| AppError::internal("failed to check project"))?;
-    exists
-        .map(|_| ())
-        .ok_or_else(|| AppError::not_found("project not found"))
-}
-async fn validate_project_models(
-    pool: &PgPool,
-    chat: Option<i64>,
-    image: Option<i64>,
-    video: Option<i64>,
-) -> Result<(), AppError> {
-    for (id, kind) in [(chat, "chat"), (image, "image"), (video, "video")] {
-        if let Some(id) = id {
-            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ai.model_configs WHERE id=$1 AND type=$2 AND status=0)").bind(id).bind(kind).fetch_one(pool).await.map_err(|_|AppError::internal("failed to validate AI model"))?;
-            if !valid {
-                return Err(AppError::bad_request(format!("请选择启用的{kind}模型")));
-            }
-        }
-    }
-    Ok(())
-}
 
 #[derive(Debug, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
@@ -122,143 +74,6 @@ pub struct IdRequest {
     pub id: i64,
 }
 
-pub async fn list_projects(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-) -> Result<Json<ApiResponse<Vec<ToonflowProject>>>, AppError> {
-    require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, ToonflowProject>(
-        r#"SELECT id, project_type, chat_model, image_model, image_quality, video_model, name, intro,
-                  type as type_, art_style, director_manual, mode, video_ratio, create_time, update_time
-           FROM toonflow.projects ORDER BY create_time DESC"#,
-    )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to list toonflow projects"))?;
-    Ok(Json(ApiResponse::new(rows)))
-}
-
-pub async fn create_project(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<SaveProjectRequest>,
-) -> Result<Json<ApiResponse<Value>>, AppError> {
-    require(&user, "toon:project:create")?;
-    if request.name.trim().is_empty() {
-        return Err(AppError::bad_request("project name is required"));
-    }
-    validate_project_models(
-        &state.pool,
-        request.chat_model,
-        request.image_model,
-        request.video_model,
-    )
-    .await?;
-    let id = request.id.unwrap_or_else(|| next_id(0));
-    let time = now_ms();
-    sqlx::query(
-        r#"INSERT INTO toonflow.projects
-           (id, project_type, chat_model, image_model, image_quality, video_model, name, intro, type,
-            art_style, director_manual, mode, video_ratio, user_id, create_time, update_time)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$15)"#,
-    )
-    .bind(id)
-    .bind(request.project_type)
-    .bind(request.chat_model)
-    .bind(request.image_model)
-    .bind(request.image_quality)
-    .bind(request.video_model)
-    .bind(request.name.trim())
-    .bind(request.intro)
-    .bind(request.r#type)
-    .bind(request.art_style)
-    .bind(request.director_manual)
-    .bind(project_video_mode(&request.mode))
-    .bind(project_video_ratio(&request.video_ratio))
-    .bind(current_user_id(&user)?)
-    .bind(time)
-    .execute(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to create toonflow project"))?;
-    Ok(Json(ApiResponse::with_message(
-        json!({ "id": id }),
-        "新增项目成功",
-    )))
-}
-
-pub async fn update_project(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<SaveProjectRequest>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    require(&user, "toon:project:update")?;
-    let id = request
-        .id
-        .ok_or_else(|| AppError::bad_request("project id is required"))?;
-    validate_project_models(
-        &state.pool,
-        request.chat_model,
-        request.image_model,
-        request.video_model,
-    )
-    .await?;
-    let result = sqlx::query(
-        r#"UPDATE toonflow.projects
-           SET project_type=$2, chat_model=$3, image_model=$4, image_quality=$5, video_model=$6,
-               name=$7, intro=$8, type=$9, art_style=$10, director_manual=$11, mode=$12,
-               video_ratio=$13, update_time=$14
-           WHERE id=$1"#,
-    )
-    .bind(id)
-    .bind(request.project_type)
-    .bind(request.chat_model)
-    .bind(request.image_model)
-    .bind(request.image_quality)
-    .bind(request.video_model)
-    .bind(request.name.trim())
-    .bind(request.intro)
-    .bind(request.r#type)
-    .bind(request.art_style)
-    .bind(request.director_manual)
-    .bind(project_video_mode(&request.mode))
-    .bind(project_video_ratio(&request.video_ratio))
-    .bind(now_ms())
-    .execute(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to update toonflow project"))?;
-    affected(result.rows_affected(), "project")?;
-    Ok(Json(ApiResponse::with_message((), "编辑项目成功")))
-}
-
-pub async fn delete_project(
-    user: CurrentUser,
-    State(state): State<ToonState>,
-    Json(request): Json<IdRequest>,
-) -> Result<Json<ApiResponse<()>>, AppError> {
-    require(&user, "toon:project:delete")?;
-    let paths: Vec<Option<String>> = sqlx::query_scalar(
-        "SELECT file_path FROM toonflow.images WHERE assets_id IN (SELECT id FROM toonflow.assets WHERE project_id=$1)
-         UNION ALL SELECT file_path FROM toonflow.storyboards WHERE project_id=$1
-         UNION ALL SELECT file_path FROM toonflow.videos WHERE project_id=$1",
-    )
-    .bind(request.id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to collect project files"))?;
-    let result = sqlx::query("DELETE FROM toonflow.projects WHERE id = $1")
-        .bind(request.id)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to delete toonflow project"))?;
-    affected(result.rows_affected(), "project")?;
-    for path in paths.into_iter().flatten() {
-        if let Err(error) = delete_asset_file(&path).await {
-            record_cleanup_failure(&state.pool, &path, "project", Some(request.id), &error).await;
-        }
-    }
-    Ok(Json(ApiResponse::with_message((), "删除项目成功")))
-}
-
 #[derive(Debug, Serialize, FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct NovelChapter {
@@ -302,20 +117,6 @@ pub struct ListNovelRequest {
     #[serde(default = "default_limit")]
     pub limit: i64,
     pub search: Option<String>,
-}
-
-fn default_page() -> i64 {
-    1
-}
-
-fn default_limit() -> i64 {
-    20
-}
-
-#[derive(Debug, Serialize)]
-pub struct PageData<T: Serialize> {
-    pub data: Vec<T>,
-    pub total: i64,
 }
 
 pub async fn add_novel(
@@ -1353,10 +1154,6 @@ pub struct SaveStoryboardRequest {
     pub associate_assets_ids: Vec<i64>,
 }
 
-fn default_should_generate() -> i32 {
-    1
-}
-
 pub async fn add_storyboard(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -1834,7 +1631,6 @@ pub struct AgentDeployment {
     pub model_type: String,
     pub prompt_source_key: Option<String>,
     pub memory_scope: String,
-    pub write_permissions: serde_json::Value,
 }
 
 pub async fn list_agent_deployments(
@@ -1845,7 +1641,7 @@ pub async fn list_agent_deployments(
     let rows = sqlx::query_as::<_, AgentDeployment>(
         r#"SELECT d.id,d.key,d.description,d.name,
                   d.temperature,d.max_output_tokens,d.disabled,d.model_config_id,d.model_type,
-                  d.prompt_source_key,d.memory_scope,d.write_permissions
+                  d.prompt_source_key,d.memory_scope
            FROM toonflow.agent_deployments d ORDER BY d.id"#,
     )
     .fetch_all(&state.pool)
@@ -1864,7 +1660,6 @@ pub struct UpdateAgentDeploymentRequest {
     pub model_config_id: Option<i64>,
     pub prompt_source_key: Option<String>,
     pub memory_scope: Option<String>,
-    pub write_permissions: Option<serde_json::Value>,
 }
 
 pub async fn update_agent_deployment(
@@ -1892,7 +1687,7 @@ pub async fn update_agent_deployment(
     if !valid_model {
         return Err(AppError::bad_request("模型未启用或类型与当前用途不匹配"));
     }
-    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5,prompt_source_key=coalesce($6,prompt_source_key),memory_scope=coalesce($7,memory_scope),write_permissions=coalesce($8,write_permissions) WHERE id=$1"#)
+    let result = sqlx::query(r#"UPDATE toonflow.agent_deployments SET temperature=coalesce($2,temperature),max_output_tokens=coalesce($3,max_output_tokens),disabled=coalesce($4,disabled),model_config_id=$5,prompt_source_key=coalesce($6,prompt_source_key),memory_scope=coalesce($7,memory_scope) WHERE id=$1"#)
     .bind(request.id)
     .bind(request.temperature)
     .bind(request.max_output_tokens)
@@ -1900,7 +1695,6 @@ pub async fn update_agent_deployment(
     .bind(model_id)
     .bind(request.prompt_source_key)
     .bind(request.memory_scope)
-    .bind(request.write_permissions)
     .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to update agent deployment"))?;
@@ -1983,22 +1777,6 @@ pub async fn update_agent_use_mode(
         .await
         .map_err(|_| AppError::internal("failed to save agent use mode"))?;
     Ok(Json(ApiResponse::new(())))
-}
-
-pub async fn health() -> Json<ApiResponse<Value>> {
-    Json(ApiResponse::new(json!({
-        "module": "toonflow",
-        "capabilities": [
-            "project",
-            "novel",
-            "script",
-            "assets",
-            "storyboard",
-            "production-flow",
-            "vendor-config",
-            "agent-deploy"
-        ]
-    })))
 }
 
 pub async fn get_project_by_path(

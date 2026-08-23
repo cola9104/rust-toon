@@ -128,7 +128,6 @@ export namespace ToonflowApi {
     modelType: 'chat' | 'image' | 'speech' | 'video';
     promptSourceKey?: string;
     memoryScope?: string;
-    writePermissions?: string[];
   }
 
   export interface ArtStyle { id: number; name: string; fileUrl: string; label: string; prompt: string; createTime: number }

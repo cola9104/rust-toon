@@ -4,8 +4,26 @@
   --toon-line: #e8e8e8;
   --toon-panel: #fff;
   --toon-canvas: #f5f5f3;
+  --toon-dot: #c9c9c5;
+  --toon-primary: #171717;
+  --toon-primary-hover: #333;
+  --toon-primary-text: #fff;
+  --toon-preview-badge: #1f2937;
   min-height: 100%;
   color: var(--toon-ink);
+}
+
+.dark .toon-page {
+  --toon-ink: hsl(var(--foreground));
+  --toon-muted: hsl(var(--muted-foreground));
+  --toon-line: hsl(var(--border));
+  --toon-panel: hsl(var(--card));
+  --toon-canvas: hsl(var(--muted));
+  --toon-dot: hsl(var(--border));
+  --toon-primary: hsl(var(--primary));
+  --toon-primary-hover: hsl(var(--primary) / 85%);
+  --toon-primary-text: hsl(var(--primary-foreground));
+  --toon-preview-badge: hsl(var(--primary));
 }
 
 .toon-page .toon-surface {
@@ -44,20 +62,20 @@
 
 .toon-page .toon-dots {
   background-color: var(--toon-canvas);
-  background-image: radial-gradient(#c9c9c5 1px, transparent 1px);
+  background-image: radial-gradient(var(--toon-dot) 1px, transparent 1px);
   background-size: 18px 18px;
 }
 
 .toon-page .toon-primary.ant-btn-primary {
-  border-color: var(--toon-ink);
-  color: #fff;
-  background: var(--toon-ink);
+  border-color: var(--toon-primary);
+  color: var(--toon-primary-text);
+  background: var(--toon-primary);
   box-shadow: none;
 }
 
 .toon-page .toon-primary.ant-btn-primary:hover {
-  border-color: #333;
-  background: #333;
+  border-color: var(--toon-primary-hover);
+  background: var(--toon-primary-hover);
 }
 
 .toon-page .ant-card,

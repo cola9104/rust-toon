@@ -28,6 +28,11 @@ export namespace AiChatMessageApi {
       documentName: string; // 文档名称
       id: number; // 段落编号
     }[];
+    knowledgeStatus?: {
+      state: 'disabled' | 'retrieving' | 'ready' | 'no_results' | 'failed';
+      knowledgeCount?: number;
+      segmentCount?: number;
+    };
     webSearchPages?: WebSearchPage[]; // 联网搜索结果
     attachmentUrls?: string[]; // 附件 URL 数组
     createTime: Date; // 创建时间

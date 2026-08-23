@@ -30,6 +30,7 @@ pub(crate) fn strip_xml_tags(content: &str) -> String {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum ThinkingPart {
     Text(String),
     Start,
@@ -38,11 +39,13 @@ pub(crate) enum ThinkingPart {
 }
 
 #[derive(Default)]
+#[cfg(test)]
 pub(crate) struct ThinkingStream {
     buffer: String,
     in_thinking: bool,
 }
 
+#[cfg(test)]
 impl ThinkingStream {
     pub(crate) fn push(&mut self, chunk: &str) -> Vec<ThinkingPart> {
         self.buffer.push_str(chunk);
@@ -124,13 +127,20 @@ async fn embedding(pool: &PgPool, text: &str) -> Option<Vec<f32>> {
 
 pub(crate) async fn store_memory_embedding(pool: &PgPool, id: i64, content: &str) {
     let Some(vector) = embedding(pool, content).await else {
+        tracing::warn!(
+            memory_id = id,
+            "agent memory saved without embedding; configure an enabled embedding model to enable semantic retrieval"
+        );
         return;
     };
-    let _ = sqlx::query("UPDATE toonflow.agent_memories SET embedding=$2 WHERE id=$1")
+    if let Err(error) = sqlx::query("UPDATE toonflow.agent_memories SET embedding=$2 WHERE id=$1")
         .bind(id)
         .bind(serde_json::json!(vector))
         .execute(pool)
-        .await;
+        .await
+    {
+        tracing::warn!(memory_id = id, %error, "failed to store agent memory embedding");
+    }
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
@@ -216,16 +226,18 @@ pub(crate) async fn available_skills(
     project_id: i64,
 ) -> Result<Vec<(String, String, String)>, String> {
     let mut skills = Vec::new();
-    skills.extend(sqlx::query_as::<_, (String, String, String)>(
-        "SELECT a.skill_path,s.name,s.description
+    skills.extend(
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT a.skill_path,s.name,s.description
          FROM toonflow.skill_attributions a
          JOIN toonflow.skill_list s ON s.path=a.skill_path
          WHERE a.agent_key=$1 AND s.state=1 ORDER BY a.priority,a.skill_path",
-    )
-    .bind(agent_key)
-    .fetch_all(pool)
-    .await
-    .map_err(|error| error.to_string())?);
+        )
+        .bind(agent_key)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| error.to_string())?,
+    );
     skills.extend(dynamic_skills(pool, project_id).await?);
     skills.sort_by(|left, right| left.0.cmp(&right.0));
     skills.dedup_by(|left, right| left.0 == right.0);
@@ -430,5 +442,4 @@ mod tests {
         );
         assert!(parse_id_array("not json").is_empty());
     }
-
 }

@@ -317,39 +317,6 @@ impl WsEmitter {
             "error",
         );
     }
-
-    /// Convenience: thinking block start. Returns content_id.
-    pub fn thinking_start(&self, message_id: &str, title: &str) -> String {
-        self.add_content(
-            message_id,
-            "thinking",
-            &json!({ "title": title, "text": "" }),
-        )
-    }
-
-    /// Convenience: append thinking text.
-    pub fn thinking_append(&self, message_id: &str, content_id: &str, text: &str) {
-        self.update_content(
-            message_id,
-            content_id,
-            "thinking",
-            &json!({ "text": text }),
-            "append",
-            "streaming",
-        );
-    }
-
-    /// Convenience: complete thinking block.
-    pub fn thinking_complete(&self, message_id: &str, content_id: &str, title: &str, text: &str) {
-        self.update_content(
-            message_id,
-            content_id,
-            "thinking",
-            &json!({ "title": title, "text": text }),
-            "merge",
-            "complete",
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------

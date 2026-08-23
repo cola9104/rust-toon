@@ -146,6 +146,13 @@ onMounted(async () => {
               :content="item.content"
             />
             <MessageFiles :attachment-urls="item.attachmentUrls" />
+            <div v-if="item.knowledgeStatus && item.knowledgeStatus.state !== 'disabled'" class="mb-1 text-xs text-gray-400">
+              <IconifyIcon icon="lucide:book-open" class="mr-1" />
+              <span v-if="item.knowledgeStatus.state === 'retrieving'">正在检索知识库…</span>
+              <span v-else-if="item.knowledgeStatus.state === 'ready'">已召回 {{ item.knowledgeStatus.segmentCount || 0 }} 条知识片段</span>
+              <span v-else-if="item.knowledgeStatus.state === 'no_results'">未找到相关知识片段</span>
+              <span v-else>知识库检索失败</span>
+            </div>
             <MessageKnowledge v-if="item.segments" :segments="item.segments" />
             <MessageWebSearch
               v-if="item.webSearchPages"

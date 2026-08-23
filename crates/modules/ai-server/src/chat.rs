@@ -231,7 +231,7 @@ async fn delete_unpinned(
 }
 
 fn message(row: &sqlx::postgres::PgRow) -> Value {
-    json!({"id":row.get::<i64,_>("id"),"conversationId":row.get::<i64,_>("conversation_id"),"type":row.get::<String,_>("type"),"userId":row.get::<String,_>("user_id"),"modelId":row.get::<Option<i64>,_>("model_id"),"content":row.get::<String,_>("content"),"reasoningContent":row.get::<Option<String>,_>("reasoning_content"),"tokens":row.get::<i32,_>("tokens"),"segmentIds":row.get::<Vec<i64>,_>("segment_ids"),"attachmentUrls":row.get::<Vec<String>,_>("attachment_urls"),"createTime":row.get::<i64,_>("create_time")})
+    json!({"id":row.get::<i64,_>("id"),"conversationId":row.get::<i64,_>("conversation_id"),"type":row.get::<String,_>("type"),"userId":row.get::<String,_>("user_id"),"modelId":row.get::<Option<i64>,_>("model_id"),"content":row.get::<String,_>("content"),"reasoningContent":row.get::<Option<String>,_>("reasoning_content"),"tokens":row.get::<i32,_>("tokens"),"segmentIds":row.get::<Vec<i64>,_>("segment_ids"),"knowledgeStatus":row.get::<Value,_>("knowledge_status"),"attachmentUrls":row.get::<Vec<String>,_>("attachment_urls"),"createTime":row.get::<i64,_>("create_time")})
 }
 async fn messages(
     user: CurrentUser,
@@ -246,7 +246,7 @@ async fn load_request(
     state: &AiState,
     user: &CurrentUser,
     v: &SendRequest,
-) -> Result<(i64, i64, ChatRequest, Value, Vec<i64>), AppError> {
+) -> Result<(i64, i64, ChatRequest, Value, Vec<i64>, Value), AppError> {
     if v.content.trim().is_empty() {
         return Err(AppError::bad_request("聊天内容不能为空"));
     }
@@ -277,8 +277,16 @@ async fn load_request(
         }
     }
     let knowledge_ids = c.get::<Vec<i64>, _>("knowledge_ids");
+    let mut knowledge_status = json!({"state":"disabled","segmentCount":0});
     if v.use_search.unwrap_or(true) && !knowledge_ids.is_empty() {
         let segments = crate::knowledge::retrieve(state, &knowledge_ids, &v.content).await?;
+        knowledge_status = json!({"state":if segments.is_empty() { "no_results" } else { "ready" },"knowledgeCount":knowledge_ids.len(),"segmentCount":segments.len()});
+        sqlx::query("UPDATE ai.chat_messages SET knowledge_status=$2 WHERE id=$1")
+            .bind(receive_id)
+            .bind(&knowledge_status)
+            .execute(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("保存知识检索状态失败"))?;
         if !segments.is_empty() {
             let segment_ids = segments
                 .iter()
@@ -322,6 +330,7 @@ async fn load_request(
         },
         send,
         c.get("tool_ids"),
+        knowledge_status,
     ))
 }
 async fn generate(
@@ -423,7 +432,8 @@ async fn send(
     State(state): State<AiState>,
     Json(v): Json<SendRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let (model_id, receive_id, request, send, tool_ids) = load_request(&state, &user, &v).await?;
+    let (model_id, receive_id, request, send, tool_ids, knowledge_status) =
+        load_request(&state, &user, &v).await?;
     let (result, tool_calls) = generate(&state, model_id, request, &tool_ids).await?;
     sqlx::query(
         "UPDATE ai.chat_messages SET content=$2,reasoning_content=$3,tool_calls=$4 WHERE id=$1",
@@ -436,7 +446,7 @@ async fn send(
     .await
     .map_err(|_| AppError::internal("保存回复失败"))?;
     Ok(Json(ApiResponse::new(
-        json!({"send":send,"receive":{"id":receive_id,"conversationId":v.conversation_id,"type":"assistant","modelId":model_id,"content":result.content,"reasoningContent":result.reasoning}}),
+        json!({"send":send,"receive":{"id":receive_id,"conversationId":v.conversation_id,"type":"assistant","modelId":model_id,"content":result.content,"reasoningContent":result.reasoning,"knowledgeStatus":knowledge_status}}),
     )))
 }
 
@@ -445,7 +455,8 @@ async fn send_stream(
     State(state): State<AiState>,
     Json(v): Json<SendRequest>,
 ) -> Result<Response<Body>, AppError> {
-    let (model_id, receive_id, request, send, tool_ids) = load_request(&state, &user, &v).await?;
+    let (model_id, receive_id, request, send, tool_ids, knowledge_status) =
+        load_request(&state, &user, &v).await?;
     let conversation_id = v.conversation_id;
     let (tx, rx) = mpsc::channel::<Result<String, std::convert::Infallible>>(32);
     let pool = state.pool.clone();
@@ -453,16 +464,17 @@ async fn send_stream(
     let state_for_tools = state.clone();
     tokio::spawn(async move {
         let send_for_chunks = send.clone();
+        let knowledge_status_for_chunks = knowledge_status.clone();
         let tx_chunks = tx.clone();
         let result = if tool_ids.is_empty() {
-            factory.chat_stream(model_id,request,move|delta|{let tx=tx_chunks.clone();let send=send_for_chunks.clone();async move{let payload=json!({"code":0,"data":{"send":send,"receive":{"id":receive_id,"conversationId":conversation_id,"type":"assistant","modelId":model_id,"content":delta,"reasoningContent":null}},"msg":""});tx.send(Ok(format!("data: {}\n\n",payload))).await.map_err(|_|"客户端已断开".to_string())}}).await.map(|r|(r,json!([])))
+            factory.chat_stream(model_id,request,move|delta|{let tx=tx_chunks.clone();let send=send_for_chunks.clone();let knowledge_status=knowledge_status_for_chunks.clone();async move{let payload=json!({"code":0,"data":{"send":send,"receive":{"id":receive_id,"conversationId":conversation_id,"type":"assistant","modelId":model_id,"content":delta,"reasoningContent":null,"knowledgeStatus":knowledge_status}},"msg":""});tx.send(Ok(format!("data: {}\n\n",payload))).await.map_err(|_|"客户端已断开".to_string())}}).await.map(|r|(r,json!([])))
         } else {
             generate(&state_for_tools, model_id, request, &tool_ids).await
         };
         match result {
             Ok((response, tool_calls)) => {
                 if !tool_ids.is_empty() {
-                    let payload = json!({"code":0,"data":{"send":send,"receive":{"id":receive_id,"conversationId":conversation_id,"type":"assistant","modelId":model_id,"content":response.content,"reasoningContent":response.reasoning}},"msg":""});
+                    let payload = json!({"code":0,"data":{"send":send,"receive":{"id":receive_id,"conversationId":conversation_id,"type":"assistant","modelId":model_id,"content":response.content,"reasoningContent":response.reasoning,"knowledgeStatus":knowledge_status}},"msg":""});
                     let _ = tx.send(Ok(format!("data: {}\n\n", payload))).await;
                 }
                 let _ = sqlx::query(

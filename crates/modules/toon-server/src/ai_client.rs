@@ -304,6 +304,7 @@ fn model_id(value: &str, kind: &str) -> Result<i64, String> {
         .map_err(|_| format!("{kind}模型必须是统一 AI 模型 ID"))
 }
 /// Generates an image with ordered visual references when the configured provider supports edits.
+#[cfg(test)]
 pub async fn image_with_references(
     pool: &PgPool,
     configured: &str,
@@ -323,32 +324,41 @@ pub async fn image_with_references_for_project(
     references: Vec<String>,
 ) -> Result<String, String> {
     let model = model_id(configured, "图片")?;
-    recorded_with_context(pool, project_id, Some(1), "image", &model.to_string(), "图片生成", async move {
-        let mut last_error = String::new();
-        for attempt in 1..=3 {
-            match rust_toon_ai_server::AiModelFactory::new(pool.clone())
-                .image(
-                    model,
-                    rust_toon_ai_api::ImageRequest {
-                        prompt: prompt.into(),
-                        size: size.into(),
-                        references: references.clone(),
-                    },
-                )
-                .await
-            {
-                Ok(response) => return Ok(response.url),
-                Err(error) => {
-                    last_error = normalized_app_error(error);
-                    if attempt == 3 || !is_transient_model_error(&last_error) {
-                        break;
+    recorded_with_context(
+        pool,
+        project_id,
+        Some(1),
+        "image",
+        &model.to_string(),
+        "图片生成",
+        async move {
+            let mut last_error = String::new();
+            for attempt in 1..=3 {
+                match rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                    .image(
+                        model,
+                        rust_toon_ai_api::ImageRequest {
+                            prompt: prompt.into(),
+                            size: size.into(),
+                            references: references.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(response) => return Ok(response.url),
+                    Err(error) => {
+                        last_error = normalized_app_error(error);
+                        if attempt == 3 || !is_transient_model_error(&last_error) {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(attempt as u64 * 2))
+                            .await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_secs(attempt as u64 * 2)).await;
                 }
             }
-        }
-        Err(last_error)
-    })
+            Err(last_error)
+        },
+    )
     .await
 }
 

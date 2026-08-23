@@ -6,7 +6,7 @@
 
 - Rust stable（支持 Rust 2024 edition）。
 - Docker 与 Docker Compose（本地基础设施）。
-- Node.js `22.18+` 或 `24.x`，pnpm `11+`（通过 Corepack；`apps/web/package.json` 锁定 `pnpm@11.13.0`）。
+- Node.js `22.18+`，pnpm `11+`（`apps/web/package.json` 锁定 `pnpm@11.13.0`）。Node.js 25 起不再内置 Corepack，如系统没有 `corepack` 命令，需要先单独安装 Corepack 或 pnpm。
 - 生产环境另需 Nginx 或其他反向代理。
 
 ## 2. 本地开发

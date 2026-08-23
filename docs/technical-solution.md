@@ -86,7 +86,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。当前迁移链为 `0001_initial.sql`（合并基线，含全部表结构与基线数据，如 `admin` 用户、`super_admin` 角色、菜单、字典）至 `0011_polish_dictionary_type_names.sql`，共 11 个。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。当前迁移链从 `0001_initial.sql`（合并基线）到 `0040_add_chat_knowledge_status.sql`，共 40 个；BPM 遗留菜单和字典、Agent 写权限字段已通过后续迁移删除。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。

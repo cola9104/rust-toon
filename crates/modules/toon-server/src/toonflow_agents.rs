@@ -1,3 +1,4 @@
+use crate::toonflow_agent_events::record as record_run_event;
 use crate::{
     ToonState, ai_client, shared::require, toonflow_agent_runtime, toonflow_agent_tools,
     toonflow_ws::WsEmitter,
@@ -693,6 +694,13 @@ async fn run_native_tools(
             if !tool_names(&request.agent_type).contains(&name) {
                 return Err(format!("模型请求了未授权工具 {name}"));
             }
+            record_run_event(
+                &state.pool,
+                run_id,
+                "tool_call",
+                json!({"tool": name, "mode": "native"}),
+            )
+            .await;
             let arguments = call
                 .pointer("/function/arguments")
                 .and_then(Value::as_str)
@@ -708,12 +716,31 @@ async fn run_native_tools(
                 tool_name: name.to_string(),
                 arguments,
             };
-            let output = match toonflow_agent_tools::execute_recorded(state, &tool_request).await {
-                Ok((_, value)) => value,
-                Err(error) => json!({"error":format!("{error:?}")}),
-            };
+            let (output, success) =
+                match toonflow_agent_tools::execute_recorded(state, &tool_request).await {
+                    Ok((call_id, value)) => {
+                        record_run_event(
+                            &state.pool,
+                            run_id,
+                            "tool_result",
+                            json!({"callId": call_id, "tool": name, "success": true}),
+                        )
+                        .await;
+                        (value, true)
+                    }
+                    Err(error) => {
+                        record_run_event(
+                            &state.pool,
+                            run_id,
+                            "tool_result",
+                            json!({"tool": name, "success": false, "error": format!("{error:?}")}),
+                        )
+                        .await;
+                        (json!({"error":format!("{error:?}")}), false)
+                    }
+                };
             messages
-                .push(json!({"role":"tool","tool_call_id":call_id,"content":output.to_string()}));
+                .push(json!({"role":"tool","tool_call_id":call_id,"content":output.to_string(),"success":success}));
         }
     }
     Err("Agent 工具调用超过最大轮数".into())
@@ -727,7 +754,8 @@ async fn run_with_tools(
     run_id: i64,
 ) -> Result<String, String> {
     let available_skills =
-        toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id).await?;
+        toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
+            .await?;
     let skill_guide = if available_skills.is_empty() {
         String::new()
     } else {
@@ -753,7 +781,16 @@ async fn run_with_tools(
         Err(_) => {}
     }
     let mut prompt = request.content.clone();
-    for _ in 0..4 {
+    for attempt in 0..4 {
+        if attempt > 0 {
+            record_run_event(
+                &state.pool,
+                run_id,
+                "retry",
+                json!({"attempt": attempt + 1, "message": "Agent 正在根据工具结果重试生成"}),
+            )
+            .await;
+        }
         let event_pool = state.pool.clone();
         let output = ai_client::project_text_stream(
             &state.pool,
@@ -770,6 +807,7 @@ async fn run_with_tools(
         }
         let mut results = Vec::new();
         for (name, arguments) in calls {
+            record_run_event(&state.pool, run_id, "tool_call", json!({"tool": name})).await;
             let tool_request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: request.agent_type.clone(),
@@ -780,9 +818,25 @@ async fn run_with_tools(
                 arguments,
             };
             match toonflow_agent_tools::execute_recorded(state, &tool_request).await {
-                Ok((call_id, value)) => results
-                    .push(json!({"callId":call_id,"tool":name,"success":true,"result":value})),
+                Ok((call_id, value)) => {
+                    record_run_event(
+                        &state.pool,
+                        run_id,
+                        "tool_result",
+                        json!({"callId": call_id, "tool": name, "success": true}),
+                    )
+                    .await;
+                    results
+                        .push(json!({"callId":call_id,"tool":name,"success":true,"result":value}))
+                }
                 Err(error) => {
+                    record_run_event(
+                        &state.pool,
+                        run_id,
+                        "tool_result",
+                        json!({"tool": name, "success": false, "error": format!("{error:?}")}),
+                    )
+                    .await;
                     results.push(json!({"tool":name,"success":false,"error":format!("{error:?}")}))
                 }
             }
@@ -812,6 +866,13 @@ async fn perform_run(
     run_id: i64,
 ) -> Result<String, String> {
     let agent_key = validate_agent(&request.agent_type).map_err(|error| format!("{error:?}"))?;
+    record_run_event(
+        &state.pool,
+        run_id,
+        "started",
+        json!({"message": "Agent 已启动，正在读取项目上下文"}),
+    )
+    .await;
     add_memory(
         state,
         &request.agent_type,
@@ -827,6 +888,13 @@ async fn perform_run(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
+    record_run_event(
+        &state.pool,
+        run_id,
+        "memory_retrieval",
+        json!({"message": "已完成 Agent 记忆检索与项目上下文加载"}),
+    )
+    .await;
     let system = format!("{context}\n{memory}");
     match run_with_tools(state, request, agent_key, &system, run_id).await {
         Ok(output) => {
@@ -840,10 +908,24 @@ async fn perform_run(
             .await
             .map_err(|error| format!("{error:?}"))?;
             sqlx::query("UPDATE toonflow.agent_runs SET output=$2,state='success',finish_time=$3 WHERE id=$1 AND state='running'").bind(run_id).bind(&output).bind(now_ms()).execute(&state.pool).await.map_err(|error|error.to_string())?;
+            record_run_event(
+                &state.pool,
+                run_id,
+                "completed",
+                json!({"message": "Agent 已完成"}),
+            )
+            .await;
             Ok(output)
         }
         Err(error) => {
             sqlx::query("UPDATE toonflow.agent_runs SET state='failed',error_reason=$2,finish_time=$3 WHERE id=$1 AND state='running'").bind(run_id).bind(&error).bind(now_ms()).execute(&state.pool).await.ok();
+            record_run_event(
+                &state.pool,
+                run_id,
+                "failed",
+                json!({"message": "Agent 执行失败", "error": error}),
+            )
+            .await;
             Err(error)
         }
     }
@@ -876,12 +958,9 @@ pub(crate) async fn run_with_emitter(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let available_skills = toonflow_agent_runtime::available_skills(
-        &state.pool,
-        agent_key,
-        request.project_id,
-    )
-    .await?;
+    let available_skills =
+        toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
+            .await?;
 
     let skill_guide = if available_skills.is_empty() {
         String::new()

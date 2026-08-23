@@ -1,0 +1,94 @@
+use chrono::Utc;
+use hmac::{Hmac, Mac};
+use reqwest::{Method, Url, header};
+use sha2::{Digest, Sha256};
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn value(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+fn hex_hash(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn hmac(key: &[u8], data: &str) -> Result<Vec<u8>, String> {
+    let mut mac = HmacSha256::new_from_slice(key).map_err(|error| error.to_string())?;
+    mac.update(data.as_bytes());
+    Ok(mac.finalize().into_bytes().to_vec())
+}
+
+async fn request(method: Method, key: &str, body: Vec<u8>) -> Result<reqwest::Response, String> {
+    let endpoint = value("MINIO_ENDPOINT", "http://127.0.0.1:9000")
+        .trim_end_matches('/')
+        .to_owned();
+    let access = value("MINIO_ACCESS_KEY", "rust_toon");
+    let secret = value("MINIO_SECRET_KEY", "rust_toon_password");
+    let bucket = value("MINIO_BUCKET", "rust-toon");
+    let region = value("MINIO_REGION", "us-east-1");
+    let uri = format!("/{bucket}/{}", key.trim_start_matches('/'));
+    let url = Url::parse(&format!("{endpoint}{uri}")).map_err(|error| error.to_string())?;
+    let host = match url.port() {
+        Some(port) => format!("{}:{port}", url.host_str().unwrap_or_default()),
+        None => url.host_str().unwrap_or_default().to_owned(),
+    };
+    let now = Utc::now();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let date = now.format("%Y%m%d").to_string();
+    let payload = hex_hash(&body);
+    let headers = format!("host:{host}\nx-amz-content-sha256:{payload}\nx-amz-date:{amz_date}\n");
+    let signed = "host;x-amz-content-sha256;x-amz-date";
+    let canonical = format!(
+        "{}\n{uri}\n\n{headers}\n{signed}\n{payload}",
+        method.as_str()
+    );
+    let scope = format!("{date}/{region}/s3/aws4_request");
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{amz_date}\n{scope}\n{}",
+        hex_hash(canonical.as_bytes())
+    );
+    let k_date = hmac(format!("AWS4{secret}").as_bytes(), &date)?;
+    let k_region = hmac(&k_date, &region)?;
+    let k_service = hmac(&k_region, "s3")?;
+    let signing = hmac(&k_service, "aws4_request")?;
+    let signature = hex::encode(hmac(&signing, &to_sign)?);
+    let authorization = format!(
+        "AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed}, Signature={signature}"
+    );
+    reqwest::Client::new()
+        .request(method, url)
+        .header(header::HOST, host)
+        .header("x-amz-content-sha256", payload)
+        .header("x-amz-date", amz_date)
+        .header(header::AUTHORIZATION, authorization)
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub async fn put(key: &str, bytes: Vec<u8>) -> Result<(), String> {
+    let bucket = request(Method::PUT, "", Vec::new()).await?;
+    if !bucket.status().is_success() && bucket.status().as_u16() != 409 {
+        return Err(format!("MinIO bucket 初始化失败：HTTP {}", bucket.status()));
+    }
+    let response = request(Method::PUT, key, bytes).await?;
+    if response.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("MinIO 上传失败：HTTP {}", response.status()))
+    }
+}
+
+pub async fn get(key: &str) -> Result<Vec<u8>, String> {
+    let response = request(Method::GET, key, Vec::new()).await?;
+    if !response.status().is_success() {
+        return Err(format!("MinIO 读取失败：HTTP {}", response.status()));
+    }
+    response
+        .bytes()
+        .await
+        .map(|bytes| bytes.to_vec())
+        .map_err(|error| error.to_string())
+}

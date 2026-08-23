@@ -134,7 +134,16 @@ class PreferenceManager {
     );
 
     // 加载缓存的偏好设置，并仅用缓存补齐初始化配置中未显式设置的字段
-    const cachedPreferences = (await this.loadFromCache()) || {};
+    const cachedPreferences = ((await this.loadFromCache()) || {}) as Partial<Preferences>;
+    // Migrate the old Vben CDN defaults so existing browser preferences do
+    // not keep requesting the third-party avatar after the app moved to local
+    // assets. Cached user preferences still win for unrelated settings.
+    if (cachedPreferences.app?.defaultAvatar?.includes('unpkg.com')) {
+      cachedPreferences.app.defaultAvatar = defaultPreferences.app.defaultAvatar;
+    }
+    if (cachedPreferences.logo?.source?.includes('unpkg.com')) {
+      cachedPreferences.logo.source = defaultPreferences.logo.source;
+    }
     const mergedPreference = merge(
       {},
       cachedPreferences, // 用户缓存的设置优先

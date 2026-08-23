@@ -6,7 +6,7 @@ use rust_toon_framework_security::{
     CurrentUser, DataScope, PermissionSet, SecurityConfig, TokenService,
 };
 
-use crate::{ToonState, toonflow, toonflow_video_export};
+use crate::{ToonState, toonflow, toonflow_project_crud, toonflow_storage, toonflow_video_export};
 
 fn user() -> CurrentUser {
     CurrentUser {
@@ -25,7 +25,6 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
     let upload_dir = std::env::var("TEST_UPLOAD_DIR").expect("TEST_UPLOAD_DIR is required");
     // This ignored test runs in its own process through test-production-e2e.sh.
-    unsafe { std::env::set_var("INFRA_UPLOAD_DIR", &upload_dir) };
 
     let pool =
         connect(&DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).expect("database config"))
@@ -43,7 +42,7 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     );
     let state = ToonState::new(pool.clone(), tokens);
 
-    let project = toonflow::create_project(
+    let project = toonflow_project_crud::create_project(
         user(),
         State(state.clone()),
         Json(toonflow::SaveProjectRequest {
@@ -168,10 +167,17 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         .output()
         .expect("run ffmpeg fixture generation");
     assert!(output.status.success(), "ffmpeg fixture generation failed");
+    let source_bytes = tokio::fs::read(&source_path)
+        .await
+        .expect("read source video");
+    let source_url = toonflow_storage::persist_asset_bytes(project_id, "e2e", "mp4", source_bytes)
+        .await
+        .expect("persist source video");
 
     let video_id = project_id + 90_000;
-    sqlx::query("INSERT INTO toonflow.videos(id,file_path,state,script_id,project_id,video_track_id) VALUES($1,'/upload/e2e/source.mp4','生成成功',$2,$3,$4)")
+    sqlx::query("INSERT INTO toonflow.videos(id,file_path,state,script_id,project_id,video_track_id) VALUES($1,$2,'生成成功',$3,$4,$5)")
         .bind(video_id)
+        .bind(&source_url)
         .bind(script_id)
         .bind(project_id)
         .bind(track_id)
@@ -221,10 +227,16 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     let exported_url = exported_url.expect("export task did not complete");
     assert!(exported_url.ends_with(".mp4"));
     assert!(
-        std::path::Path::new(&upload_dir)
-            .join(exported_url.trim_start_matches("/upload/"))
-            .exists()
+        toonflow_storage::asset_exists(&exported_url)
+            .await
+            .expect("check exported asset")
     );
+    toonflow_storage::delete_asset_file(&exported_url)
+        .await
+        .expect("cleanup exported asset");
+    toonflow_storage::delete_asset_file(&source_url)
+        .await
+        .expect("cleanup source asset");
 
     sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
         .bind(project_id)

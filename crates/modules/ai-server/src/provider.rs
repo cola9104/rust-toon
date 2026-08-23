@@ -7,6 +7,7 @@ use rust_toon_ai_api::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use tracing::warn;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -92,12 +93,24 @@ async fn response_json(
 }
 
 fn request_timeout() -> std::time::Duration {
-    std::time::Duration::from_secs(
-        std::env::var("AI_REQUEST_TIMEOUT_SECONDS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(120),
-    )
+    let seconds = std::env::var("AI_REQUEST_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(120)
+        .clamp(5, 900);
+    std::time::Duration::from_secs(seconds)
+}
+
+fn retry_limit() -> usize {
+    std::env::var("AI_REQUEST_RETRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(2)
+        .min(5)
+}
+
+fn retryable_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || matches!(status.as_u16(), 408 | 409 | 425 | 429)
 }
 
 pub(crate) fn http_client() -> reqwest::Client {
@@ -114,7 +127,8 @@ pub(crate) async fn send_with_retry(
     let template = request
         .try_clone()
         .ok_or_else(|| "AI 请求无法安全重试".to_string())?;
-    for attempt in 0..3 {
+    let retries = retry_limit();
+    for attempt in 0..=retries {
         let current = if attempt == 0 {
             request
                 .try_clone()
@@ -123,12 +137,42 @@ pub(crate) async fn send_with_retry(
             template.try_clone().unwrap()
         };
         match current.send().await {
-            Ok(response) if response.status().is_server_error() && attempt < 2 => {}
+            Ok(response) if retryable_status(response.status()) && attempt < retries => {
+                warn!(
+                    attempt = attempt + 1,
+                    max_attempts = retries + 1,
+                    status = response.status().as_u16(),
+                    "AI provider request will retry after transient response"
+                );
+                if let Some(delay) = response
+                    .headers()
+                    .get("retry-after")
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                {
+                    tokio::time::sleep(std::time::Duration::from_secs(delay.min(30))).await;
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        250 * 2u64.pow(attempt.min(6) as u32),
+                    ))
+                    .await;
+                }
+            }
             Ok(response) => return Ok(response),
-            Err(error) if (error.is_connect() || error.is_timeout()) && attempt < 2 => {}
+            Err(error) if (error.is_connect() || error.is_timeout()) && attempt < retries => {
+                warn!(
+                    attempt = attempt + 1,
+                    max_attempts = retries + 1,
+                    timeout = error.is_timeout(),
+                    "AI provider request will retry after transport failure"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    250 * 2u64.pow(attempt.min(6) as u32),
+                ))
+                .await;
+            }
             Err(error) => return Err(transport_error(&error)),
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250 * (1 << attempt))).await;
     }
     Err(ProviderError {
         code: "AI_UPSTREAM_RETRY_EXHAUSTED".into(),
@@ -896,7 +940,7 @@ pub(super) fn upstream_error(status: reqwest::StatusCode, value: &Value, fallbac
             "message": upstream_message,
             "summary": truncate(&value.to_string(), 1000)
         })),
-        retryable: status.is_server_error() || status.as_u16() == 429,
+        retryable: retryable_status(status),
     }
     .encoded()
 }
@@ -915,7 +959,7 @@ impl ChatProvider for OpenAiCompatibleProvider {
 
 #[cfg(test)]
 mod structured_error_tests {
-    use super::{ProviderError, provider_app_error, upstream_error};
+    use super::{ProviderError, provider_app_error, retryable_status, upstream_error};
     use reqwest::StatusCode;
     use serde_json::json;
 
@@ -935,6 +979,28 @@ mod structured_error_tests {
             error.response_data.unwrap()["message"],
             json!("quota exceeded")
         );
+    }
+
+    #[test]
+    fn retries_transient_http_statuses_but_not_client_errors() {
+        assert!(retryable_status(StatusCode::TOO_MANY_REQUESTS));
+        assert!(retryable_status(StatusCode::REQUEST_TIMEOUT));
+        assert!(retryable_status(StatusCode::SERVICE_UNAVAILABLE));
+        assert!(!retryable_status(StatusCode::BAD_REQUEST));
+        assert!(!retryable_status(StatusCode::UNAUTHORIZED));
+    }
+
+    #[test]
+    fn marks_timeout_and_conflict_provider_errors_retryable() {
+        for status in [StatusCode::REQUEST_TIMEOUT, StatusCode::CONFLICT] {
+            let error: ProviderError = serde_json::from_str(&upstream_error(
+                status,
+                &json!({"error": {"message": "temporary"}}),
+                "模型请求失败",
+            ))
+            .unwrap();
+            assert!(error.retryable);
+        }
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub use crate::toonflow_workflow_definition::{
     WorkflowDefinition, WorkflowNode, default_production_workflow, validate_workflow,
     workflow_from_data,
 };
+use crate::toonflow_workflow_utils::{
+    default_concurrency, empty_object, manual_trigger, merge_node_settings,
+};
 use crate::{
     ToonState, shared::require, toonflow_agent_tools, toonflow_image_workflow, toonflow_video,
 };
@@ -175,18 +178,6 @@ pub struct StartWorkflowNodeResponse {
     pub state: &'static str,
     pub progress_current: i32,
     pub progress_total: i32,
-}
-
-fn manual_trigger() -> String {
-    "manual".into()
-}
-
-fn empty_object() -> Value {
-    json!({})
-}
-
-fn default_concurrency() -> usize {
-    5
 }
 
 pub async fn persist_definition(
@@ -1097,14 +1088,6 @@ pub(crate) async fn launch_node(
     } else {
         launch_standard_node(state, node_run_id, input).await
     }
-}
-
-fn merge_node_settings(base: &Value, override_value: Option<&Value>) -> Value {
-    let mut merged = base.as_object().cloned().unwrap_or_default();
-    if let Some(overrides) = override_value.and_then(Value::as_object) {
-        merged.extend(overrides.clone());
-    }
-    Value::Object(merged)
 }
 
 async fn orchestrated_node_input(

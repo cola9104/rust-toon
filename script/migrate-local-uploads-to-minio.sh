@@ -44,6 +44,24 @@ while IFS=$'\t' read -r file_path; do
   rm -f -- "$source"
 done
 
+# Migrate legacy Infra file records as well. New uploads keep the same `/upload/*`
+# URL for compatibility, but the object is stored under MinIO `infra/`.
+psql "$DATABASE_URL" -At -F $'\t' -c \
+  "SELECT id, path FROM infra_file WHERE path LIKE '/upload/%' OR url LIKE '/upload/%'" |
+while IFS=$'\t' read -r file_id file_path; do
+  [[ -z "$file_id" || -z "$file_path" ]] && continue
+  relative="${file_path#/upload/}"
+  source="$UPLOAD_DIR/$relative"
+  if [[ ! -f "$source" ]]; then
+    echo "跳过不存在的 Infra 文件：$source" >&2
+    continue
+  fi
+  key="infra/$relative"
+  echo "迁移 Infra：$source -> $key"
+  "${AWS[@]}" s3 cp "$source" "s3://$MINIO_BUCKET/$key" >/dev/null
+  rm -f -- "$source"
+done
+
 # Remove empty legacy directories, leaving the root directory intact.
 find "$UPLOAD_DIR" -mindepth 1 -type d -empty -delete
 echo "旧上传文件迁移完成。"

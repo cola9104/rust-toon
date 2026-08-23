@@ -14,12 +14,6 @@ pub struct ExportRequest {
     pub script_id: i64,
 }
 
-fn storage_dir() -> PathBuf {
-    std::env::var_os("INFRA_UPLOAD_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("storage/uploads"))
-}
-
 async fn ffmpeg_available() -> bool {
     tokio::task::spawn_blocking(|| {
         std::process::Command::new("ffmpeg")
@@ -37,10 +31,13 @@ async fn materialize_video(
     index: usize,
 ) -> Result<PathBuf, String> {
     let destination = directory.join(format!("{index:04}.mp4"));
-    if let Some(relative) = source.strip_prefix("/upload/") {
-        tokio::fs::copy(storage_dir().join(relative), &destination)
+    if source.starts_with("/toonflow/assets/files/")
+        || source.starts_with("/api/toonflow/assets/files/")
+    {
+        let bytes = crate::toonflow_storage::read_asset_bytes(source).await?;
+        tokio::fs::write(&destination, bytes)
             .await
-            .map_err(|error| format!("无法读取本地视频：{error}"))?;
+            .map_err(|error| format!("无法读取 MinIO 视频：{error}"))?;
     } else if source.starts_with("http://") || source.starts_with("https://") {
         let bytes = reqwest::get(source)
             .await
@@ -77,7 +74,9 @@ async fn run_export(
             .bind(sources.len() as i32)
             .execute(&pool)
             .await;
-    let work_dir = storage_dir().join(format!("toonflow/{project_id}/exports/work-{task_id}"));
+    let work_dir = std::env::temp_dir().join(format!(
+        "rust-toon/toonflow/{project_id}/exports/work-{task_id}"
+    ));
     tokio::fs::create_dir_all(&work_dir)
         .await
         .map_err(|error| error.to_string())?;

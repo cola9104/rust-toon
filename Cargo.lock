@@ -2005,6 +2005,7 @@ dependencies = [
  "sqlx",
  "tokio",
  "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -2136,7 +2137,10 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "hex",
+ "hmac 0.12.1",
  "redis",
+ "reqwest",
  "rust-toon-framework-common",
  "rust-toon-framework-database",
  "rust-toon-framework-web",
@@ -2144,6 +2148,7 @@ dependencies = [
  "rust_xlsxwriter",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sqlx",
  "tokio",
  "zip 8.6.0",

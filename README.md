@@ -1,6 +1,6 @@
 # Rust Toon
 
-Rust Toon 是 Rust 后端与 Vben Admin 5 前端组成的动漫生产及通用 AI 管理平台。基础后台按 Yudao 的模块化思想实现，动漫工厂按 Toonflow 的业务流程实现；后端统一使用 Rust，前端统一使用 Vue 3、Vben 和 Ant Design Vue。
+Rust Toon 是面向动漫/短剧生产的 AI 工作台。后端使用 Rust，前端使用 Vue 3 + Ant Design Vue；Toonflow 页面提供从项目、剧本、资产、分镜到音视频生成与 Agent 协作的一体化流程。
 
 ## 功能组成
 
@@ -14,7 +14,7 @@ Rust Toon 是 Rust 后端与 Vben Admin 5 前端组成的动漫生产及通用 A
 
 - Rust stable（项目使用 Rust 2024 edition）
 - PostgreSQL 18
-- Node.js `22.18+` 或 `24.x`
+- Node.js `22.18+`（Node 25+ 需单独安装 Corepack/pnpm）
 - pnpm `11+`
 - Docker 及 Docker Compose（推荐用于本地基础设施）
 
@@ -52,7 +52,7 @@ cargo run -p rust-toon-gateway
 和基准数据，因此部署时不需要
 `sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
 
-后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0017`），并在干净数据库
+后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0040`），并在干净数据库
 完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
 
 可选环境变量：
