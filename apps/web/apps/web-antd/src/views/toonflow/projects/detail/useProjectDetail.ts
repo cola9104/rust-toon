@@ -1628,7 +1628,7 @@ async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
 async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const mode=videoModeForTrack(track);const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode,resolution:'1080p',audio:true,uploadData:videoUploadData(track,mode)});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
-async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}`)}
+async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}，完成后可到任务中心预览或下载`)}
 
 const panelContext = reactive({
   projectId, project, imageQuality, videoMode, novels, novelColumns, importNovelFile,
