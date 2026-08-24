@@ -6,6 +6,7 @@ import { computed, ref, watch } from 'vue';
 import { Button, Checkbox, Empty, Modal, Popconfirm, Slider, Space, Tag, Tooltip } from 'ant-design-vue';
 
 import { assetFileUrl } from '../assets/asset-types';
+import { groupStoryboardsByTrack } from './storyboard-track-groups';
 
 const props = defineProps<{
   busy?: boolean;
@@ -38,17 +39,20 @@ const allSelected = computed(
 );
 const hasGenerating = computed(() => props.storyboards.some((item) => item.state === '生成中'));
 const groups = computed(() => {
-  const grouped = new Map<string, ToonflowApi.Storyboard[]>();
-  for (const storyboard of props.storyboards) {
-    const name = storyboard.track?.trim() || '默认轨道';
-    grouped.set(name, [...(grouped.get(name) ?? []), storyboard]);
-  }
-  return [...grouped.entries()].map(([name, items]) => ({
+  return groupStoryboardsByTrack(props.storyboards).map(({ key, name, items }) => ({
     duration: items.reduce((total, item) => total + (item.duration ?? 0), 0),
+    key,
     items,
     name,
   }));
 });
+function storyboardNumber(item: ToonflowApi.Storyboard) {
+  const group = groups.value.find((candidate) => candidate.items.some((storyboard) => storyboard.id === item.id));
+  return group ? group.items.findIndex((storyboard) => storyboard.id === item.id) + 1 : props.storyboards.findIndex((storyboard) => storyboard.id === item.id) + 1;
+}
+function storyboardLabel(item: ToonflowApi.Storyboard) {
+  return `轨道 ${item.track?.trim() || '默认轨道'} · 分镜 ${storyboardNumber(item)}`;
+}
 const statusAnnouncement = computed(() => {
   const generating = props.storyboards.filter((item) => item.state === '生成中').length;
   const failed = props.storyboards.filter((item) => item.state === '生成失败').length;
@@ -154,7 +158,7 @@ function restoreOrder() {
     </header>
 
     <div v-if="storyboards.length" class="storyboard-groups" :aria-busy="hasGenerating">
-      <section v-for="group in groups" :key="group.name" class="storyboard-group">
+      <section v-for="group in groups" :key="group.key" class="storyboard-group">
         <header class="group-header">
           <Checkbox
             :checked="group.items.every((item) => selectedIds.includes(item.id))"
@@ -204,7 +208,7 @@ function restoreOrder() {
             :aria-label="`选择分镜 ${item.index ?? item.id}`"
             @change="toggleStoryboard(item.id, $event.target.checked)"
           />
-          <Tag class="storyboard-index" color="blue">{{ item.index ?? item.id }}</Tag>
+          <Tag class="storyboard-index" color="blue">分镜 {{ storyboardNumber(item) }}</Tag>
         </div>
         <div class="storyboard-card-body">
           <div class="storyboard-meta">
@@ -237,9 +241,9 @@ function restoreOrder() {
       <div class="preview-scale"><span>缩放比例 {{ gridScale }}%</span><Slider v-model:value="gridScale" :min="60" :max="160" /></div>
       <div class="preview-grid" :style="{ '--preview-scale': `${gridScale / 100}` }">
         <figure v-for="item in storyboards" :key="item.id">
-          <img v-if="item.filePath || item.src" :src="assetFileUrl(item.filePath || item.src)" :alt="`分镜 ${item.index ?? item.id}`" />
+          <img v-if="item.filePath || item.src" :src="assetFileUrl(item.filePath || item.src)" :alt="storyboardLabel(item)" />
           <div v-else>暂无图片</div>
-          <figcaption>#{{ item.index ?? item.id }} · {{ item.duration || 0 }}s</figcaption>
+          <figcaption>{{ storyboardLabel(item) }} · {{ item.duration || 0 }}s</figcaption>
         </figure>
       </div>
     </Modal>
@@ -276,4 +280,6 @@ function restoreOrder() {
 .preview-grid img, .preview-grid figure > div { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: grid; place-items: center; background: var(--ant-color-fill-quaternary); }
 .preview-grid figcaption { padding: 7px 9px; }
 @media (max-width: 900px) { .storyboard-card { width: 100%; flex-basis: 100%; } }
+.storyboard-card { width: 300px; flex-basis: 300px; }
+.storyboard-cover img { height: 168px; object-fit: contain; background: #111827; }
 </style>

@@ -402,11 +402,11 @@ pub async fn generate_dubbing(
         .execute(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to update audio state"))?;
-    let url = match ai_client::speech(&state.pool, &configured, &request.text, &request.voice).await
-    {
-        Ok(url) => url,
-        Err(error) => {
-            sqlx::query(
+    let generated_url =
+        match ai_client::speech(&state.pool, &configured, &request.text, &request.voice).await {
+            Ok(url) => url,
+            Err(error) => {
+                sqlx::query(
                 "UPDATE toonflow.assets SET audio_bind_state=-1,prompt_error_reason=$2 WHERE id=$1",
             )
             .bind(request.assets_id)
@@ -414,8 +414,18 @@ pub async fn generate_dubbing(
             .execute(&state.pool)
             .await
             .ok();
-            return Err(AppError::bad_request(error));
-        }
+                return Err(AppError::bad_request(error));
+            }
+        };
+    // TTS providers return a data URL. Store the bytes in MinIO immediately so
+    // the audio can be reused by video export and does not bloat PostgreSQL.
+    let url = if generated_url.starts_with("data:audio/") {
+        let (extension, bytes) = decode_audio(&generated_url)?;
+        crate::toonflow_storage::persist_asset_bytes(request.project_id, "audio", &extension, bytes)
+            .await
+            .map_err(AppError::bad_request)?
+    } else {
+        generated_url
     };
     let audio_id = next_id(1);
     let image_id = next_id(2);

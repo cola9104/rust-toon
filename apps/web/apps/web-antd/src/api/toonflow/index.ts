@@ -476,7 +476,7 @@ export const bindTrackStoryboards = (trackId: number, storyboardIds: number[]) =
 export const cancelTrackVideo = (id: number) => requestClient.post('/production/workbench/cancelVideo', { id });
 export const retryTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/retryVideo', data);
 export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string; retryOfId?: number }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
-export const exportFinalVideo = (projectId: number, scriptId: number) => requestClient.post<{ taskId: number; state: string }>('/production/workbench/exportVideo', { projectId, scriptId });
+export const exportFinalVideo = (projectId: number, scriptId: number, videoIds: number[] = []) => requestClient.post<{ taskId: number; state: string }>('/production/workbench/exportVideo', { projectId, scriptId, videoIds });
 export const selectTrackVideo = (trackId: number, videoId: number) => requestClient.post('/production/workbench/selectVideo', { trackId, videoId });
 export const deleteTrackVideo = (id: number) => requestClient.post('/production/workbench/delVideo', { id });
 export const getAudioBindAssetsList = (assetsIds: number[]) => requestClient.post<any[]>('/production/workbench/getAudioBindAssetsList', { assetsIds });

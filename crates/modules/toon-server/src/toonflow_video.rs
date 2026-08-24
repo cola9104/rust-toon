@@ -228,11 +228,22 @@ pub(crate) async fn load_generate_data(
     project_id: i64,
     script_id: i64,
 ) -> Result<Value, AppError> {
+    normalize_storyboard_track_groups(pool, project_id, script_id).await?;
     let boards=sqlx::query_as::<_,(i64,Option<i64>,Option<String>,String,Option<String>,i32,Option<i64>)>("SELECT id,track_id,file_path,prompt,video_desc,coalesce(index,0),flow_id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 ORDER BY index,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboards"))?;
-    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32)>("SELECT id,prompt,state,duration,video_id,sort_order FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
-    let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
+    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32)>("SELECT id,prompt,state,duration,video_id,sort_order FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=toonflow.video_tracks.id),2147483647),sort_order,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
+    let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 ORDER BY time DESC,id DESC").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
     let asset_media: Vec<(i64, i64, String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT ast.storyboard_id,a.id,a.name,a.type,img.file_path,audio.file_path FROM toonflow.assets_storyboards ast JOIN toonflow.assets a ON a.id=ast.asset_id LEFT JOIN toonflow.images img ON img.id=a.image_id LEFT JOIN LATERAL (SELECT aa_img.file_path FROM toonflow.asset_audio_bindings b JOIN toonflow.assets aa ON aa.id=b.asset_audio_id LEFT JOIN toonflow.images aa_img ON aa_img.id=aa.image_id WHERE b.asset_role_id=a.id ORDER BY b.create_time DESC LIMIT 1) audio ON true WHERE a.project_id=$1 AND ast.storyboard_id IN (SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2) ORDER BY ast.storyboard_id,ast.sort_order").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboard asset media"))?;
     let list = tracks.into_iter().map(|t| {
+        let selected_video_id = t.4.or_else(|| {
+            videos
+                .iter()
+                .find(|video| {
+                    video.4 == Some(t.0)
+                        && matches!(video.2.as_str(), "生成成功" | "已完成")
+                        && video.1.as_deref().is_some_and(|path| !path.is_empty())
+                })
+                .map(|video| video.0)
+        });
         let mut medias = Vec::new();
         for board in boards.iter().filter(|b| b.1 == Some(t.0)) {
             medias.push(json!({"id":board.0,"src":board.2,"prompt":board.4,"fileType":"image","sources":"storyboard","index":board.5,"flowId":board.6}));
@@ -241,11 +252,151 @@ pub(crate) async fn load_generate_data(
                 if let Some(src) = &asset.5 { medias.push(json!({"id":asset.1,"name":asset.2,"type":asset.3,"src":src,"fileType":"audio","sources":"assets","storyboardId":board.0})); }
             }
         }
-        json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"medias":medias,"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>()})
+        json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":selected_video_id,"sortOrder":t.5,"medias":medias,"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3})).collect::<Vec<_>>()})
     }).collect::<Vec<_>>();
     Ok(
         json!({"storyboardList":boards.into_iter().map(|b|json!({"id":b.0,"trackId":b.1,"src":b.2,"prompt":b.3,"videoDesc":b.4,"index":b.5,"flowId":b.6})).collect::<Vec<_>>(),"trackList":list}),
     )
+}
+
+/// Older Agent runs created one video track per storyboard even when the
+/// storyboard rows shared the same logical `track` label. Repair those rows
+/// when the workbench is opened so a logical track owns one candidate list.
+async fn normalize_storyboard_track_groups(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+) -> Result<(), AppError> {
+    let groups: Vec<(String,)> = sqlx::query_as(
+        "SELECT coalesce(nullif(btrim(track),''),'main') AS logical_track
+           FROM toonflow.storyboards
+          WHERE project_id=$1 AND script_id=$2 AND track_id IS NOT NULL
+          GROUP BY coalesce(nullif(btrim(track),''),'main')
+         HAVING count(DISTINCT track_id) > 1",
+    )
+    .bind(project_id)
+    .bind(script_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to inspect storyboard track groups"))?;
+    if groups.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin storyboard track repair"))?;
+    for (logical_track,) in groups {
+        let canonical_track_id: Option<i64> = sqlx::query_scalar(
+            "SELECT track_id
+               FROM toonflow.storyboards
+              WHERE project_id=$1 AND script_id=$2 AND track_id IS NOT NULL
+                AND coalesce(nullif(btrim(track),''),'main')=$3
+              ORDER BY coalesce(index,2147483647),id
+              LIMIT 1",
+        )
+        .bind(project_id)
+        .bind(script_id)
+        .bind(&logical_track)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to select storyboard track"))?;
+        let Some(canonical_track_id) = canonical_track_id else {
+            continue;
+        };
+        let duplicate_track_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT track_id
+               FROM toonflow.storyboards
+              WHERE project_id=$1 AND script_id=$2 AND track_id IS NOT NULL
+                AND coalesce(nullif(btrim(track),''),'main')=$3 AND track_id<>$4",
+        )
+        .bind(project_id)
+        .bind(script_id)
+        .bind(&logical_track)
+        .bind(canonical_track_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to list duplicate storyboard tracks"))?;
+
+        for duplicate_track_id in duplicate_track_ids {
+            let selected: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+                "SELECT video_id,select_video_id FROM toonflow.video_tracks WHERE id=$1",
+            )
+            .bind(duplicate_track_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to load duplicate video track"))?;
+            if let Some((video_id, select_video_id)) = selected {
+                sqlx::query(
+                    "UPDATE toonflow.video_tracks
+                        SET video_id=coalesce(video_id,$2),
+                            select_video_id=coalesce(select_video_id,$3)
+                      WHERE id=$1",
+                )
+                .bind(canonical_track_id)
+                .bind(video_id)
+                .bind(select_video_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to merge selected video"))?;
+            }
+            sqlx::query("UPDATE toonflow.videos SET video_track_id=$2 WHERE video_track_id=$1")
+                .bind(duplicate_track_id)
+                .bind(canonical_track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to merge track videos"))?;
+            sqlx::query(
+                "UPDATE toonflow.storyboards
+                    SET track=$2,track_id=$3
+                  WHERE project_id=$1 AND script_id=$4
+                    AND coalesce(nullif(btrim(track),''),'main')=$5
+                    AND track_id=$6",
+            )
+            .bind(project_id)
+            .bind(&logical_track)
+            .bind(canonical_track_id)
+            .bind(script_id)
+            .bind(&logical_track)
+            .bind(duplicate_track_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to merge storyboard rows"))?;
+            sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=$1")
+                .bind(duplicate_track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to remove duplicate video track"))?;
+        }
+        sqlx::query(
+            "UPDATE toonflow.storyboards
+                SET track=$2
+              WHERE project_id=$1 AND script_id=$3
+                AND coalesce(nullif(btrim(track),''),'main')=$4",
+        )
+        .bind(project_id)
+        .bind(&logical_track)
+        .bind(script_id)
+        .bind(&logical_track)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to normalize storyboard track name"))?;
+        sqlx::query(
+            "UPDATE toonflow.video_tracks
+                SET duration=(SELECT coalesce(sum(CASE WHEN duration ~ '^[0-9]+$' THEN duration::integer ELSE 0 END),0)::integer
+                                FROM toonflow.storyboards WHERE track_id=$1)
+              WHERE id=$1",
+        )
+        .bind(canonical_track_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to recalculate storyboard track duration"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit storyboard track repair"))?;
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -273,9 +424,13 @@ fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value 
         .into_iter()
         .flatten()
         .filter_map(|item| {
-            item.as_str()
-                .map(str::to_string)
-                .or_else(|| item.get("src").and_then(Value::as_str).map(str::to_string))
+            item.as_str().map(str::to_string).or_else(|| {
+                let file_type = item.get("fileType").and_then(Value::as_str);
+                if matches!(file_type, Some(value) if value != "image") {
+                    return None;
+                }
+                item.get("src").and_then(Value::as_str).map(str::to_string)
+            })
         })
         .filter(|reference| !reference.is_empty())
         .map(Value::String)
@@ -294,15 +449,56 @@ fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value 
     json!(references)
 }
 
+fn positional_frame_upload_data(upload_data: Value) -> Value {
+    let Some(items) = upload_data.as_array() else {
+        return Value::Array(Vec::new());
+    };
+    let role = |item: &Value| {
+        item.get("frameRole")
+            .and_then(Value::as_str)
+            .and_then(|value| match value {
+                "first" | "first_frame" => Some("first"),
+                "last" | "last_frame" => Some("last"),
+                _ => None,
+            })
+    };
+    let explicit_frames = ["first", "last"]
+        .into_iter()
+        .filter_map(|wanted| items.iter().find(|item| role(item) == Some(wanted)))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !explicit_frames.is_empty() {
+        return Value::Array(explicit_frames);
+    }
+    Value::Array(
+        items
+            .iter()
+            .filter(|item| {
+                item.as_str().is_some()
+                    || item.get("sources").and_then(Value::as_str) == Some("storyboard")
+                    || role(item).is_some()
+            })
+            .cloned()
+            .collect(),
+    )
+}
+
 fn references_for_mode(upload_data: Value, asset_references: Vec<String>, mode: &Value) -> Value {
     let mode = mode.as_str().unwrap_or("text");
     if mode == "text" {
         return merge_references(upload_data, asset_references);
     }
-    let frames = merge_references(upload_data, Vec::new())
+    // Positional frame modes must never infer a frame from an ordinary asset. The
+    // scene/character images are valid prompt references, but using the last one
+    // as `last_frame` makes every clip end on whichever asset happens to be last.
+    let frames = merge_references(positional_frame_upload_data(upload_data), Vec::new())
         .as_array()
         .cloned()
         .unwrap_or_default();
+    if mode == "startEndRequired" && frames.len() == 1 {
+        let frame = frames.first().cloned().unwrap();
+        return json!([frame.clone(), frame]);
+    }
     if matches!(mode, "startEndRequired" | "endFrameOptional") && frames.len() > 1 {
         return json!([
             frames.first().cloned().unwrap(),
@@ -310,6 +506,22 @@ fn references_for_mode(upload_data: Value, asset_references: Vec<String>, mode: 
         ]);
     }
     json!(frames.into_iter().take(1).collect::<Vec<_>>())
+}
+
+async fn normalize_video_references(references: Value) -> Result<Value, String> {
+    let Some(references) = references.as_array() else {
+        return Ok(json!([]));
+    };
+    let mut normalized = Vec::with_capacity(references.len());
+    for reference in references {
+        let reference = reference
+            .as_str()
+            .ok_or_else(|| "视频参考图格式无效".to_string())?;
+        normalized.push(Value::String(
+            crate::toonflow_storage::normalize_image_reference(reference).await?,
+        ));
+    }
+    Ok(Value::Array(normalized))
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -321,7 +533,7 @@ pub(crate) struct WorkflowVideoInput {
     pub concurrent_count: usize,
     #[serde(default = "workflow_video_resolution")]
     pub resolution: String,
-    #[serde(default)]
+    #[serde(default = "default_video_audio")]
     pub audio: bool,
     #[serde(default)]
     pub video_ids: Vec<i64>,
@@ -329,6 +541,10 @@ pub(crate) struct WorkflowVideoInput {
 
 fn workflow_video_concurrency() -> usize {
     2
+}
+
+fn default_video_audio() -> bool {
+    true
 }
 
 fn workflow_video_resolution() -> String {
@@ -404,7 +620,13 @@ pub(crate) async fn prepare_workflow_video_generation(
         )
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
-        let references = references_for_mode(json!(frames), asset_references, &json!(mode));
+        let references = normalize_video_references(references_for_mode(
+            json!(frames),
+            asset_references,
+            &json!(mode),
+        ))
+        .await
+        .map_err(AppError::bad_request)?;
         let id = base_id + index as i64;
         sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time) VALUES($1,'生成中',$2,$3,$4,$5)")
             .bind(id)
@@ -419,7 +641,7 @@ pub(crate) async fn prepare_workflow_video_generation(
             id,
             track_id,
             prompt: prompt.unwrap_or_default(),
-            duration: duration.unwrap_or(5),
+            duration: duration.unwrap_or(4),
             model: model.clone(),
             mode: mode.clone(),
             ratio: if ratio.trim().is_empty() {
@@ -477,7 +699,7 @@ pub(crate) async fn run_workflow_video_generation(
                     "aspect_ratio": job.ratio,
                     "references": job.references,
                 });
-                match ai_client::video(&pool, &job.model, payload).await {
+                match ai_client::project_video(&pool, &job.model, project_id, payload).await {
                     Ok(url) => {
                         let _ = sqlx::query("UPDATE toonflow.videos SET file_path=$2,state='生成成功',error_reason=NULL WHERE id=$1 AND state='生成中'")
                             .bind(job.id).bind(url).execute(&pool).await;
@@ -521,7 +743,13 @@ pub async fn generate_video(
     )
     .await
     .map_err(|_| AppError::internal("failed to load video asset references"))?;
-    let references = references_for_mode(req.upload_data, asset_references, &req.mode);
+    let references = normalize_video_references(references_for_mode(
+        req.upload_data,
+        asset_references,
+        &req.mode,
+    ))
+    .await
+    .map_err(AppError::bad_request)?;
     sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time,retry_of_id)VALUES($1,'生成中',$2,$3,$4,$1,$5)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).bind(req.retry_of_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -532,8 +760,8 @@ pub async fn generate_video(
                 .await
                 .ok()
                 .flatten();
-        let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":references});
-        match ai_client::video(&pool, &req.model, payload).await {
+        let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(true),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":references});
+        match ai_client::project_video(&pool, &req.model, req.project_id, payload).await {
             Ok(url) => {
                 let _ = sqlx::query(
                     "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1 AND state='生成中'",
@@ -707,7 +935,7 @@ pub async fn retry_video(
             model: req.model,
             mode: req.mode,
             resolution: req.resolution,
-            duration: duration.unwrap_or(5),
+            duration: duration.unwrap_or(4),
             audio: req.audio,
             track_id,
             upload_data: req.upload_data,
@@ -794,16 +1022,61 @@ pub(crate) async fn create_prompt(
             })
         })
         .unwrap_or_default();
-    let boards=sqlx::query_as::<_,(String,Option<String>,Option<String>)>("SELECT prompt,video_desc,duration FROM toonflow.storyboards WHERE track_id=$1 ORDER BY index,id").bind(track_id).fetch_all(pool).await.map_err(|e|e.to_string())?;
+    let boards = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i32,
+        ),
+    >(
+        "SELECT id,prompt,video_desc,duration,track,\
+                (SELECT string_agg(ast.asset_id::text, ',' ORDER BY ast.sort_order,ast.asset_id)\
+                   FROM toonflow.assets_storyboards ast WHERE ast.storyboard_id=s.id),\
+                should_generate_image \
+           FROM toonflow.storyboards s WHERE track_id=$1 ORDER BY index,id",
+    )
+    .bind(track_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let storyboard_ids = boards.iter().map(|board| board.0).collect::<Vec<_>>();
+    let assets = if storyboard_ids.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT DISTINCT a.id,a.type,a.name \
+               FROM toonflow.assets_storyboards ast \
+               JOIN toonflow.assets a ON a.id=ast.asset_id \
+              WHERE ast.storyboard_id=ANY($1) ORDER BY a.id",
+        )
+        .bind(&storyboard_ids)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?
+    };
     let content = format!(
-        "模型：{resolved_model}\n模式：{mode}\n视觉规范：{visual}\n{}",
+        "模型名称：{resolved_model}\n模式：{mode}\n资产信息：{}\n视觉规范：{visual}\n分镜信息：\n{}",
+        assets
+            .iter()
+            .map(|asset| format!("[{}, {}, {}]", asset.0, asset.1, asset.2))
+            .collect::<Vec<_>>()
+            .join("，"),
         boards
             .into_iter()
             .map(|b| format!(
-                "画面={},运动={},时长={}",
+                "<storyboardItem id=\"{}\" videoDesc=\"{}\" prompt=\"{}\" track=\"{}\" duration=\"{}\" associateAssetsIds=\"{}\" shouldGenerateImage=\"{}\" />",
                 b.0,
-                b.1.unwrap_or_default(),
-                b.2.unwrap_or_default()
+                b.2.unwrap_or_default(),
+                b.1,
+                b.4.unwrap_or_default(),
+                b.3.unwrap_or_default(),
+                b.5.unwrap_or_default(),
+                b.6
             ))
             .collect::<Vec<_>>()
             .join("\n")
@@ -951,6 +1224,18 @@ mod prompt_tests {
     }
 
     #[test]
+    fn excludes_audio_assets_from_visual_video_references() {
+        let references = merge_references(
+            json!([
+                {"id": 1, "src": "frame.png", "fileType": "image"},
+                {"id": 2, "src": "voice.mp3", "fileType": "audio"}
+            ]),
+            Vec::new(),
+        );
+        assert_eq!(references, json!(["frame.png"]));
+    }
+
+    #[test]
     fn separates_frame_modes_from_multi_reference_mode() {
         let frames = json!(["first", "middle", "last"]);
         let assets = vec!["role".into(), "scene".into()];
@@ -965,6 +1250,56 @@ mod prompt_tests {
         assert_eq!(
             references_for_mode(frames, assets, &json!("text")),
             json!(["first", "middle", "last", "role"])
+        );
+    }
+
+    #[test]
+    fn reuses_one_frame_for_an_explicit_start_end_mode() {
+        assert_eq!(
+            references_for_mode(json!(["only.png"]), Vec::new(), &json!("startEndRequired")),
+            json!(["only.png", "only.png"])
+        );
+    }
+
+    #[test]
+    fn frame_modes_ignore_unmarked_character_and_scene_assets() {
+        let upload_data = json!([
+            {"id": 10, "src": "role.png", "sources": "assets", "fileType": "image"},
+            {"id": 20, "src": "storyboard.png", "sources": "storyboard", "fileType": "image"},
+            {"id": 30, "src": "empty-room.png", "sources": "assets", "fileType": "image"}
+        ]);
+
+        assert_eq!(
+            references_for_mode(upload_data, Vec::new(), &json!("startEndRequired")),
+            json!(["storyboard.png", "storyboard.png"])
+        );
+    }
+
+    #[test]
+    fn frame_modes_use_storyboard_group_edges_not_asset_order() {
+        let upload_data = json!([
+            {"src": "first-storyboard.png", "sources": "storyboard"},
+            {"src": "role.png", "sources": "assets"},
+            {"src": "last-storyboard.png", "sources": "storyboard"},
+            {"src": "empty-room.png", "sources": "assets"}
+        ]);
+
+        assert_eq!(
+            references_for_mode(upload_data, Vec::new(), &json!("startEndRequired")),
+            json!(["first-storyboard.png", "last-storyboard.png"])
+        );
+    }
+
+    #[test]
+    fn frame_modes_allow_explicit_frame_roles() {
+        let upload_data = json!([
+            {"src": "last.png", "sources": "assets", "frameRole": "last"},
+            {"src": "first.png", "sources": "assets", "frameRole": "first"}
+        ]);
+
+        assert_eq!(
+            references_for_mode(upload_data, Vec::new(), &json!("startEndRequired")),
+            json!(["first.png", "last.png"])
         );
     }
 }
@@ -1104,7 +1439,13 @@ pub async fn batch_videos(
         )
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
-        track.upload_data = references_for_mode(track.upload_data, asset_references, &req.mode);
+        track.upload_data = normalize_video_references(references_for_mode(
+            track.upload_data,
+            asset_references,
+            &req.mode,
+        ))
+        .await
+        .map_err(AppError::bad_request)?;
         sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(track.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
         jobs.push((id, track));
     }
@@ -1123,8 +1464,8 @@ pub async fn batch_videos(
                 .flatten();
         let ratio = ratio.map(|r| r.0).unwrap_or_else(|| "16:9".into());
         for (id, track) in jobs {
-            let payload = json!({"prompt":track.prompt,"mode":req.mode,"resolution":req.resolution,"duration":track.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio,"references":track.upload_data});
-            match ai_client::video(&pool, &req.model, payload).await {
+            let payload = json!({"prompt":track.prompt,"mode":req.mode,"resolution":req.resolution,"duration":track.duration,"audio":req.audio.unwrap_or(true),"aspect_ratio":ratio,"references":track.upload_data});
+            match ai_client::project_video(&pool, &req.model, req.project_id, payload).await {
                 Ok(url) => {
                     let _ = sqlx::query(
                         "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1",

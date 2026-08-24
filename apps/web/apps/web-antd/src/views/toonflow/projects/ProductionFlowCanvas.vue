@@ -28,6 +28,7 @@ import {
 
 import { validateWorkflow } from '#/api/toonflow';
 import { MarkdownView } from '#/components/markdown-view';
+import { assetFileUrl } from '../assets/asset-types';
 
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
@@ -81,7 +82,7 @@ const emit = defineEmits<{
   editStoryboard: [storyboard: ToonflowApi.Storyboard];
   editStoryboardImage: [storyboard: ToonflowApi.Storyboard];
   exportStoryboardImages: [ids: number[]];
-  exportVideo: [];
+  exportVideo: [videoIds: number[]];
   generateStoryboards: [ids: number[], compulsory: boolean];
   generateDerivedAsset: [asset: ToonflowApi.Asset];
   insertStoryboardAfter: [storyboard: ToonflowApi.Storyboard];
@@ -98,6 +99,7 @@ const emit = defineEmits<{
   saveWorkflow: [workflow: ProductionWorkflowDefinition];
   saveVideoPrompt: [track: any];
   selectTrackVideo: [track: any, video: any];
+  refreshWorkbench: [];
   updateFlowSection: [key: 'scriptPlan' | 'storyboardTable', value: string];
   removeStoryboard: [storyboard: ToonflowApi.Storyboard];
   reorderStoryboards: [ids: number[]];
@@ -131,7 +133,7 @@ const directorPlan = computed(() =>
 const storyboardPlan = computed(() =>
   normalizeProductionDocument(flowData.value.storyboardTable, 'storyboardTable'),
 );
-const workbenchCover = computed(() => selectedWorkbenchCover(props.videoTracks));
+const workbenchCover = computed(() => assetFileUrl(selectedWorkbenchCover(props.videoTracks)));
 const savedPositions = computed(() =>
   flowData.value.canvas?.layoutVersion === 7 ? flowData.value.canvas.positions || {} : {},
 );
@@ -485,8 +487,8 @@ onBeforeUnmount(() => {
 <template>
   <div class="production-flow-shell" :class="{ 'space-panning': spacePressed }">
     <div class="workflow-toolbar">
-      <Space :size="6">
-        <Typography.Text strong>节点工作流</Typography.Text>
+      <Space class="workflow-toolbar-actions" :size="6">
+        <Typography.Text class="workflow-toolbar-title" strong>节点工作流</Typography.Text>
         <Tag>{{ workflow.nodes.length }} 节点</Tag>
         <Tag>{{ workflow.edges.length }} 连线</Tag>
         <Tag v-if="selectedNodeIds.length" color="blue">已选 {{ selectedNodeIds.length }} 节点</Tag>
@@ -505,7 +507,6 @@ onBeforeUnmount(() => {
         <Button size="small" :disabled="!selectedNodeId" @click="selectPath('upstream')">选中上游</Button>
         <Button size="small" :disabled="!selectedNodeId" @click="selectPath('downstream')">选中下游</Button>
       </Space>
-      <Typography.Text type="secondary">拖动端口连接节点 · 按 Shift 框选/多选节点 · 选中连线后按 Delete 删除 · 任务提交后由后端持续运行</Typography.Text>
     </div>
     <VueFlow
       :nodes="nodes"
@@ -824,10 +825,11 @@ onBeforeUnmount(() => {
         @open-track="emit('openVideoTrack', $event)"
         @retry-video="(video, track) => emit('retryTrackVideo', video, track)"
         @reorder-storyboards="emit('reorderStoryboards', $event)"
+        @refresh="emit('refreshWorkbench')"
         @save-prompt="emit('saveVideoPrompt', $event)"
         @select-video="(track, video) => emit('selectTrackVideo', track, video)"
         @export-storyboard-images="emit('exportStoryboardImages', $event)"
-        @export-video="emit('exportVideo')"
+        @export-video="emit('exportVideo', $event)"
       />
     </Modal>
     <Modal v-model:open="editorOpen" :title="editorKey === 'scriptPlan' ? '编辑导演规划' : '编辑分镜表'" width="90vw" @ok="saveEditor">

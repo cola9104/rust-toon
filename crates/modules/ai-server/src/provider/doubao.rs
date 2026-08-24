@@ -22,6 +22,14 @@ pub(super) fn normalize_seedream_size(model: &str, size: &str) -> String {
     format!("{}x{}", align(width), align(height))
 }
 
+fn normalize_seedance_duration(model: &str, duration: i64) -> i64 {
+    if model.to_ascii_lowercase().contains("seedance-1-5") {
+        duration.clamp(4, 12)
+    } else {
+        duration
+    }
+}
+
 impl DouBaoMediaProvider {
     fn client(&self, config: &ModelConfig) -> reqwest::Client {
         let _ = config;
@@ -56,6 +64,7 @@ impl DouBaoMediaProvider {
             for (index, reference) in references.iter().filter_map(Value::as_str).enumerate() {
                 let role = match mode {
                     "text" => "reference_image",
+                    "endFrameOptional" if reference_count == 1 => "last_frame",
                     "startEndRequired" | "endFrameOptional"
                         if index + 1 == reference_count && reference_count > 1 =>
                     {
@@ -83,6 +92,14 @@ impl DouBaoMediaProvider {
             "watermark",
         ] {
             if let Some(value) = payload.get(key).cloned() {
+                let value = if key == "duration" {
+                    value
+                        .as_i64()
+                        .map(|duration| json!(normalize_seedance_duration(&config.model, duration)))
+                        .unwrap_or(value)
+                } else {
+                    value
+                };
                 body.insert(key.into(), value);
             }
         }
@@ -192,7 +209,7 @@ impl DouBaoMediaProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{DouBaoMediaProvider, normalize_seedream_size};
+    use super::{DouBaoMediaProvider, normalize_seedance_duration, normalize_seedream_size};
     use rust_toon_ai_api::ModelConfig;
     use serde_json::json;
 
@@ -225,6 +242,16 @@ mod tests {
     }
 
     #[test]
+    fn clamps_seedance_1_5_duration_to_provider_range() {
+        assert_eq!(normalize_seedance_duration("doubao-seedance-1-5-pro", 3), 4);
+        assert_eq!(
+            normalize_seedance_duration("doubao-seedance-1-5-pro", 15),
+            12
+        );
+        assert_eq!(normalize_seedance_duration("doubao-seedance-2-0", 3), 3);
+    }
+
+    #[test]
     fn converts_toonflow_payload_to_seedance_content() {
         let body = DouBaoMediaProvider::video_body(&config(), json!({"prompt":"镜头推进","references":["https://example.com/first.png"],"aspect_ratio":"16:9","audio":true})).unwrap();
         assert_eq!(body["model"], "doubao-seedance-2-0-260128");
@@ -246,6 +273,20 @@ mod tests {
         .unwrap();
         assert_eq!(body["content"][1]["role"], "first_frame");
         assert_eq!(body["content"][2]["role"], "last_frame");
+    }
+
+    #[test]
+    fn assigns_a_single_optional_end_frame_to_the_last_frame_role() {
+        let body = DouBaoMediaProvider::video_body(
+            &config(),
+            json!({
+                "prompt":"镜头推进",
+                "mode":"endFrameOptional",
+                "references":["https://example.com/last.png"]
+            }),
+        )
+        .unwrap();
+        assert_eq!(body["content"][1]["role"], "last_frame");
     }
 
     #[test]

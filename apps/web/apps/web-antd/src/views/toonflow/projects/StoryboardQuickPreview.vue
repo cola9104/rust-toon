@@ -1,9 +1,11 @@
 <script lang="ts" setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, ref, watch } from 'vue';
 
 import { Button, Checkbox, Empty, Image, Tag } from 'ant-design-vue';
 
 import { assetFileUrl } from '../assets/asset-types';
+import StoryboardTrackStrip from './StoryboardTrackStrip.vue';
+import { groupStoryboardsByTrack } from './storyboard-track-groups';
 
 const props = defineProps<{ assets: any[]; storyboards: any[] }>();
 const emit = defineEmits<{
@@ -12,13 +14,9 @@ const emit = defineEmits<{
 }>();
 
 const activeIndex = ref(0);
-const elapsed = ref(0);
-const playing = ref(false);
 const selectedIds = ref<number[]>([]);
 const orderedIds = ref<number[]>([]);
 const initialIds = ref<number[]>([]);
-const draggingId = ref<number>();
-let timer: ReturnType<typeof setInterval> | undefined;
 
 watch(
   () => props.storyboards.map((item) => item.id),
@@ -37,18 +35,6 @@ const orderedStoryboards = computed(() =>
     .filter(Boolean),
 );
 const current = computed(() => orderedStoryboards.value[activeIndex.value]);
-const currentDuration = computed(() => Number(current.value?.duration || 3));
-const totalDuration = computed(() =>
-  orderedStoryboards.value.reduce((sum, item) => sum + Number(item.duration || 3), 0),
-);
-const elapsedBefore = computed(() =>
-  orderedStoryboards.value
-    .slice(0, activeIndex.value)
-    .reduce((sum, item) => sum + Number(item.duration || 3), 0),
-);
-const progress = computed(() =>
-  totalDuration.value ? ((elapsedBefore.value + elapsed.value) / totalDuration.value) * 100 : 0,
-);
 const currentAssets = computed(() => {
   const ids = new Set((current.value?.associateAssetsIds ?? []).map(Number));
   return props.assets.filter((asset) => ids.has(Number(asset.id)));
@@ -56,80 +42,57 @@ const currentAssets = computed(() => {
 const currentDescription = computed(() =>
   current.value?.description || current.value?.videoDesc || current.value?.describe || '',
 );
+const storyboardGroups = computed(() =>
+  groupStoryboardsByTrack(orderedStoryboards.value, { preserveOrder: true }),
+);
+const currentGroup = computed(() =>
+  storyboardGroups.value.find((group) => group.items.some((item) => item.id === current.value?.id)),
+);
+const currentGroupIndex = computed(() =>
+  currentGroup.value?.items.findIndex((item) => item.id === current.value?.id) ?? -1,
+);
 function previewUrl(item: any) {
   return assetFileUrl(item?.imageFilePath || item?.filePath || item?.fileUrl || item?.src);
 }
+function storyboardNumber(item: any) {
+  const group = storyboardGroups.value.find((candidate) => candidate.items.some((storyboard) => storyboard.id === item.id));
+  return group ? group.items.findIndex((storyboard) => storyboard.id === item.id) + 1 : 1;
+}
+function storyboardLabel(item: any) {
+  const group = storyboardGroups.value.find((candidate) => candidate.items.some((storyboard) => storyboard.id === item.id));
+  return `轨道 ${group?.name || '默认轨道'} · 分镜 ${storyboardNumber(item)}`;
+}
+const currentLabel = computed(() => current.value ? storyboardLabel(current.value) : '暂无分镜');
 const allSelected = computed({
   get: () => orderedIds.value.length > 0 && orderedIds.value.every((id) => selectedIds.value.includes(id)),
   set: (checked: boolean) => { selectedIds.value = checked ? [...orderedIds.value] : []; },
 });
 
-function stop() {
-  if (timer) clearInterval(timer);
-  timer = undefined;
-  playing.value = false;
-}
-function play() {
-  if (playing.value || !current.value) return stop();
-  if (activeIndex.value === orderedStoryboards.value.length - 1 && elapsed.value >= currentDuration.value) {
-    activeIndex.value = 0;
-    elapsed.value = 0;
-  }
-  playing.value = true;
-  timer = setInterval(() => {
-    elapsed.value += 0.05;
-    if (elapsed.value < currentDuration.value) return;
-    if (activeIndex.value >= orderedStoryboards.value.length - 1) {
-      elapsed.value = currentDuration.value;
-      stop();
-      return;
-    }
-    activeIndex.value += 1;
-    elapsed.value = 0;
-  }, 50);
-}
-function togglePlay() { playing.value ? stop() : play(); }
-function selectShot(index: number) { stop(); activeIndex.value = index; elapsed.value = 0; }
-function seek(event: MouseEvent) {
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  const target = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)) * totalDuration.value;
-  let cursor = 0;
-  for (let index = 0; index < orderedStoryboards.value.length; index += 1) {
-    const duration = Number(orderedStoryboards.value[index]?.duration || 3);
-    if (cursor + duration >= target) {
-      activeIndex.value = index;
-      elapsed.value = target - cursor;
-      return;
-    }
-    cursor += duration;
-  }
-}
-function formatTime(seconds: number) {
-  const value = Math.floor(seconds);
-  return `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
-}
+function selectShot(index: number) { activeIndex.value = index; }
 function toggleSelected(id: number, checked: boolean) {
   selectedIds.value = checked
     ? [...new Set([...selectedIds.value, id])]
     : selectedIds.value.filter((item) => item !== id);
 }
-function dropOn(targetId: number) {
-  if (!draggingId.value || draggingId.value === targetId) return;
-  const ids = [...orderedIds.value];
-  const from = ids.indexOf(draggingId.value);
-  const to = ids.indexOf(targetId);
-  ids.splice(to, 0, ids.splice(from, 1)[0]!);
+function togglePreviewTrack(_trackId: number | undefined, checked: boolean, ids: number[]) {
+  selectedIds.value = checked
+    ? [...new Set([...selectedIds.value, ...ids])]
+    : selectedIds.value.filter((id) => !ids.includes(id));
+}
+function selectStoryboard(id: number) {
+  const index = orderedStoryboards.value.findIndex((item) => item.id === id);
+  if (index >= 0) selectShot(index);
+}
+function handleReorder(ids: number[]) {
   orderedIds.value = ids;
-  draggingId.value = undefined;
   emit('reorder', ids);
 }
 function restoreOrder() {
   orderedIds.value = initialIds.value.filter((id) => props.storyboards.some((item) => item.id === id));
   activeIndex.value = 0;
-  elapsed.value = 0;
   emit('reorder', orderedIds.value);
 }
-onBeforeUnmount(stop);
+
 </script>
 
 <template>
@@ -138,40 +101,22 @@ onBeforeUnmount(stop);
       <div class="visual-column">
         <div class="hero-image">
           <img
-            v-if="current.filePath || current.src"
+            v-if="previewUrl(current)"
             :src="previewUrl(current)"
-            :alt="currentDescription || `分镜 ${activeIndex + 1}`"
+            :alt="currentLabel"
             class="hero-image-content"
           />
           <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无图片" />
         </div>
-        <div class="player-controls">
-          <div class="control-buttons">
-            <Button shape="circle" :disabled="activeIndex === 0" @click="selectShot(activeIndex - 1)">｜◀</Button>
-            <Button shape="circle" type="primary" @click="togglePlay">{{ playing ? 'Ⅱ' : '▶' }}</Button>
-            <Button shape="circle" :disabled="activeIndex === orderedStoryboards.length - 1" @click="selectShot(activeIndex + 1)">▶｜</Button>
-          </div>
-          <div class="progress-row">
-            <span>{{ formatTime(elapsedBefore + elapsed) }}</span>
-            <div class="progress-track" @mousedown="seek">
-              <i
-                v-for="(storyboard, index) in orderedStoryboards"
-                :key="storyboard.id"
-                class="progress-segment"
-                :class="{ active: Number(index) === activeIndex, completed: Number(index) < activeIndex }"
-                :style="{ left: `${orderedStoryboards.slice(0, Number(index)).reduce((sum, item) => sum + Number(item.duration || 3), 0) / totalDuration * 100}%`, width: `${Number(storyboard.duration || 3) / totalDuration * 100}%` }"
-                @click.stop="selectShot(Number(index))"
-              />
-              <b :style="{ width: `${progress}%` }" />
-              <em :style="{ left: `${progress}%` }" />
-            </div>
-            <span>{{ formatTime(totalDuration) }}</span>
-          </div>
+        <div class="image-navigation">
+          <Button shape="circle" :disabled="activeIndex === 0" @click="selectShot(activeIndex - 1)">‹</Button>
+          <span>{{ currentLabel }}（{{ currentGroupIndex + 1 }} / {{ currentGroup?.items.length || 0 }}）</span>
+          <Button shape="circle" :disabled="activeIndex >= orderedStoryboards.length - 1" @click="selectShot(activeIndex + 1)">›</Button>
         </div>
       </div>
 
       <aside class="info-panel">
-        <section><h4><i />分镜描述</h4><p>【序号 {{ activeIndex + 1 }}】{{ currentDescription || '暂无描述' }}</p></section>
+        <section><h4><i />分镜描述</h4><p>【{{ currentLabel }}】{{ currentDescription || '暂无描述' }}</p></section>
         <section><h4><i />时长</h4><p>{{ current.duration || 3 }} 秒</p></section>
         <section>
           <h4><i />涉及资产</h4>
@@ -193,22 +138,19 @@ onBeforeUnmount(stop);
         <div><Checkbox v-model:checked="allSelected">全选</Checkbox><Button type="text" @click="restoreOrder">↶ 还原排序</Button></div>
         <Button type="text" @click="emit('exportImages', selectedIds)">⇩ 导出图片</Button>
       </header>
-      <div class="shot-list">
-        <article
-          v-for="(storyboard, index) in orderedStoryboards"
-          :key="storyboard.id"
-          draggable="true"
-          class="shot-item"
-          :class="{ active: Number(index) === activeIndex }"
-          @click="selectShot(Number(index))"
-          @dragstart="draggingId = storyboard.id"
-          @dragover.prevent
-          @drop="dropOn(storyboard.id)"
-        >
-          <Checkbox :checked="selectedIds.includes(storyboard.id)" @click.stop @change="toggleSelected(storyboard.id, $event.target.checked)" />
-          <div><img v-if="storyboard.filePath || storyboard.src" :src="previewUrl(storyboard)" /><span v-else>暂无图片</span><Tag>#{{ storyboard.id }}</Tag></div>
-        </article>
-      </div>
+      <StoryboardTrackStrip
+        :active-storyboard-id="current?.id"
+        :draggable="true"
+        :preserve-order="true"
+        :selected-storyboard-ids="selectedIds"
+        :show-storyboard-checkbox="true"
+        :show-track-checkbox="true"
+        :storyboards="orderedStoryboards"
+        @reorder="handleReorder"
+        @storyboard-click="selectStoryboard"
+        @storyboard-toggle="toggleSelected"
+        @track-toggle="togglePreviewTrack"
+      />
     </section>
   </div>
   <Empty v-else class="preview-empty" :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无分镜图" />
@@ -347,7 +289,7 @@ onBeforeUnmount(stop);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  grid-template-columns: minmax(0, 72%) minmax(280px, 28%);
+  grid-template-columns: minmax(0, 60%) minmax(280px, 40%);
 }
 
 .visual-column {
@@ -441,5 +383,151 @@ onBeforeUnmount(stop);
   .visual-column { min-height: 420px; }
   .info-panel { min-height: 320px; overflow: visible; }
   .shot-list-area { height: 132px; }
+}
+.quick-preview { grid-template-rows: minmax(0, 1fr) 210px; }
+.shot-list-area { overflow: visible; }
+.shot-list { height: 145px; }
+.shot-item { width: 190px; flex-basis: 190px; }
+.hero-image { max-width: 1000px; }
+.image-navigation { display: flex; width: 100%; max-width: 1000px; align-items: center; justify-content: center; gap: 18px; padding-top: 10px; color: var(--ant-color-text-secondary); font-size: 12px; }
+@media (max-width: 900px) {
+  .hero-image, .image-navigation { width: min(100%, 1000px); max-width: 1000px; }
+  .hero-image { max-height: 562px; }
+}
+
+/* Final preview layout: keep the image preview independent from video-track sizing. */
+.quick-preview {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr) 174px;
+}
+.preview-main {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-columns: minmax(0, 60%) minmax(280px, 40%);
+}
+.visual-column {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px 18px 8px;
+  align-content: start;
+}
+.hero-image {
+  width: 100%;
+  max-width: none;
+  aspect-ratio: 16 / 9;
+}
+.hero-image-content {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: contain !important;
+  object-position: center !important;
+}
+.image-navigation {
+  width: 100%;
+  max-width: none;
+  padding-top: 8px;
+}
+.info-panel {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px;
+}
+.shot-list-area {
+  height: 174px;
+  overflow: hidden;
+  padding: 8px 14px 10px;
+}
+.shot-list {
+  height: 145px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.shot-item {
+  width: 190px;
+  flex-basis: 190px;
+}
+@media (max-width: 900px) {
+  .quick-preview { height: auto; min-height: 100%; overflow: visible; grid-template-rows: auto auto; }
+  .preview-main { grid-template-columns: 1fr; overflow: visible; }
+  .visual-column { overflow: visible; }
+  .hero-image, .image-navigation { width: 100%; max-width: none; }
+  .hero-image { max-height: none; }
+  .info-panel { border-top: 1px solid var(--ant-color-border-secondary); border-left: 0; }
+}
+
+/* Keep the original single-row storyboard strip with one horizontal scrollbar. */
+.quick-preview {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  grid-template-rows: minmax(0, 1fr) 256px;
+}
+
+.shot-list-area {
+  height: 256px;
+  overflow: hidden;
+  padding: 14px;
+}
+
+.shot-list-area header {
+  height: 34px;
+  margin-bottom: 10px;
+}
+
+.shot-list {
+  display: flex;
+  height: 160px;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 0 2px 7px;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.shot-group-strip {
+  display: flex;
+  width: max-content;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shot-list-area .shot-group-title {
+  display: flex;
+  height: 22px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.shot-group-title > span {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+}
+
+.shot-group-items {
+  display: flex;
+  height: 119px;
+  width: max-content;
+  gap: 10px;
+}
+
+.shot-group-items .shot-item {
+  height: 100%;
+}
+
+@media (max-width: 900px) {
+  .quick-preview { height: auto; min-height: 100%; overflow: visible; grid-template-rows: auto auto; }
+  .shot-list-area { height: 256px; overflow: hidden; }
 }
 </style>

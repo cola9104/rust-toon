@@ -380,6 +380,24 @@ fn is_transient_model_error(error: &str) -> bool {
     .any(|marker| error.contains(marker))
 }
 pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<String, String> {
+    video_with_context(pool, configured, payload, None).await
+}
+
+pub async fn project_video(
+    pool: &PgPool,
+    configured: &str,
+    project_id: i64,
+    payload: Value,
+) -> Result<String, String> {
+    video_with_context(pool, configured, payload, Some(project_id)).await
+}
+
+async fn video_with_context(
+    pool: &PgPool,
+    configured: &str,
+    payload: Value,
+    project_id: Option<i64>,
+) -> Result<String, String> {
     let model_id = model_id(configured, "视频")?;
     let config = rust_toon_ai_server::AiModelFactory::new(pool.clone())
         .config(model_id)
@@ -410,24 +428,31 @@ pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<St
             config.name
         ));
     }
-    recorded(
+    recorded_with_context(
         pool,
+        project_id,
+        Some(1),
         "video",
         &model_id.to_string(),
         "视频生成",
-        video_unrecorded(pool, model_id, payload),
+        video_unrecorded(pool, model_id, payload, project_id),
     )
     .await
 }
 
-async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Result<String, String> {
+async fn video_unrecorded(
+    pool: &PgPool,
+    model_id: i64,
+    payload: Value,
+    project_id: Option<i64>,
+) -> Result<String, String> {
     let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
     let response = factory
         .video(model_id, payload)
         .await
         .map_err(normalized_app_error)?;
     if !response.url.is_empty() {
-        return Ok(response.url);
+        return persist_video_result(response.url, project_id).await;
     }
     let task_id = response
         .task_id
@@ -449,7 +474,7 @@ async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Resul
             .await
             .map_err(normalized_app_error)?;
         if !result.url.is_empty() {
-            return Ok(result.url);
+            return persist_video_result(result.url, project_id).await;
         }
         let state = result
             .raw
@@ -476,6 +501,13 @@ async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Resul
         }
     }
     Err(format!("视频任务 {task_id} 等待超时"))
+}
+
+async fn persist_video_result(url: String, project_id: Option<i64>) -> Result<String, String> {
+    match project_id {
+        Some(project_id) => crate::toonflow_storage::persist_remote_video(&url, project_id).await,
+        None => Ok(url),
+    }
 }
 pub async fn speech(
     pool: &PgPool,

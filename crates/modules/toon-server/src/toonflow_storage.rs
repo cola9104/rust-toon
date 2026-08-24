@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use axum::{
     body::Body,
     extract::Path,
-    http::{HeaderValue, Response},
+    http::{HeaderMap, HeaderValue, Response, StatusCode, header as http_header},
 };
 
 type HmacSha256 = Hmac<Sha256>;
@@ -50,6 +50,15 @@ async fn signed_request(
     object_key: Option<&str>,
     body: Vec<u8>,
 ) -> Result<reqwest::Response, String> {
+    signed_request_with_range(method, object_key, body, None).await
+}
+
+async fn signed_request_with_range(
+    method: Method,
+    object_key: Option<&str>,
+    body: Vec<u8>,
+    range: Option<&str>,
+) -> Result<reqwest::Response, String> {
     let config = config();
     let canonical_uri = match object_key {
         Some(key) => format!("/{}/{}", config.bucket, key.trim_start_matches('/')),
@@ -86,16 +95,17 @@ async fn signed_request(
         "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
         config.access_key,
     );
-    reqwest::Client::new()
+    let mut request = reqwest::Client::new()
         .request(method, url)
         .header(header::HOST, host)
         .header("x-amz-content-sha256", payload_hash)
         .header("x-amz-date", amz_date)
         .header(header::AUTHORIZATION, authorization)
-        .body(body)
-        .send()
-        .await
-        .map_err(|error| error.to_string())
+        .body(body);
+    if let Some(range) = range {
+        request = request.header(header::RANGE, range);
+    }
+    request.send().await.map_err(|error| error.to_string())
 }
 
 async fn ensure_bucket() -> Result<(), String> {
@@ -151,6 +161,25 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     Ok(format!("/toonflow/assets/files/{key}"))
 }
 
+pub async fn persist_remote_video(url: &str, project_id: i64) -> Result<String, String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Ok(url.to_string());
+    }
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("下载生成视频失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("下载生成视频失败：HTTP {}", response.status()));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| format!("读取生成视频失败：{error}"))?;
+    persist_asset_bytes(project_id, "videos", "mp4", bytes.to_vec()).await
+}
+
 pub async fn persist_asset_bytes(
     project_id: i64,
     category: &str,
@@ -189,29 +218,40 @@ async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    if content_type == "application/octet-stream" {
-        content_type = match key
-            .rsplit('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_lowercase()
-            .as_str()
-        {
-            "jpg" | "jpeg" => "image/jpeg",
-            "png" => "image/png",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            "mp3" | "mpeg" => "audio/mpeg",
-            "wav" => "audio/wav",
-            "m4a" => "audio/mp4",
-            "flac" => "audio/flac",
-            "aiff" => "audio/aiff",
-            _ => "application/octet-stream",
-        }
-        .to_string();
+    if content_type.split(';').next().is_some_and(|value| {
+        value
+            .trim()
+            .eq_ignore_ascii_case("application/octet-stream")
+    }) {
+        content_type = stored_content_type_for_key(key).to_string();
     }
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
     Ok((content_type, bytes.to_vec()))
+}
+
+fn stored_content_type_for_key(key: &str) -> &'static str {
+    match key
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp3" | "mpeg" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
+        "aiff" => "audio/aiff",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "ogv" => "video/ogg",
+        _ => "application/octet-stream",
+    }
 }
 
 pub async fn image_data_url(file_path: &str) -> Result<String, String> {
@@ -226,6 +266,23 @@ pub async fn image_data_url(file_path: &str) -> Result<String, String> {
         "data:{content_type};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+pub(crate) async fn normalize_image_reference(reference: &str) -> Result<String, String> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err("参考图地址不能为空".to_string());
+    }
+    if reference.starts_with("data:")
+        || reference.starts_with("http://")
+        || reference.starts_with("https://")
+    {
+        return Ok(reference.to_string());
+    }
+    if is_asset_image_path(reference) {
+        return image_data_url(reference).await;
+    }
+    Err(format!("不支持的参考图地址：{reference}"))
 }
 
 pub(crate) fn is_asset_image_path(file_path: &str) -> bool {
@@ -320,16 +377,67 @@ fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
-pub async fn serve_image(Path(key): Path<String>) -> Result<Response<Body>, AppError> {
-    let (content_type, bytes) = read_image(&key)
+pub async fn serve_image(
+    Path(key): Path<String>,
+    request_headers: HeaderMap,
+) -> Result<Response<Body>, AppError> {
+    let range = request_headers
+        .get(http_header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let upstream = signed_request_with_range(Method::GET, Some(&key), Vec::new(), range)
         .await
-        .map_err(|_| AppError::not_found("asset image not found"))?;
-    let mut response = Response::new(Body::from(bytes));
+        .map_err(|_| AppError::not_found("asset file not found"))?;
+    if !upstream.status().is_success() {
+        return Err(AppError::not_found("asset file not found"));
+    }
+    let status = if upstream.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+        StatusCode::PARTIAL_CONTENT
+    } else {
+        StatusCode::OK
+    };
+    let upstream_headers = upstream.headers().clone();
+    let bytes = upstream
+        .bytes()
+        .await
+        .map_err(|_| AppError::not_found("asset file not found"))?;
+    let content_type = upstream_headers
+        .get(http_header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            !value
+                .split(';')
+                .next()
+                .is_some_and(|part| part.trim().eq_ignore_ascii_case("application/octet-stream"))
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| stored_content_type_for_key(&key).to_string());
+    let mut response = Response::builder()
+        .status(status)
+        .body(Body::from(bytes.clone()))
+        .map_err(|_| AppError::internal("failed to build asset response"))?;
     response.headers_mut().insert(
-        header::CONTENT_TYPE,
+        http_header::CONTENT_TYPE,
         HeaderValue::from_str(&content_type)
             .map_err(|_| AppError::internal("invalid asset content type"))?,
     );
+    response.headers_mut().insert(
+        http_header::ACCEPT_RANGES,
+        HeaderValue::from_static("bytes"),
+    );
+    response.headers_mut().insert(
+        http_header::CONTENT_LENGTH,
+        HeaderValue::from_str(&bytes.len().to_string())
+            .map_err(|_| AppError::internal("invalid asset content length"))?,
+    );
+    response.headers_mut().insert(
+        http_header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    if let Some(content_range) = upstream_headers.get(http_header::CONTENT_RANGE) {
+        response
+            .headers_mut()
+            .insert(http_header::CONTENT_RANGE, content_range.clone());
+    }
     Ok(response)
 }
 
@@ -364,6 +472,18 @@ mod tests {
             "/api/toonflow/assets/files/{key}"
         )));
         assert_eq!(asset_image_key("/api/toonflow/assets/files/"), None);
+    }
+
+    #[test]
+    fn detects_video_content_type_from_object_key() {
+        assert_eq!(
+            stored_content_type_for_key("toonflow/assets/1/video.mp4"),
+            "video/mp4"
+        );
+        assert_eq!(
+            stored_content_type_for_key("toonflow/assets/1/video.webm"),
+            "video/webm"
+        );
     }
 
     #[tokio::test]
