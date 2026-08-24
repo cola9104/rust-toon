@@ -159,18 +159,26 @@ pub async fn project_text_tools(
     tools: Vec<Value>,
 ) -> Result<Value, String> {
     let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
-    recorded(pool, "text", &model.to_string(), key, async move {
-        rust_toon_ai_server::AiModelFactory::new(pool.clone())
-            .chat_tools(
-                model,
-                messages,
-                tools,
-                Some(temperature as f64),
-                (tokens > 0).then_some(tokens as u32),
-            )
-            .await
-            .map_err(normalized_app_error)
-    })
+    recorded_with_context(
+        pool,
+        Some(project_id),
+        None,
+        "text",
+        &model.to_string(),
+        key,
+        async move {
+            rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                .chat_tools(
+                    model,
+                    messages,
+                    tools,
+                    Some(temperature as f64),
+                    (tokens > 0).then_some(tokens as u32),
+                )
+                .await
+                .map_err(normalized_app_error)
+        },
+    )
     .await
 }
 
@@ -187,19 +195,27 @@ where
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
-    recorded(pool, "text", &model.to_string(), key, async move {
-        rust_toon_ai_server::AiModelFactory::new(pool.clone())
-            .chat_tools_stream(
-                model,
-                messages,
-                tools,
-                Some(temperature as f64),
-                (tokens > 0).then_some(tokens as u32),
-                on_delta,
-            )
-            .await
-            .map_err(normalized_app_error)
-    })
+    recorded_with_context(
+        pool,
+        Some(project_id),
+        None,
+        "text",
+        &model.to_string(),
+        key,
+        async move {
+            rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                .chat_tools_stream(
+                    model,
+                    messages,
+                    tools,
+                    Some(temperature as f64),
+                    (tokens > 0).then_some(tokens as u32),
+                    on_delta,
+                )
+                .await
+                .map_err(normalized_app_error)
+        },
+    )
     .await
 }
 fn chat_request(
@@ -232,13 +248,21 @@ pub async fn project_text(
     user: &str,
 ) -> Result<String, String> {
     let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
-    recorded(pool, "text", &model.to_string(), key, async move {
-        rust_toon_ai_server::AiModelFactory::new(pool.clone())
-            .chat(model, chat_request(system, user, temperature, tokens))
-            .await
-            .map(|response| response.content)
-            .map_err(normalized_app_error)
-    })
+    recorded_with_context(
+        pool,
+        Some(project_id),
+        None,
+        "text",
+        &model.to_string(),
+        key,
+        async move {
+            rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                .chat(model, chat_request(system, user, temperature, tokens))
+                .await
+                .map(|response| response.content)
+                .map_err(normalized_app_error)
+        },
+    )
     .await
 }
 
@@ -285,17 +309,25 @@ where
     Fut: std::future::Future<Output = Result<(), String>>,
 {
     let (model, temperature, tokens) = project_agent_model(pool, key, project_id).await?;
-    recorded(pool, "text", &model.to_string(), key, async move {
-        rust_toon_ai_server::AiModelFactory::new(pool.clone())
-            .chat_stream(
-                model,
-                chat_request(system, user, temperature, tokens),
-                on_delta,
-            )
-            .await
-            .map(|x| x.content)
-            .map_err(normalized_app_error)
-    })
+    recorded_with_context(
+        pool,
+        Some(project_id),
+        None,
+        "text",
+        &model.to_string(),
+        key,
+        async move {
+            rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                .chat_stream(
+                    model,
+                    chat_request(system, user, temperature, tokens),
+                    on_delta,
+                )
+                .await
+                .map(|x| x.content)
+                .map_err(normalized_app_error)
+        },
+    )
     .await
 }
 fn model_id(value: &str, kind: &str) -> Result<i64, String> {
