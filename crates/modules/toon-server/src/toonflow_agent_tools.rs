@@ -1489,6 +1489,14 @@ pub(crate) async fn execute_inner(
                 .get("prompt")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            let track = request
+                .arguments
+                .get("track")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("main")
+                .to_string();
             crate::toonflow_image_workflow::validate_storyboard_prompt(
                 prompt,
                 associated_asset_ids.len(),
@@ -1507,8 +1515,48 @@ pub(crate) async fn execute_inner(
                 .begin()
                 .await
                 .map_err(|_| AppError::internal("failed to add storyboard"))?;
-            sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration)VALUES($1,$2,$3,'未生成',$4)").bind(track_id).bind(request.project_id).bind(script_id).bind(duration as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add storyboard track"))?;
-            sqlx::query("INSERT INTO toonflow.storyboards(id,script_id,prompt,duration,state,track_id,track,video_desc,should_generate_image,project_id,index,create_time)VALUES($1,$2,$3,$4,'未生成',$5,$6,$7,$8,$9,$10,$11)").bind(id).bind(script_id).bind(prompt).bind(duration.to_string()).bind(track_id).bind(request.arguments.get("track").and_then(Value::as_str).unwrap_or("main")).bind(request.arguments.get("videoDesc").and_then(Value::as_str).unwrap_or_default()).bind(if should{1}else{0}).bind(request.project_id).bind(index).bind(now_ms()).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to add storyboard"))?;
+            let track_id: i64 = if let Some(existing_track_id) = sqlx::query_scalar(
+                "SELECT track_id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND track=$3 AND track_id IS NOT NULL ORDER BY index,id LIMIT 1",
+            )
+            .bind(request.project_id)
+            .bind(script_id)
+            .bind(&track)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to find storyboard track"))?
+            {
+                existing_track_id
+            } else {
+                sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration)VALUES($1,$2,$3,'未生成',$4)")
+                    .bind(track_id)
+                    .bind(request.project_id)
+                    .bind(script_id)
+                    .bind(duration as i32)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to add storyboard track"))?;
+                track_id
+            };
+            sqlx::query("INSERT INTO toonflow.storyboards(id,script_id,prompt,duration,state,track_id,track,video_desc,should_generate_image,project_id,index,create_time)VALUES($1,$2,$3,$4,'未生成',$5,$6,$7,$8,$9,$10,$11)")
+                .bind(id)
+                .bind(script_id)
+                .bind(prompt)
+                .bind(duration.to_string())
+                .bind(track_id)
+                .bind(&track)
+                .bind(request.arguments.get("videoDesc").and_then(Value::as_str).unwrap_or_default())
+                .bind(if should { 1 } else { 0 })
+                .bind(request.project_id)
+                .bind(index)
+                .bind(now_ms())
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to add storyboard"))?;
+            sqlx::query("UPDATE toonflow.video_tracks SET duration=(SELECT coalesce(sum(CASE WHEN duration ~ '^[0-9]+$' THEN duration::integer ELSE 0 END),0)::integer FROM toonflow.storyboards WHERE track_id=$1) WHERE id=$1")
+                .bind(track_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to update storyboard track duration"))?;
             if !associated_asset_ids.is_empty() {
                 for (sort_order, asset_id) in associated_asset_ids.into_iter().enumerate() {
                     sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order)VALUES($1,$2,$3) ON CONFLICT(storyboard_id,asset_id) DO UPDATE SET sort_order=excluded.sort_order").bind(id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
@@ -1525,16 +1573,16 @@ pub(crate) async fn execute_inner(
                 .get("id")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AppError::bad_request("缺少 id"))?;
-            let current_prompt: Option<String> = sqlx::query_scalar(
-                "SELECT prompt FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
+            let current: Option<(String, i64, Option<i64>, Option<String>)> = sqlx::query_as(
+                "SELECT prompt,script_id,track_id,track FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
             )
             .bind(id)
             .bind(request.project_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to load storyboard"))?;
-            let current_prompt =
-                current_prompt.ok_or_else(|| AppError::not_found("storyboard not found"))?;
+                .await
+                .map_err(|_| AppError::internal("failed to load storyboard"))?;
+            let (current_prompt, script_id, current_track_id, current_track) =
+                current.ok_or_else(|| AppError::not_found("storyboard not found"))?;
             let prompt = request.arguments.get("prompt").and_then(Value::as_str);
             let associated_asset_ids = request
                 .arguments
@@ -1564,7 +1612,43 @@ pub(crate) async fn execute_inner(
                 .begin()
                 .await
                 .map_err(|_| AppError::internal("failed to begin storyboard update"))?;
-            let result=sqlx::query("UPDATE toonflow.storyboards SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),duration=coalesce($5,duration),track=coalesce($6,track),should_generate_image=coalesce($7,should_generate_image) WHERE id=$1 AND project_id=$2").bind(id).bind(request.project_id).bind(prompt).bind(request.arguments.get("videoDesc").and_then(Value::as_str)).bind(request.arguments.get("duration").and_then(Value::as_i64).map(|v|v.to_string())).bind(request.arguments.get("track").and_then(Value::as_str)).bind(request.arguments.get("shouldGenerateImage").and_then(Value::as_bool).map(|v|if v{1}else{0})).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to update storyboard"))?;
+            let target_track = request
+                .arguments
+                .get("track")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(current_track.as_deref().unwrap_or("main"))
+                .to_string();
+            let target_track_id = if (request.arguments.get("track").is_none()
+                || current_track.as_deref() == Some(target_track.as_str()))
+                && current_track_id.is_some()
+            {
+                current_track_id
+            } else if let Some(existing_track_id) = sqlx::query_scalar(
+                "SELECT track_id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND track=$3 AND id<>$4 AND track_id IS NOT NULL ORDER BY index,id LIMIT 1",
+            )
+            .bind(request.project_id)
+            .bind(script_id)
+            .bind(&target_track)
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to find target storyboard track"))?
+            {
+                Some(existing_track_id)
+            } else {
+                let new_track_id = now_ms() * 1000 + 1;
+                sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration) VALUES($1,$2,$3,'未生成',0)")
+                    .bind(new_track_id)
+                    .bind(request.project_id)
+                    .bind(script_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AppError::internal("failed to create target storyboard track"))?;
+                Some(new_track_id)
+            };
+            let result=sqlx::query("UPDATE toonflow.storyboards SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),duration=coalesce($5,duration),track=$6,track_id=$7,should_generate_image=coalesce($8,should_generate_image) WHERE id=$1 AND project_id=$2").bind(id).bind(request.project_id).bind(prompt).bind(request.arguments.get("videoDesc").and_then(Value::as_str)).bind(request.arguments.get("duration").and_then(Value::as_i64).map(|v|v.to_string())).bind(&target_track).bind(target_track_id).bind(request.arguments.get("shouldGenerateImage").and_then(Value::as_bool).map(|v|if v{1}else{0})).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to update storyboard"))?;
             if result.rows_affected() == 0 {
                 return Err(AppError::not_found("storyboard not found"));
             }
@@ -1576,6 +1660,36 @@ pub(crate) async fn execute_inner(
                     .map_err(|_| AppError::internal("failed to reset storyboard assets"))?;
                 for (sort_order, asset_id) in asset_ids.into_iter().enumerate() {
                     sqlx::query("INSERT INTO toonflow.assets_storyboards(storyboard_id,asset_id,sort_order)VALUES($1,$2,$3)").bind(id).bind(asset_id).bind(sort_order as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboard asset"))?;
+                }
+            }
+            let mut affected_track_ids = vec![current_track_id, target_track_id]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            affected_track_ids.sort_unstable();
+            affected_track_ids.dedup();
+            for affected_track_id in affected_track_ids {
+                let storyboard_count: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM toonflow.storyboards WHERE track_id=$1",
+                )
+                .bind(affected_track_id)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| AppError::internal("failed to inspect storyboard track"))?;
+                if storyboard_count == 0 {
+                    sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=$1")
+                        .bind(affected_track_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| {
+                            AppError::internal("failed to remove empty storyboard track")
+                        })?;
+                } else {
+                    sqlx::query("UPDATE toonflow.video_tracks SET duration=(SELECT coalesce(sum(CASE WHEN duration ~ '^[0-9]+$' THEN duration::integer ELSE 0 END),0)::integer FROM toonflow.storyboards WHERE track_id=$1) WHERE id=$1")
+                        .bind(affected_track_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| AppError::internal("failed to update storyboard track duration"))?;
                 }
             }
             tx.commit()

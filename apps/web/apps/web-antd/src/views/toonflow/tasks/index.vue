@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Page } from '@vben/common-ui';
 import { Button, Card, Drawer, Empty, Progress, Select, Space, Table, Tag } from 'ant-design-vue';
 import { getTasks } from '#/api/toonflow';
+import { assetFileUrl } from '../assets/asset-types';
 import '../shared/page-card.css';
 import '../styles/toon-theme.css';
 
@@ -43,6 +44,23 @@ function schedule() {
 function onVisibilityChange() { schedule(); if (!document.hidden) void load(true); }
 function openDetail(record: Record<string, any>) { detail.value = record as ToonflowApi.Task; }
 function filterByState(next: string) { state.value = state.value === next ? 'all' : next; }
+function exportVideoUrl(task?: { taskClass?: string; state?: string; relatedObjects?: string }) {
+  if (!task || task.taskClass !== 'videoExport' || !['success', 'completed'].includes(task.state?.toLowerCase() ?? '')) return '';
+  try {
+    const payload = JSON.parse(task.relatedObjects || '{}') as { url?: unknown };
+    return typeof payload.url === 'string' ? assetFileUrl(payload.url) : '';
+  } catch {
+    return '';
+  }
+}
+function downloadExportVideo(task: ToonflowApi.Task) {
+  const url = exportVideoUrl(task);
+  if (!url) return;
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `toonflow-export-${task.id}.mp4`;
+  link.click();
+}
 
 onMounted(() => { void load(); schedule(); document.addEventListener('visibilitychange', onVisibilityChange); });
 onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventListener('visibilitychange', onVisibilityChange); });
@@ -80,12 +98,12 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
           <span v-else-if="column.dataIndex === 'relatedObjects'" class="related-object">{{ record.relatedObjects || '—' }}</span>
           <template v-else-if="column.key === 'startTime'"><span class="time-text">{{ record.startTime ? new Date(record.startTime).toLocaleString() : '—' }}</span></template>
           <Tag v-else-if="column.dataIndex === 'state'" :color="color(record.state)" class="state-tag"><span class="state-dot" />{{ stateLabel(record.state) }}</Tag>
-          <Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">查看详情</Button>
+          <Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">{{ exportVideoUrl(record) ? '查看成片' : '查看详情' }}</Button>
         </template>
       </Table>
     </Card>
     <Drawer :open="!!detail" title="任务详情" width="480" @close="detail = undefined">
-      <template v-if="detail"><div class="task-detail"><label>任务</label><p>{{ detail.description || '—' }}</p><label>项目</label><p>{{ detail.projectName || '—' }}</p><label>类型 / 模型</label><p>{{ typeLabel(detail.taskClass) }} · {{ modelLabel(detail.model) }}</p><label>关联对象</label><p>{{ detail.relatedObjects || '—' }}</p><label>状态 / 进度</label><p><Tag :color="color(detail.state)">{{ stateLabel(detail.state) }}</Tag><span v-if="progress(detail) !== undefined" class="detail-progress">{{ progress(detail) }}%（{{ detail.progressCurrent ?? 0 }}/{{ detail.progressTotal }}）</span></p><label v-if="detail.retryOfId">重试来源</label><p v-if="detail.retryOfId">任务 #{{ detail.retryOfId }}</p><label>失败原因</label><pre :class="{ error: detail.reason }">{{ detail.reason || '无' }}</pre><label>原始输入</label><pre>{{ detail.input && Object.keys(detail.input).length ? JSON.stringify(detail.input, null, 2) : '暂无记录（旧任务）' }}</pre></div></template>
+      <template v-if="detail"><div class="task-detail"><label>任务</label><p>{{ detail.description || '—' }}</p><label>项目</label><p>{{ detail.projectName || '—' }}</p><label>类型 / 模型</label><p>{{ typeLabel(detail.taskClass) }} · {{ modelLabel(detail.model) }}</p><label>关联对象</label><p>{{ detail.relatedObjects || '—' }}</p><section v-if="exportVideoUrl(detail)" class="export-result"><div class="export-result-heading"><b>成片结果</b><Button size="small" type="primary" @click="downloadExportVideo(detail)">下载 MP4</Button></div><video :key="detail.id" :src="exportVideoUrl(detail)" controls playsinline preload="metadata" /></section><label>状态 / 进度</label><p><Tag :color="color(detail.state)">{{ stateLabel(detail.state) }}</Tag><span v-if="progress(detail) !== undefined" class="detail-progress">{{ progress(detail) }}%（{{ detail.progressCurrent ?? 0 }}/{{ detail.progressTotal }}）</span></p><label v-if="detail.retryOfId">重试来源</label><p v-if="detail.retryOfId">任务 #{{ detail.retryOfId }}</p><label>失败原因</label><pre :class="{ error: detail.reason }">{{ detail.reason || '无' }}</pre><label>原始输入</label><pre>{{ detail.input && Object.keys(detail.input).length ? JSON.stringify(detail.input, null, 2) : '暂无记录（旧任务）' }}</pre></div></template>
     </Drawer>
   </Page>
 </template>
@@ -108,7 +126,7 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
 .stat-label { color: var(--ant-color-text-secondary); font-size: 13px; }.stat-card strong { margin-top: 5px; color: var(--ant-color-text); font-size: 28px; font-weight: 650; line-height: 1.1; }.stat-card small { margin-top: 5px; color: var(--ant-color-text-tertiary); font-size: 11px; }
 .task-table { width: 100%; max-width: 100%; overflow: hidden; border: 1px solid var(--toon-line); border-radius: 14px; }.task-table :deep(.ant-table-container) { max-width: 100%; overflow-x: auto; }.task-table :deep(.ant-table-thead > tr > th) { color: var(--ant-color-text-secondary); background: #fafaf8; font-size: 12px; font-weight: 650; }.task-table :deep(.ant-table-tbody > tr > td) { padding-top: 14px; padding-bottom: 14px; }
 .task-name, .project-name { display: flex; align-items: center; gap: 9px; min-width: 0; }.task-name__icon, .project-mark { display: grid; flex: 0 0 auto; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #1677ff; background: #eaf3ff; font-size: 13px; }.task-name strong { display: block; overflow: hidden; max-width: 210px; text-overflow: ellipsis; white-space: nowrap; }.task-name small { display: block; margin-top: 3px; color: var(--ant-color-text-tertiary); font-size: 10px; }.project-mark { width: 24px; height: 24px; color: #7b61ff; background: #f0edff; font-size: 11px; font-weight: 700; }.project-name span:last-child, .related-object { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.model-name, .time-text, .muted { color: var(--ant-color-text-secondary); font-size: 12px; }.related-object { display: block; max-width: 180px; color: var(--ant-color-text-secondary); font-size: 12px; }.type-tag, .state-tag { margin-inline-end: 0; }.state-dot { display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentcolor; vertical-align: middle; }.progress-cell { display: grid; width: 120px; align-items: center; grid-template-columns: 1fr auto; gap: 8px; }.progress-cell :deep(.ant-progress) { margin: 0; }.progress-cell small { color: var(--ant-color-text-secondary); font-size: 11px; white-space: nowrap; }
-.task-detail { display: grid; gap: 5px; }.task-detail label { margin-top: 12px; color: #8c8c8c; font-size: 12px; }.task-detail p { margin: 0; }.task-detail pre { padding: 12px; border-radius: 10px; white-space: pre-wrap; background: #f5f5f5; }.task-detail pre.error { color: #a8071a; background: #fff1f0; }
+.task-detail { display: grid; min-width: 0; max-width: 100%; gap: 5px; overflow-x: hidden; }.task-detail label { margin-top: 12px; color: #8c8c8c; font-size: 12px; }.task-detail p { margin: 0; overflow-wrap: anywhere; word-break: break-word; }.task-detail pre { max-width: 100%; box-sizing: border-box; padding: 12px; overflow-x: auto; border-radius: 10px; white-space: pre-wrap; background: #f5f5f5; }.task-detail pre.error { color: #a8071a; background: #fff1f0; }.export-result { display: grid; min-width: 0; max-width: 100%; gap: 10px; margin-top: 12px; padding: 12px; overflow: hidden; box-sizing: border-box; border: 1px solid var(--ant-color-border-secondary); border-radius: 10px; background: var(--ant-color-fill-quaternary); }.export-result-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }.export-result video { display: block; width: min(420px, 100%); max-width: 100%; height: min(250px, 42vh); min-width: 0; margin: 0; justify-self: start; box-sizing: border-box; border-radius: 7px; background: #000; object-fit: contain; }
 @media (max-width: 720px) { .toonflow-page-card :deep(.ant-card-body) { padding: 14px; } .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .task-toolbar { justify-content: flex-start; width: 100%; } .task-filter, .task-filter--type { width: min(100%, 220px); } }
 @media (max-width: 420px) { .task-stats { grid-template-columns: 1fr; } }
 </style>

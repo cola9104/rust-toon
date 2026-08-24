@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 pub struct ExportRequest {
     pub project_id: i64,
     pub script_id: i64,
+    #[serde(default)]
+    pub video_ids: Vec<i64>,
 }
 
 async fn ffmpeg_available() -> bool {
@@ -217,8 +219,24 @@ async fn run_export(
     project_id: i64,
     script_id: i64,
     task_id: i64,
+    video_ids: Vec<i64>,
 ) -> Result<String, String> {
-    let sources:Vec<String>=sqlx::query_scalar("SELECT v.file_path FROM toonflow.video_tracks t JOIN toonflow.videos v ON v.id=t.video_id WHERE t.project_id=$1 AND t.script_id=$2 AND v.state='生成成功' AND coalesce(v.file_path,'')<>'' ORDER BY t.sort_order,t.id").bind(project_id).bind(script_id).fetch_all(&pool).await.map_err(|error|error.to_string())?;
+    let sources: Vec<String> = if video_ids.is_empty() {
+        sqlx::query_scalar("SELECT v.file_path FROM toonflow.video_tracks t JOIN toonflow.videos v ON v.id=COALESCE((SELECT selected.id FROM toonflow.videos selected WHERE selected.id=t.video_id AND selected.state='生成成功' AND coalesce(selected.file_path,'')<>''),(SELECT latest.id FROM toonflow.videos latest WHERE latest.video_track_id=t.id AND latest.state='生成成功' AND coalesce(latest.file_path,'')<>'' ORDER BY latest.time DESC,latest.id DESC LIMIT 1)) WHERE t.project_id=$1 AND t.script_id=$2 ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
+            .bind(project_id)
+            .bind(script_id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        sqlx::query_scalar("SELECT v.file_path FROM toonflow.videos v JOIN toonflow.video_tracks t ON t.id=v.video_track_id WHERE v.id=ANY($3) AND v.project_id=$1 AND v.script_id=$2 AND v.state='生成成功' AND coalesce(v.file_path,'')<>'' ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
+            .bind(project_id)
+            .bind(script_id)
+            .bind(&video_ids)
+            .fetch_all(&pool)
+            .await
+            .map_err(|error| error.to_string())?
+    };
     if sources.is_empty() {
         return Err("请先为每条轨道选择已生成的视频".into());
     }
@@ -332,13 +350,42 @@ pub async fn export(
         ));
     }
     let task_id = chrono::Utc::now().timestamp_millis();
+    let video_ids = request.video_ids;
+    let task_video_ids = video_ids.clone();
+    let related_objects = json!({
+        "scriptId": request.script_id,
+        "videoIds": &task_video_ids,
+    })
+    .to_string();
+    let input = json!({
+        "projectId": request.project_id,
+        "scriptId": request.script_id,
+        "videoIds": &video_ids,
+    });
     sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'videoExport',$3,'ffmpeg','合并选中视频为最终成片','running',$1,$4,0,NULL)")
-        .bind(task_id).bind(request.project_id).bind(json!({"scriptId":request.script_id}).to_string()).bind(json!({"projectId":request.project_id,"scriptId":request.script_id})).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create export task"))?;
+        .bind(task_id)
+        .bind(request.project_id)
+        .bind(related_objects)
+        .bind(input)
+        .execute(&state.pool)
+        .await
+        .map_err(|error| {
+            tracing::error!(task_id, error = %error, "failed to create video export task");
+            AppError::internal("failed to create export task")
+        })?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
-        match run_export(pool.clone(), request.project_id, request.script_id, task_id).await {
+        match run_export(
+            pool.clone(),
+            request.project_id,
+            request.script_id,
+            task_id,
+            video_ids,
+        )
+        .await
+        {
             Ok(url) => {
-                let _=sqlx::query("UPDATE toonflow.tasks SET state='success',related_objects=$2,reason=NULL WHERE id=$1").bind(task_id).bind(json!({"scriptId":request.script_id,"url":url}).to_string()).execute(&pool).await;
+                let _=sqlx::query("UPDATE toonflow.tasks SET state='success',related_objects=$2,reason=NULL WHERE id=$1").bind(task_id).bind(json!({"scriptId":request.script_id,"videoIds":task_video_ids,"url":url}).to_string()).execute(&pool).await;
             }
             Err(reason) => {
                 let _ =

@@ -62,7 +62,6 @@ import {
   updateImageFlow,
   updateStoryboardUrl,
   updateVideoTrackPrompt,
-  updateVideoContinuityMode,
   uploadFlowImage,
 } from '#/api/toonflow';
 
@@ -77,6 +76,8 @@ import {
   renderMarkdown,
 } from '../production-content';
 import { normalizeProductionWorkflow } from '../production-workflow';
+import { storyboardsForTrack as findStoryboardsForTrack } from '../storyboard-track-groups';
+import { defaultVideoGenerationMode, videoFrameItems } from '../video-generation-mode';
 import ProductionFlowCanvas from '../ProductionFlowCanvas.vue';
 import NovelPanel from './NovelPanel.vue';
 import ProductionPanel from './ProductionPanel.vue';
@@ -391,9 +392,14 @@ async function loadFlow() {
   const flow = await getFlowData(projectId.value, selectedScriptId.value);
   flowText.value = JSON.stringify(flow, null, 2);
   productionAssets.value = Array.isArray(flow.assets) ? flow.assets : [];
-  storyboards.value = await getStoryboards(projectId.value, selectedScriptId.value);
+  // getVideoWorkbench also repairs legacy rows whose storyboards share one
+  // logical track label but still point at different video track ids. Load it
+  // first so the storyboard list reads the repaired track_id values in the
+  // same refresh cycle; otherwise the first image can appear as Track 1/Shot 1
+  // and the second image as Track 2/Shot 1 until the next manual refresh.
   const workbench = await getVideoWorkbench(projectId.value, selectedScriptId.value);
   videoTracks.value = workbench.trackList ?? [];
+  storyboards.value = await getStoryboards(projectId.value, selectedScriptId.value);
   const workflow = normalizeProductionWorkflow(flow.workflow);
   const latestRuns = await Promise.all(
     workflow.nodes.map((node) =>
@@ -590,19 +596,76 @@ async function generateDerivedAsset(asset: ToonflowApi.Asset) {
   scheduleProductionAssetRefresh();
 }
 
+const positionalVideoModes = new Set(['endFrameOptional', 'singleImage', 'startEndRequired', 'startFrameOptional']);
+const explicitFrameRoles = new Set(['first', 'last', 'first_frame', 'last_frame']);
+
+function storyboardsForTrack(track: any) {
+  return findStoryboardsForTrack(storyboards.value, track?.id);
+}
+
+function storyboardForTrack(track: any) {
+  return storyboardsForTrack(track)[0];
+}
+
+function videoModeForTrack(track: any) {
+  return track?.generation?.mode || defaultVideoGenerationMode(storyboardsForTrack(track).length, videoMode.value);
+}
+
+function storyboardMediaForTrack(track: any) {
+  const medias = Array.isArray(track?.medias) ? track.medias : [];
+  return storyboardsForTrack(track).map((storyboard: any) => {
+    const media = medias.find((item: any) => item.sources === 'storyboard' && Number(item.id) === Number(storyboard.id));
+    return {
+      ...media,
+      id: storyboard.id,
+      src: storyboard.filePath || storyboard.src || media?.src,
+      fileType: 'image',
+      sources: 'storyboard',
+      index: storyboard.index,
+    };
+  });
+}
+
+function videoUploadData(track: any, mode: unknown) {
+  const medias = track.medias || [];
+  if (typeof mode !== 'string' || !positionalVideoModes.has(mode)) return medias;
+  const storyboardMedias = videoFrameItems(storyboardMediaForTrack(track), mode);
+  const explicitFrameMedias = medias.filter(
+    (media: any) => media.sources !== 'storyboard' && explicitFrameRoles.has(media.frameRole),
+  );
+  return [...storyboardMedias, ...explicitFrameMedias];
+}
+
 async function generateSelectedVideoPrompts(tracks: any[]) {
   if (!project.value?.videoModel) return message.warning('请先配置项目视频模型');
-  await batchGenerateVideoPrompts({ projectId: projectId.value, trackData: tracks.map((track) => ({ trackId: track.id, info: track.medias || [] })), mode: videoMode.value, model: project.value.videoModel, concurrentCount: 5 });
-  message.success(`已提交 ${tracks.length} 条提示词任务`);
-  window.setTimeout(loadFlow, 2500);
+  const mode = videoModeForTrack(tracks[0]);
+  tracks.forEach((track) => { track.promptGenerating = true; });
+  try {
+    await batchGenerateVideoPrompts({ projectId: projectId.value, trackData: tracks.map((track) => ({ trackId: track.id, info: track.medias || [] })), mode, model: project.value.videoModel, concurrentCount: 5 });
+    message.success(`已提交 ${tracks.length} 条提示词任务`);
+    window.setTimeout(loadFlow, 2500);
+  } finally {
+    tracks.forEach((track) => { track.promptGenerating = false; });
+  }
 }
 
 async function generateSelectedVideos(tracks: any[]) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先选择剧本并配置视频模型');
-  const first = tracks[0]?.generation || {};
-  await batchGenerateVideos({ projectId: projectId.value, scriptId: selectedScriptId.value, trackData: tracks.map((track) => ({ trackId: track.id, uploadData: track.medias || [], prompt: track.prompt || '', duration: track.generation?.duration || track.duration || 5, continuityMode: track.generation?.continuityMode || track.continuityMode || first.continuityMode || 'auto' })), model: first.model || project.value.videoModel, mode: first.mode || videoMode.value, continuityMode: first.continuityMode || 'auto', resolution: first.resolution || '1080p', audio: Boolean(first.audio) });
-  message.success(`已提交 ${tracks.length} 个视频生成任务`);
-  window.setTimeout(loadFlow, 2500);
+  const firstTrack = tracks[0];
+  const first = firstTrack?.generation || {};
+  const mode = first.mode || videoModeForTrack(firstTrack);
+  tracks.forEach((track) => { track.videoGenerating = true; });
+  try {
+    await batchGenerateVideos({ projectId: projectId.value, scriptId: selectedScriptId.value, trackData: tracks.map((track) => {
+    const storyboard = storyboardForTrack(track);
+    return { trackId: track.id, uploadData: videoUploadData(track, mode), prompt: track.prompt || storyboard?.videoDesc || '', duration: track.duration || storyboard?.duration || 4, continuityMode: track.generation?.continuityMode || track.continuityMode || first.continuityMode || 'auto' };
+    }), model: first.model || project.value.videoModel, mode, continuityMode: first.continuityMode || 'auto', resolution: first.resolution || '1080p', audio: first.audio !== false });
+    message.success(`已提交 ${tracks.length} 个视频生成任务`);
+    window.setTimeout(loadFlow, 2500);
+  } catch (error) {
+    tracks.forEach((track) => { track.videoGenerating = false; });
+    throw error;
+  }
 }
 
 function downloadSelectedVideos(tracks: any[]) {
@@ -1487,11 +1550,25 @@ async function openVideoTrack(trackId: number) {
   productionFlowCanvasRef.value?.focusNode('workbench');
   openTrackBinding(track);
 }
-function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=[...new Set<number>((track.medias??[]).map((media:any)=>media.id))];trackBindingOpen.value=true}
+function openTrackBinding(track:any){
+  trackBindingTarget.value=track;
+  trackBindingStoryboardIds.value=[...new Set<number>((track.medias??[])
+    .filter((media:any)=>media.sources==='storyboard')
+    .map((media:any)=>Number(media.id)))];
+  trackBindingOpen.value=true;
+}
 async function confirmTrackBinding(){const track=trackBindingTarget.value;if(!track)return;const storyboardIds=[...new Set<number>(trackBindingStoryboardIds.value)];await bindTrackStoryboards(track.id,storyboardIds);trackBindingOpen.value=false;await loadFlow();message.success('分镜已移入该轨道')}
 async function saveTrackPrompt(track:any) { await updateVideoTrackPrompt(track.id, track.prompt || ''); message.success('视频提示词已保存'); }
-async function updateContinuityMode(track:any) { const mode = track.generation?.continuityMode || track.continuityMode || 'auto'; await updateVideoContinuityMode(track.id, mode); track.continuityMode = mode; }
-async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoMode.value}); message.success('视频提示词已生成'); }
+async function createVideoPrompt(track:any) {
+  if (!project.value?.videoModel) return message.warning('请先配置视频模型');
+  track.promptGenerating = true;
+  try {
+    track.prompt = await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoModeForTrack(track)});
+    message.success('视频提示词已生成');
+  } finally {
+    track.promptGenerating = false;
+  }
+}
 let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
 function startVideoPolling() {
   if (videoPollTimer) clearTimeout(videoPollTimer);
@@ -1501,6 +1578,7 @@ function startVideoPolling() {
       (track.videoList ?? []).filter((video: any) => video.state === '生成中').map((video: any) => video.id),
     );
     if (!generating.length) {
+      videoTracks.value.forEach((track: any) => { track.videoGenerating = false; });
       videoPollTimer = undefined;
       return;
     }
@@ -1516,6 +1594,7 @@ function startVideoPolling() {
       const updateMap = new Map(updates.map((video) => [video.id, video]));
       videoTracks.value = videoTracks.value.map((track: any) => ({
         ...track,
+        videoGenerating: (track.videoList ?? []).some((video: any) => video.state === '生成中'),
         videoList: (track.videoList ?? []).map((video: any) => ({
           ...video,
           ...(updateMap.get(video.id) ?? {}),
@@ -1531,8 +1610,16 @@ function startVideoPolling() {
 async function generateVideo(track:any) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型');
   const options = track.generation ?? {};
-  const medias = [...(track.medias ?? [])];
-  const id = await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:options.model||project.value.videoModel,mode:options.mode||videoMode.value,continuityMode:options.continuityMode||'auto',resolution:options.resolution||'1080p',duration:options.duration||track.duration||5,audio:Boolean(options.audio),uploadData:medias });
+  track.videoGenerating = true;
+  const mode = options.mode || videoModeForTrack(track);
+  const storyboard = storyboardForTrack(track);
+  let id: number;
+  try {
+    id = await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||storyboard?.videoDesc||'',model:options.model||project.value.videoModel,mode,continuityMode:options.continuityMode || track.continuityMode || 'auto',resolution:options.resolution||'1080p',duration:track.duration || storyboard?.duration || 4,audio:options.audio !== false,uploadData:videoUploadData(track, mode) });
+  } catch (error) {
+    track.videoGenerating = false;
+    throw error;
+  }
   track.videoList = [{ id, state: '生成中', src: '', errorReason: undefined }, ...(track.videoList ?? [])];
   message.loading({ content: `轨道 ${track.id} 正在生成视频`, duration: 2, key: `video-${id}` });
   startVideoPolling();
@@ -1540,8 +1627,8 @@ async function generateVideo(track:any) {
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
-async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,continuityMode:track.generation?.continuityMode||'auto',resolution:'1080p',audio:false,uploadData:track.medias??[]});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
-async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
+async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const mode=videoModeForTrack(track);const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode,resolution:'1080p',audio:true,uploadData:videoUploadData(track,mode)});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
+async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}，完成后可到任务中心预览或下载`)}
 
 const panelContext = reactive({
   projectId, project, imageQuality, videoMode, novels, novelColumns, importNovelFile,
@@ -1564,7 +1651,7 @@ const panelContext = reactive({
   generateVideo, createVideoPrompt, openVideoTrack, retryVideo,
   retryStoryboardWorkflow, retryProductionWorkflowNode, runProductionWorkflowNode,
   runProductionWorkflowSequence, deleteStoryboard, saveStoryboardOrder,
-  saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, updateContinuityMode, chooseVideo,
+  saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, chooseVideo,
   updateProductionFlowSection, resetProductionAgent, onProductionAgentActivity,
   clearProductionAgentMemory, previewProductionFlowSection, confirmTrackBinding,
   openAssets: () => router.push({ path: '/toonflow/assets', query: { projectId: projectId.value } }),

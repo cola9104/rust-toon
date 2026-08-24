@@ -28,6 +28,33 @@
   box-shadow: 0 6px 20px rgb(15 23 42 / 8%);
   backdrop-filter: blur(8px);
 }
+.workflow-toolbar {
+  min-height: 42px;
+  max-height: 42px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.workflow-toolbar-actions {
+  min-width: 0;
+  max-width: 100%;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+.workflow-toolbar-actions > .ant-typography {
+  line-height: 22px;
+  white-space: nowrap;
+}
+.workflow-toolbar-title {
+  display: inline-flex;
+  height: 22px;
+  align-items: center;
+  flex: 0 0 auto;
+  line-height: 22px;
+  white-space: nowrap;
+}
 .production-flow-shell.space-panning,
 .production-flow-shell.space-panning * { cursor: grab !important; }
 

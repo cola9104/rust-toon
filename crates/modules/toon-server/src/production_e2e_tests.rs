@@ -197,6 +197,7 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         Json(toonflow_video_export::ExportRequest {
             project_id,
             script_id,
+            video_ids: vec![],
         }),
     )
     .await
