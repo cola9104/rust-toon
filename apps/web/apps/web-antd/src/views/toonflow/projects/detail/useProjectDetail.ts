@@ -62,6 +62,7 @@ import {
   updateImageFlow,
   updateStoryboardUrl,
   updateVideoTrackPrompt,
+  updateVideoContinuityMode,
   uploadFlowImage,
 } from '#/api/toonflow';
 
@@ -599,7 +600,7 @@ async function generateSelectedVideoPrompts(tracks: any[]) {
 async function generateSelectedVideos(tracks: any[]) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先选择剧本并配置视频模型');
   const first = tracks[0]?.generation || {};
-  await batchGenerateVideos({ projectId: projectId.value, scriptId: selectedScriptId.value, trackData: tracks.map((track) => ({ trackId: track.id, uploadData: track.medias || [], prompt: track.prompt || '', duration: track.generation?.duration || track.duration || 5 })), model: first.model || project.value.videoModel, mode: first.mode || videoMode.value, resolution: first.resolution || '1080p', audio: Boolean(first.audio) });
+  await batchGenerateVideos({ projectId: projectId.value, scriptId: selectedScriptId.value, trackData: tracks.map((track) => ({ trackId: track.id, uploadData: track.medias || [], prompt: track.prompt || '', duration: track.generation?.duration || track.duration || 5, continuityMode: track.generation?.continuityMode || track.continuityMode || first.continuityMode || 'auto' })), model: first.model || project.value.videoModel, mode: first.mode || videoMode.value, continuityMode: first.continuityMode || 'auto', resolution: first.resolution || '1080p', audio: Boolean(first.audio) });
   message.success(`已提交 ${tracks.length} 个视频生成任务`);
   window.setTimeout(loadFlow, 2500);
 }
@@ -1489,6 +1490,7 @@ async function openVideoTrack(trackId: number) {
 function openTrackBinding(track:any){trackBindingTarget.value=track;trackBindingStoryboardIds.value=[...new Set<number>((track.medias??[]).map((media:any)=>media.id))];trackBindingOpen.value=true}
 async function confirmTrackBinding(){const track=trackBindingTarget.value;if(!track)return;const storyboardIds=[...new Set<number>(trackBindingStoryboardIds.value)];await bindTrackStoryboards(track.id,storyboardIds);trackBindingOpen.value=false;await loadFlow();message.success('分镜已移入该轨道')}
 async function saveTrackPrompt(track:any) { await updateVideoTrackPrompt(track.id, track.prompt || ''); message.success('视频提示词已保存'); }
+async function updateContinuityMode(track:any) { const mode = track.generation?.continuityMode || track.continuityMode || 'auto'; await updateVideoContinuityMode(track.id, mode); track.continuityMode = mode; }
 async function createVideoPrompt(track:any) { if (!project.value?.videoModel) return message.warning('请先配置视频模型'); track.prompt=await generateVideoPrompt({trackId:track.id,projectId:projectId.value,info:track.medias??[],model:project.value.videoModel,mode:videoMode.value}); message.success('视频提示词已生成'); }
 let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
 function startVideoPolling() {
@@ -1530,7 +1532,7 @@ async function generateVideo(track:any) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型');
   const options = track.generation ?? {};
   const medias = [...(track.medias ?? [])];
-  const id = await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:options.model||project.value.videoModel,mode:options.mode||videoMode.value,resolution:options.resolution||'1080p',duration:options.duration||track.duration||5,audio:Boolean(options.audio),uploadData:medias });
+  const id = await generateTrackVideo({ projectId:projectId.value,scriptId:selectedScriptId.value,trackId:track.id,prompt:track.prompt||'',model:options.model||project.value.videoModel,mode:options.mode||videoMode.value,continuityMode:options.continuityMode||'auto',resolution:options.resolution||'1080p',duration:options.duration||track.duration||5,audio:Boolean(options.audio),uploadData:medias });
   track.videoList = [{ id, state: '生成中', src: '', errorReason: undefined }, ...(track.videoList ?? [])];
   message.loading({ content: `轨道 ${track.id} 正在生成视频`, duration: 2, key: `video-${id}` });
   startVideoPolling();
@@ -1538,7 +1540,7 @@ async function generateVideo(track:any) {
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
-async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,resolution:'1080p',audio:false,uploadData:track.medias??[]});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
+async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode:videoMode.value,continuityMode:track.generation?.continuityMode||'auto',resolution:'1080p',audio:false,uploadData:track.medias??[]});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
 async function exportVideo(){if(!selectedScriptId.value)return message.warning('请先选择剧本');const result=await exportFinalVideo(projectId.value,selectedScriptId.value);message.success(`成片导出任务 ${result.taskId} 已提交，请到任务中心查看`)}
 
 const panelContext = reactive({
@@ -1562,7 +1564,7 @@ const panelContext = reactive({
   generateVideo, createVideoPrompt, openVideoTrack, retryVideo,
   retryStoryboardWorkflow, retryProductionWorkflowNode, runProductionWorkflowNode,
   runProductionWorkflowSequence, deleteStoryboard, saveStoryboardOrder,
-  saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, chooseVideo,
+  saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, updateContinuityMode, chooseVideo,
   updateProductionFlowSection, resetProductionAgent, onProductionAgentActivity,
   clearProductionAgentMemory, previewProductionFlowSection, confirmTrackBinding,
   openAssets: () => router.push({ path: '/toonflow/assets', query: { projectId: projectId.value } }),

@@ -97,6 +97,7 @@ const emit = defineEmits<{
   savePositions: [positions: Record<string, { x: number; y: number }>];
   saveWorkflow: [workflow: ProductionWorkflowDefinition];
   saveVideoPrompt: [track: any];
+  updateContinuityMode: [track: any];
   selectTrackVideo: [track: any, video: any];
   updateFlowSection: [key: 'scriptPlan' | 'storyboardTable', value: string];
   removeStoryboard: [storyboard: ToonflowApi.Storyboard];
@@ -825,6 +826,7 @@ onBeforeUnmount(() => {
         @retry-video="(video, track) => emit('retryTrackVideo', video, track)"
         @reorder-storyboards="emit('reorderStoryboards', $event)"
         @save-prompt="emit('saveVideoPrompt', $event)"
+        @update-continuity-mode="emit('updateContinuityMode', $event)"
         @select-video="(track, video) => emit('selectTrackVideo', track, video)"
         @export-storyboard-images="emit('exportStoryboardImages', $event)"
         @export-video="emit('exportVideo')"

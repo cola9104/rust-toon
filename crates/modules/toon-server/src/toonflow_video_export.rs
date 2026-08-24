@@ -16,13 +16,167 @@ pub struct ExportRequest {
 
 async fn ffmpeg_available() -> bool {
     tokio::task::spawn_blocking(|| {
-        std::process::Command::new("ffmpeg")
+        let ffmpeg = std::process::Command::new("ffmpeg")
             .arg("-version")
             .output()
-            .is_ok_and(|output| output.status.success())
+            .is_ok_and(|output| output.status.success());
+        let ffprobe = std::process::Command::new("ffprobe")
+            .arg("-version")
+            .output()
+            .is_ok_and(|output| output.status.success());
+        ffmpeg && ffprobe
     })
     .await
     .unwrap_or(false)
+}
+
+async fn probe_dimensions(path: &Path) -> Result<(u32, u32), String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+            ])
+            .arg(path)
+            .output()
+            .map_err(|error| format!("探测视频尺寸失败：{error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "探测视频尺寸失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let value = String::from_utf8_lossy(&output.stdout);
+        let (width, height) = value
+            .trim()
+            .split_once('x')
+            .ok_or_else(|| "无法识别视频尺寸".to_string())?;
+        Ok((
+            width.parse().map_err(|_| "无法识别视频宽度".to_string())?,
+            height.parse().map_err(|_| "无法识别视频高度".to_string())?,
+        ))
+    })
+    .await
+    .map_err(|error| format!("探测视频尺寸任务异常：{error}"))?
+}
+
+async fn probe_has_audio(path: &Path) -> Result<bool, String> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+            ])
+            .arg(path)
+            .output()
+            .map_err(|error| format!("探测视频音频失败：{error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "探测视频音频失败：{}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(!output.stdout.is_empty())
+    })
+    .await
+    .map_err(|error| format!("探测视频音频任务异常：{error}"))?
+}
+
+async fn normalize_video(
+    source: &Path,
+    destination: &Path,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let source = source.to_owned();
+    let destination = destination.to_owned();
+    let has_audio = probe_has_audio(&source).await?;
+    tokio::task::spawn_blocking(move || {
+        let scale = format!(
+            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p,setsar=1,setpts=PTS-STARTPTS"
+        );
+        let mut command = std::process::Command::new("ffmpeg");
+        command.args(["-y", "-fflags", "+genpts", "-i"]);
+        command.arg(&source);
+        if has_audio {
+            command.args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a:0",
+                "-vf",
+                &scale,
+                "-af",
+                "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB",
+            ]);
+        } else {
+            command.args([
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=channel_layout=stereo:sample_rate=48000",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+                "-vf",
+                &scale,
+                "-shortest",
+            ]);
+        }
+        command
+            .args([
+                "-r",
+                "30",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "medium",
+                "-crf",
+                "23",
+                "-c:a",
+                "aac",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart",
+            ])
+            .arg(&destination);
+        let output = command
+            .output()
+            .map_err(|error| format!("启动视频标准化失败：{error}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "视频标准化失败：{}",
+                String::from_utf8_lossy(&output.stderr)
+                    .lines()
+                    .last()
+                    .unwrap_or("FFmpeg 执行失败")
+            ))
+        }
+    })
+    .await
+    .map_err(|error| format!("视频标准化任务异常：{error}"))?
 }
 
 async fn materialize_video(
@@ -90,8 +244,25 @@ async fn run_export(
             .execute(&pool)
             .await;
     }
+    let (first_width, first_height) = probe_dimensions(&files[0]).await?;
+    let (target_width, target_height) = if first_width >= first_height {
+        (1920, 1080)
+    } else {
+        (1080, 1920)
+    };
+    let normalized_dir = work_dir.join("normalized");
+    tokio::fs::create_dir_all(&normalized_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut normalized_files = Vec::with_capacity(files.len());
+    for (index, file) in files.iter().enumerate() {
+        let normalized = normalized_dir.join(format!("{index:04}.mp4"));
+        normalize_video(file, &normalized, target_width, target_height).await?;
+        normalized_files.push(normalized);
+    }
+
     let list_path = work_dir.join("concat.txt");
-    let list = files
+    let list = normalized_files
         .iter()
         .map(|path| format!("file '{}'", path.to_string_lossy().replace('\'', "'\\''")))
         .collect::<Vec<_>>()
@@ -110,7 +281,20 @@ async fn run_export(
         std::process::Command::new("ffmpeg")
             .args(["-y", "-f", "concat", "-safe", "0", "-i"])
             .arg(&list_path)
-            .args(["-c:v", "libx264", "-c:a", "aac", "-movflags", "+faststart"])
+            .args([
+                "-fflags",
+                "+genpts",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                "-ar",
+                "48000",
+                "-ac",
+                "2",
+                "-movflags",
+                "+faststart",
+            ])
             .arg(&ffmpeg_output_path)
             .output()
     })
@@ -144,7 +328,7 @@ pub async fn export(
     require(&user, "toon:scene:update")?;
     if !ffmpeg_available().await {
         return Err(AppError::bad_request(
-            "服务器未安装 FFmpeg，安装后即可使用成片导出",
+            "服务器未安装可用的 FFmpeg/FFprobe，安装后即可使用成片导出",
         ));
     }
     let task_id = chrono::Utc::now().timestamp_millis();

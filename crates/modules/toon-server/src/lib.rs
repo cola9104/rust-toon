@@ -794,6 +794,10 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_video::update_duration),
         )
         .route(
+            "/api/production/workbench/updateVideoContinuityMode",
+            post(toonflow_video::update_continuity_mode),
+        )
+        .route(
             "/api/production/workbench/selectVideo",
             post(toonflow_video::select_video),
         )
@@ -1327,6 +1331,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/production/workbench/updateVideoDuration",
             post(toonflow_video::update_duration),
+        )
+        .route(
+            "/production/workbench/updateVideoContinuityMode",
+            post(toonflow_video::update_continuity_mode),
         )
         .route(
             "/production/workbench/selectVideo",

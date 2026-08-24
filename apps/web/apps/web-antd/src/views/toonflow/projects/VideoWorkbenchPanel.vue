@@ -18,6 +18,7 @@ import {
 } from 'ant-design-vue';
 
 import { assetFileUrl } from '../assets/asset-types';
+import { updateVideoContinuityMode } from '#/api/toonflow';
 import { getModelSimpleList } from '#/api/ai/model/model';
 import StoryboardQuickPreview from './StoryboardQuickPreview.vue';
 
@@ -39,6 +40,7 @@ const emit = defineEmits<{
   retryVideo: [video: any, track: any];
   reorderStoryboards: [ids: number[]];
   savePrompt: [track: any];
+  updateContinuityMode: [track: any];
   selectVideo: [track: any, video: any];
   exportStoryboardImages: [ids: number[]];
   exportVideo: [];
@@ -132,8 +134,15 @@ function generation(track: any) {
     mode: props.videoMode || 'startEndRequired',
     model: props.videoModel,
     resolution: '1080p',
+    continuityMode: track.continuityMode || 'auto',
   };
   return track.generation;
+}
+
+async function persistContinuityMode(track: any) {
+  const mode = track.generation?.continuityMode || track.continuityMode || 'auto';
+  track.continuityMode = mode;
+  await updateVideoContinuityMode(track.id, mode);
 }
 
 function syncAssetReferences(track: any) {
@@ -282,6 +291,7 @@ onMounted(async () => {
                 <div class="parameter-grid">
                   <label><span>视频模型</span><Select v-model:value="generation(activeTrack).model" :options="videoModelOptions" placeholder="选择视频模型" size="small" /></label>
                   <label><span>生成模式</span><Select v-model:value="generation(activeTrack).mode" :options="[{label:'纯文本',value:'text'},{label:'单图首帧',value:'singleImage'},{label:'首尾帧',value:'startEndRequired'},{label:'尾帧可选',value:'endFrameOptional'},{label:'首帧可选',value:'startFrameOptional'}]" size="small" /></label>
+                  <label><span>镜头衔接</span><Select v-model:value="generation(activeTrack).continuityMode" :options="[{label:'自动判断',value:'auto'},{label:'强制使用上一尾帧',value:'always'},{label:'不使用上一尾帧',value:'never'}]" size="small" @change="persistContinuityMode(activeTrack)" /></label>
                   <label><span>分辨率</span><Select v-model:value="generation(activeTrack).resolution" :options="[{label:'720p',value:'720p'},{label:'1080p',value:'1080p'}]" size="small" /></label>
                   <label><span>时长（秒）</span><InputNumber v-model:value="generation(activeTrack).duration" :min="1" :max="30" size="small" /></label>
                 </div>

@@ -467,6 +467,7 @@ export function updateAgentDeployment(data: Partial<ToonflowApi.AgentDeployment>
 export const getVideoWorkbench = (projectId: number, scriptId: number) => requestClient.post<Record<string, any>>('/production/workbench/getGenerateData', { projectId, scriptId });
 export const addVideoTrack = (projectId: number, scriptId: number, duration = 5) => requestClient.post<number>('/production/workbench/addTrack', { projectId, scriptId, duration });
 export const updateVideoTrackPrompt = (id: number, prompt: string) => requestClient.post('/production/workbench/updateVideoPrompt', { id, prompt });
+export const updateVideoContinuityMode = (id: number, continuityMode: string) => requestClient.post('/production/workbench/updateVideoContinuityMode', { id, continuityMode });
 export const generateTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/generateVideo', data);
 export const generateVideoPrompt = (data: Record<string, any>) => requestClient.post<string>('/production/workbench/generateVideoPrompt', data);
 export const batchGenerateVideoPrompts = (data: Record<string, any>) => requestClient.post('/production/workbench/batchGeneratePrompt', data);
