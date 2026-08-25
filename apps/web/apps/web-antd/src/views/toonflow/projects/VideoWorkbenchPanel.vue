@@ -28,6 +28,8 @@ const props = defineProps<{
   assets: any[];
   storyboards: any[];
   tracks: any[];
+  initialTab?: 'preview' | 'generate' | 'editor';
+  initialTrackId?: number;
   videoMode?: string;
   videoModel?: number;
   videoRatio?: string;
@@ -49,11 +51,11 @@ const emit = defineEmits<{
   batchGenerateVideos: [tracks: any[]];
   batchDownload: [tracks: any[]];
   refresh: [];
-  close: [];
+  stateChange: [state: { tab: 'preview' | 'generate' | 'editor'; trackId?: number }];
 }>();
 
-const activeTrackId = ref<number>();
-const activeTab = ref('preview');
+const activeTrackId = ref<number | undefined>(props.initialTrackId);
+const activeTab = ref<'preview' | 'generate' | 'editor'>(props.initialTab ?? 'preview');
 const previewVideo = ref<any>();
 const compareOpen = ref(false);
 const compareIds = ref<number[]>([]);
@@ -61,6 +63,7 @@ const addReferenceOpen = ref(false);
 const videoModelOptions = ref<Array<{ label: string; value: number; supportsAudio: boolean }>>([]);
 const activeEditorIndex = ref(0);
 const playingSequence = ref(false);
+const editorPlaying = ref(false);
 const editorVolume = ref(100);
 const editorPlayer = ref<HTMLVideoElement>();
 const selectedTrackIds = ref<number[]>([]);
@@ -128,10 +131,6 @@ const activeModelSupportsAudio = computed(() => {
 });
 const selectedTracks = computed(() => props.tracks.filter((track) => selectedTrackIds.value.includes(Number(track.id))));
 const selectedTrackCount = computed(() => selectedTracks.value.length);
-const trackOptions = computed(() => props.tracks.map((track, index) => ({
-  label: trackLabel(track, index),
-  value: Number(track.id),
-})));
 function successfulVideos(track: any) {
   return (track.videoList ?? []).filter((video: any) => ['生成成功', '已完成'].includes(video.state));
 }
@@ -173,16 +172,22 @@ function exportSelectedVideos() {
 
 function focusEditorClip(clip: any) {
   const index = selectedClips.value.findIndex((item: any) => item.trackId === clip.trackId);
-  if (index < 0) return;
-  activeEditorIndex.value = index;
+  selectEditorClip(index);
+}
+
+function selectEditorClip(index: number) {
+  if (index < 0 || index >= selectedClips.value.length) return;
+  editorPlayer.value?.pause();
+  editorPlaying.value = false;
   playingSequence.value = false;
+  activeEditorIndex.value = index;
+  restoreEditorPlayer();
 }
 
 function stepEditor(delta: number) {
   const nextIndex = activeEditorIndex.value + delta;
   if (nextIndex < 0 || nextIndex >= selectedClips.value.length) return;
-  playingSequence.value = false;
-  activeEditorIndex.value = nextIndex;
+  selectEditorClip(nextIndex);
 }
 
 function isSelectedVideo(track: any, video: any) {
@@ -267,33 +272,6 @@ function referenceMediaLabel(track: any, media: any) {
   return `参考素材 ${index >= 0 ? index + 1 : 1}`;
 }
 
-function trackStoryboardLabel(track: any, item: any) {
-  const localIndex = trackStoryboards(track).findIndex((storyboard: any) => Number(storyboard.id) === Number(item?.id));
-  return `分镜 ${localIndex >= 0 ? localIndex + 1 : 1} · #${item?.id ?? ''} · ${item?.duration || 4} 秒`;
-}
-
-function storyboardFrameSummary(track: any) {
-  const storyboards = trackStoryboards(track);
-  const mode = generation(track).mode;
-  const first = trackStoryboardLabel(track, storyboards[0]);
-  const last = trackStoryboardLabel(track, storyboards.at(-1));
-  if (mode === 'text') {
-    return `当前为纯文本模式，分镜图仅作为参考：${first}`;
-  }
-  if (mode === 'singleImage' || mode === 'startFrameOptional') {
-    return `当前为首帧模式，使用：${first}`;
-  }
-  if (mode === 'endFrameOptional') {
-    return storyboards.length === 1
-      ? `当前为尾帧模式，使用：${first}`
-      : `当前为尾帧可选模式：首帧 ${first} · 尾帧 ${last}`;
-  }
-  if (storyboards.length === 1) {
-    return `当前为首尾帧模式，同一张图作为首尾帧：${first}`;
-  }
-  return `当前为首尾帧模式：首帧 ${first} · 尾帧 ${last}`;
-}
-
 function selectedStoryboard(track: any) {
   generation(track);
   return trackStoryboards(track)[0];
@@ -312,18 +290,6 @@ function activateTrackById(trackId: number) {
 
 function activateStoryboardTrack(_storyboardId: number, trackId?: number) {
   if (trackId !== undefined) activateTrackById(trackId);
-}
-
-function trackLabel(track: any, index: number) {
-  const storyboards = trackStoryboards(track);
-  const storyboard = storyboards[0];
-  const logicalTrack = storyboard?.track?.trim() || String(index + 1);
-  const frameSummary = storyboards.length > 1
-    ? `分镜 1 → 分镜 ${storyboards.length}`
-    : storyboard
-      ? '分镜 1'
-      : '未绑定分镜';
-  return `轨道 ${logicalTrack} · ${frameSummary} · ${track.duration || 4} 秒`;
 }
 
 function mediaName(media: any, index: number) {
@@ -367,15 +333,37 @@ function stateColor(state?: string) {
 
 function playSequence() {
   if (!selectedClips.value.length) return;
-  activeEditorIndex.value = 0;
+
+  const player = editorPlayer.value;
+  if (player && !player.paused && !player.ended) {
+    player.pause();
+    playingSequence.value = false;
+    editorPlaying.value = false;
+    return;
+  }
+
+  if (player?.ended) activeEditorIndex.value = 0;
   playingSequence.value = true;
   restoreEditorPlayer();
 }
 
 function handleEditorEnded() {
+  editorPlaying.value = false;
   if (!playingSequence.value) return;
-  if (activeEditorIndex.value < selectedClips.value.length - 1) activeEditorIndex.value += 1;
-  else playingSequence.value = false;
+  if (activeEditorIndex.value < selectedClips.value.length - 1) {
+    activeEditorIndex.value += 1;
+  } else {
+    playingSequence.value = false;
+  }
+}
+
+function handleEditorPlay() {
+  editorPlaying.value = true;
+  playingSequence.value = true;
+}
+
+function handleEditorPause() {
+  editorPlaying.value = false;
 }
 
 function syncEditorVolume() {
@@ -389,10 +377,12 @@ function restoreEditorPlayer() {
     editorVideoError.value = false;
     player.pause();
     player.load();
+    editorPlaying.value = false;
     syncEditorVolume();
     if (playingSequence.value) {
       void player.play().catch(() => {
         playingSequence.value = false;
+        editorPlaying.value = false;
       });
     }
   });
@@ -406,12 +396,14 @@ function handleEditorLoaded() {
   if (!playingSequence.value) {
     player.currentTime = 0;
     player.pause();
+    editorPlaying.value = false;
   }
 }
 
 function handleEditorError() {
   editorVideoError.value = true;
   playingSequence.value = false;
+  editorPlaying.value = false;
 }
 
 watch(selectedClips, (clips) => {
@@ -423,6 +415,15 @@ watch(activeTab, (tab) => {
     if (!editorSelectionInitialized.value) initializeEditorSelection();
     restoreEditorPlayer();
   }
+});
+watch([activeTab, activeTrackId], ([tab, trackId]) => {
+  emit('stateChange', { tab, trackId: trackId === undefined ? undefined : Number(trackId) });
+});
+watch(() => props.initialTab, (tab) => {
+  if (tab) activeTab.value = tab;
+});
+watch(() => props.initialTrackId, (trackId) => {
+  if (trackId !== undefined) activateTrackById(trackId);
 });
 watch(activeEditorClip, () => {
   if (activeTab.value === 'editor') restoreEditorPlayer();
@@ -489,7 +490,6 @@ onMounted(async () => {
 <template>
   <div class="toonflow-workbench-shell" lang="zh-CN" translate="no">
     <header class="workbench-topbar">
-      <Button class="close-workbench" type="text" aria-label="关闭视频工作台" @click="emit('close')">×</Button>
       <nav class="workbench-tabs" aria-label="视频工作台功能">
         <Tooltip title="分镜图预览">
           <button class="workbench-tab" :class="{ 'workbench-tab--active': activeTab === 'preview' }" type="button" @click="activeTab = 'preview'"><span>▣</span><b>分镜图预览</b></button>
@@ -501,6 +501,10 @@ onMounted(async () => {
           <button class="workbench-tab" :class="{ 'workbench-tab--active': activeTab === 'editor' }" type="button" @click="activeTab = 'editor'"><span>✂</span><b>剪辑台</b></button>
         </Tooltip>
       </nav>
+      <div class="workbench-nav-status">
+        <span class="workbench-status-dot" />
+        <span>{{ tracks.length }} 条轨道</span>
+      </div>
     </header>
 
     <div class="workbench-content">
@@ -515,27 +519,25 @@ onMounted(async () => {
       <div v-else-if="activeTab === 'generate'" class="generation-page">
         <template v-if="activeTrack">
           <section class="generation-main">
-            <div class="generation-player" :class="{ 'has-video': videoUrl(activePreviewVideo) }">
-              <video v-if="videoUrl(activePreviewVideo)" :key="activePreviewVideo?.id" :src="videoUrl(activePreviewVideo)" controls disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate" preload="metadata" playsinline />
-              <div v-else class="player-placeholder"><span>▶</span><p>生成视频后在这里预览</p></div>
+            <div class="generation-left-column">
+              <div class="generation-player" :class="{ 'has-video': videoUrl(activePreviewVideo) }">
+                <video v-if="videoUrl(activePreviewVideo)" :key="activePreviewVideo?.id" :src="videoUrl(activePreviewVideo)" controls disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate" preload="metadata" playsinline />
+                <div v-else class="player-placeholder"><span>▶</span><p>生成视频后在这里预览</p></div>
+              </div>
+
+              <section class="history-section setting-block history-under-preview">
+                <div class="section-heading"><div><b>历史版本</b><span>{{ successfulVideos(activeTrack).length }} 个可用候选 · 选择一个结果作为当前轨道视频</span></div><Tag :color="stateColor(activeTrack.state)">{{ activeTrack.state || '未生成' }}</Tag></div>
+                <div v-if="activeTrack.videoList?.length" class="video-grid">
+                    <article v-for="(video, versionIndex) in activeTrack.videoList" :key="video.id" class="video-card" :class="{ 'video-card--selected': isSelectedVideo(activeTrack, video) }">
+                      <button class="video-preview" type="button" @click="previewVideo = video"><video v-if="videoUrl(video)" :src="videoUrl(video)" muted playsinline preload="metadata" /><div v-else class="video-placeholder">{{ video.state }}</div><Tag class="video-state" :color="stateColor(video.state)">{{ video.state }}</Tag><Tag v-if="video.retryOfId" class="video-retry">重试自 V{{ video.retryOfId }}</Tag></button>
+                    <div class="video-actions"><span class="version-label">V{{ Number(versionIndex) + 1 }}</span><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" @click="emit('selectVideo', activeTrack, video)">{{ isSelectedVideo(activeTrack, video) ? '已选中' : '选中' }}</Button><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" :type="compareIds.includes(video.id) ? 'primary' : 'default'" @click="toggleCompare(video)">{{ compareIds.includes(video.id) ? '已加入对比' : '对比' }}</Button><Button v-if="video.state === '生成中'" size="small" @click="emit('cancelVideo', video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" @click="emit('retryVideo', video, activeTrack)">重试</Button><Button danger size="small" type="text" @click="emit('deleteVideo', video)">删除</Button></div>
+                  </article>
+                </div>
+                <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无历史版本" />
+              </section>
             </div>
 
-            <section class="history-section setting-block history-under-preview">
-              <div class="section-heading"><div><b>历史版本</b><span>{{ successfulVideos(activeTrack).length }} 个可用候选 · 选择一个结果作为当前轨道视频</span></div><Tag :color="stateColor(activeTrack.state)">{{ activeTrack.state || '未生成' }}</Tag></div>
-              <div v-if="activeTrack.videoList?.length" class="video-grid">
-                  <article v-for="(video, versionIndex) in activeTrack.videoList" :key="video.id" class="video-card" :class="{ 'video-card--selected': isSelectedVideo(activeTrack, video) }">
-                    <button class="video-preview" type="button" @click="previewVideo = video"><video v-if="videoUrl(video)" :src="videoUrl(video)" muted playsinline preload="metadata" /><div v-else class="video-placeholder">{{ video.state }}</div><Tag class="video-state" :color="stateColor(video.state)">{{ video.state }}</Tag><Tag v-if="video.retryOfId" class="video-retry">重试自 V{{ video.retryOfId }}</Tag></button>
-                  <div class="video-actions"><span class="version-label">V{{ Number(versionIndex) + 1 }}</span><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" @click="emit('selectVideo', activeTrack, video)">{{ isSelectedVideo(activeTrack, video) ? '已选中' : '选中' }}</Button><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" :type="compareIds.includes(video.id) ? 'primary' : 'default'" @click="toggleCompare(video)">{{ compareIds.includes(video.id) ? '已加入对比' : '对比' }}</Button><Button v-if="video.state === '生成中'" size="small" @click="emit('cancelVideo', video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" @click="emit('retryVideo', video, activeTrack)">重试</Button><Button danger size="small" type="text" @click="emit('deleteVideo', video)">删除</Button></div>
-                </article>
-              </div>
-              <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无历史版本" />
-            </section>
-
             <aside class="generation-settings">
-              <section class="setting-block generation-track-selector">
-                <label><span>视频轨道</span><Select v-model:value="activeTrackId" :options="trackOptions" placeholder="选择视频轨道" /></label>
-                <small v-if="selectedStoryboard(activeTrack)">{{ storyboardFrameSummary(activeTrack) }}</small>
-              </section>
               <section class="setting-block prompt-block">
                 <div class="section-heading"><div><b>视频提示词</b><span>描述镜头运动与画面变化</span></div><Button size="small" :loading="activeTrack.promptGenerating" :disabled="activeTrack.promptGenerating" @click="emit('generatePrompt', activeTrack)">{{ activeTrack.promptGenerating ? '生成中…' : 'AI 生成' }}</Button></div>
                 <Input.TextArea v-model:value="activeTrack.prompt" :auto-size="{ minRows: 10, maxRows: 16 }" placeholder="输入视频提示词…" />
@@ -558,13 +560,13 @@ onMounted(async () => {
               </section>
 
               <section class="setting-block parameter-block">
-                <div class="section-heading"><div><b>生成参数</b><span>{{ videoRatio || '16:9' }}</span></div></div>
+                <div class="section-heading parameter-heading"><div><b>生成参数</b><span>决定当前轨道的视频输出</span></div><Tag color="blue">{{ videoRatio || '16:9' }}</Tag></div>
                 <div class="parameter-grid">
                   <label><span>视频模型</span><Select v-model:value="generation(activeTrack).model" :options="videoModelOptions" placeholder="选择视频模型" size="small" /></label>
                   <label><span>生成模式</span><Select v-model:value="generation(activeTrack).mode" :options="[{label:'纯文本',value:'text'},{label:'单图首帧',value:'singleImage'},{label:'首尾帧',value:'startEndRequired'},{label:'尾帧可选',value:'endFrameOptional'},{label:'首帧可选',value:'startFrameOptional'}]" size="small" /></label>
                   <label><span>镜头衔接</span><Select v-model:value="generation(activeTrack).continuityMode" :options="[{label:'自动判断',value:'auto'},{label:'强制使用上一尾帧',value:'always'},{label:'不使用上一尾帧',value:'never'}]" size="small" @change="persistContinuityMode(activeTrack)" /></label>
                   <label><span>分辨率</span><Select v-model:value="generation(activeTrack).resolution" :options="[{label:'720p',value:'720p'},{label:'1080p',value:'1080p'}]" size="small" /></label>
-                  <label><span>分镜时长</span><span class="duration-readonly">{{ generation(activeTrack).duration }} 秒（来自分镜）</span></label>
+                  <label class="parameter-field--readonly"><span>分镜时长</span><span class="duration-readonly">{{ generation(activeTrack).duration }} 秒 · 来自分镜</span></label>
                 </div>
               <div class="generate-actions"><label v-if="activeModelSupportsAudio" class="audio-setting"><span>生成音频</span><Switch v-model:checked="generation(activeTrack).audio" /></label><span v-else class="audio-unavailable">当前视频模型不支持原生音频</span><Button type="primary" :disabled="(!activeTrack.prompt?.trim() && !selectedStoryboard(activeTrack)?.videoDesc?.trim()) || activeTrack.videoGenerating" :loading="activeTrack.videoGenerating || activeTrack.state === '生成中'" @click="emit('generateVideo', activeTrack)">生成视频</Button></div>
               </section>
@@ -592,7 +594,7 @@ onMounted(async () => {
       <div v-else class="editor-pane">
         <section class="editor-workspace">
           <aside class="editor-media-library">
-            <header><b>视频素材</b><div class="editor-media-header-actions"><Tag>{{ selectedClips.length }} / {{ availableClips.length }}</Tag><Button size="small" type="link" :disabled="!availableClips.length" @click="toggleAllEditorClips">{{ selectedClips.length === availableClips.length ? '取消全选' : '全选' }}</Button></div></header>
+            <header><div class="editor-panel-title"><b>视频素材</b><small>选择参与合成的片段</small></div><div class="editor-media-header-actions"><Tag>{{ selectedClips.length }} / {{ availableClips.length }}</Tag><Button size="small" type="link" :disabled="!availableClips.length" @click="toggleAllEditorClips">{{ selectedClips.length === availableClips.length ? '取消全选' : '全选' }}</Button></div></header>
             <button v-for="clip in availableClips" :key="clip.trackId" :class="{ active: activeEditorClip?.trackId === clip.trackId }" @click="focusEditorClip(clip)">
               <Checkbox class="editor-clip-check" :checked="selectedEditorTrackIds.includes(Number(clip.trackId))" @click.stop @change="toggleEditorClip(Number(clip.trackId), $event.target.checked)" />
               <video :src="clip.src" muted playsinline autoplay loop preload="auto" disablepictureinpicture /><span>轨道 {{ clip.index + 1 }}.mp4<small>{{ clip.duration }}s</small></span>
@@ -602,16 +604,17 @@ onMounted(async () => {
           </aside>
 
           <main class="editor-stage">
+            <div class="editor-stage-heading"><div><b>片段预览</b><span v-if="activeEditorClip">当前片段 · {{ activeEditorClip.duration }} 秒</span></div><Tag v-if="activeEditorClip" color="blue">{{ activeEditorIndex + 1 }} / {{ selectedClips.length }}</Tag></div>
             <div class="editor-canvas">
-              <video v-if="activeEditorClip?.src" :key="activeEditorClip.trackId" ref="editorPlayer" :src="activeEditorClip.src" :autoplay="playingSequence" controls playsinline preload="auto" @ended="handleEditorEnded" @loadeddata="handleEditorLoaded" @error="handleEditorError" />
+              <video v-if="activeEditorClip?.src" :key="activeEditorClip.trackId" ref="editorPlayer" :src="activeEditorClip.src" :autoplay="playingSequence" controls playsinline preload="auto" @ended="handleEditorEnded" @loadeddata="handleEditorLoaded" @error="handleEditorError" @play="handleEditorPlay" @pause="handleEditorPause" />
               <div v-if="editorVideoError" class="editor-video-error"><span>!</span><p>视频资源加载失败，请稍后重试</p><Button size="small" @click="restoreEditorPlayer">重新加载</Button></div>
               <div v-else-if="!activeEditorClip?.src" class="editor-empty"><span class="editor-play">▶</span><p>请先在轨道生成中选中视频</p><Button type="primary" @click="activeTab = 'generate'">进入轨道生成</Button></div>
             </div>
-            <div class="editor-transport"><Button shape="circle" :disabled="activeEditorIndex === 0" @click="stepEditor(-1)">◀</Button><Button shape="circle" type="primary" :disabled="!selectedClips.length" @click="playSequence">▶</Button><Button shape="circle" :disabled="activeEditorIndex >= selectedClips.length - 1" @click="stepEditor(1)">▶</Button><span>{{ activeEditorIndex + 1 }} / {{ selectedClips.length || 0 }}</span></div>
+            <div class="editor-transport"><Button shape="circle" :disabled="activeEditorIndex === 0" title="上一段" @click="stepEditor(-1)">◀</Button><Button shape="circle" type="primary" :disabled="!selectedClips.length" :title="editorPlaying ? '暂停播放' : '播放当前片段'" @click="playSequence">{{ editorPlaying ? 'Ⅱ' : '▶' }}</Button><Button shape="circle" :disabled="activeEditorIndex >= selectedClips.length - 1" title="下一段" @click="stepEditor(1)">▶</Button><span class="editor-transport-status"><b>片段 {{ activeEditorIndex + 1 }} / {{ selectedClips.length || 0 }}</b><small>{{ activeEditorClip?.duration || 0 }} 秒</small></span></div>
           </main>
 
           <aside class="editor-properties">
-            <header><b>视频属性</b></header>
+            <header><div class="editor-panel-title"><b>视频属性</b><small>当前片段设置</small></div></header>
             <label><span>画面比例</span><b>{{ videoRatio || '16:9' }}</b></label>
             <label><span>分辨率</span><b>1080p</b></label>
             <label><span>当前片段</span><b>{{ activeEditorClip?.duration || 0 }}s</b></label>
@@ -629,7 +632,7 @@ onMounted(async () => {
             <div class="timeline-scroll">
               <div class="timeline-ruler" :style="{ width: timelineContentWidth }"><span v-for="tick in timelineTicks" :key="tick">{{ tick }}s</span></div>
               <div v-if="selectedClips.length" class="clip-track" :style="{ width: timelineContentWidth }">
-                <button v-for="(clip,index) in selectedClips" :key="clip.trackId" class="timeline-clip" :class="{ active: activeEditorIndex === index }" :style="timelineClipStyle(clip)" type="button" @click="activeEditorIndex = index; playingSequence = false"><video :src="clip.src" muted playsinline autoplay loop preload="metadata" disablepictureinpicture /><span>{{ index + 1 }}. 轨道 {{ clip.index + 1 }} · {{ clip.duration }}s</span></button>
+                <button v-for="(clip,index) in selectedClips" :key="clip.trackId" class="timeline-clip" :class="{ active: activeEditorIndex === index }" :style="timelineClipStyle(clip)" type="button" @click="selectEditorClip(index)"><video :src="clip.src" muted playsinline autoplay loop preload="metadata" disablepictureinpicture /><span>{{ index + 1 }}. 轨道 {{ clip.index + 1 }} · {{ clip.duration }}s</span></button>
               </div>
               <div v-else class="empty-track">暂无可拼接视频片段</div>
             </div>
@@ -661,10 +664,10 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.toonflow-workbench-shell { display: grid; width: 100vw; height: 100vh; min-width: 0; overflow: hidden; grid-template-rows: 68px minmax(0, 1fr); background: var(--ant-color-bg-container); }
-.workbench-topbar { position: relative; display: flex; align-items: center; justify-content: center; border-bottom: 1px solid var(--ant-color-border-secondary); background: var(--ant-color-bg-container); }
-.close-workbench { position: absolute; z-index: 2; top: 14px; left: 18px; width: 40px; height: 40px; padding: 0; font-size: 30px; line-height: 36px; }
-.workbench-tabs { display: flex; height: 100%; align-items: stretch; gap: 12px; }.workbench-tabs button { position: relative; display: flex; min-width: 116px; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border: 0; color: var(--ant-color-text-secondary); background: transparent; cursor: pointer; }.workbench-tabs button::after { position: absolute; right: 14px; bottom: 0; left: 14px; height: 3px; border-radius: 3px 3px 0 0; background: transparent; content: ''; }.workbench-tabs button:hover { color: var(--ant-color-primary); background: var(--ant-color-fill-quaternary); }.workbench-tabs button.active { color: var(--ant-color-primary); }.workbench-tabs button.active::after { background: var(--ant-color-primary); }.workbench-tabs span { font-size: 20px; }.workbench-tabs b { font-size: 13px; font-weight: 500; }
+.toonflow-workbench-shell { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; grid-template-rows: 64px minmax(0, 1fr); background: var(--ant-color-bg-container); }
+.workbench-topbar { display: grid; min-width: 0; align-items: center; border-bottom: 1px solid var(--ant-color-border-secondary); grid-template-columns: minmax(170px, 1fr) auto minmax(170px, 1fr); padding: 0 18px; background: var(--ant-color-bg-container); }
+.workbench-nav-status { display: flex; grid-column: 3; align-items: center; gap: 6px; justify-self: end; color: var(--ant-color-text-tertiary); font-size: 11px; }.workbench-status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ant-color-success); box-shadow: 0 0 0 3px var(--ant-color-success-bg); }
+.workbench-tabs { display: flex; grid-column: 2; height: 100%; align-items: stretch; gap: 4px; justify-self: center; }.workbench-tabs button { position: relative; display: flex; min-width: 96px; align-items: center; justify-content: center; gap: 6px; padding: 0 12px; border: 0; color: var(--ant-color-text-secondary); background: transparent; cursor: pointer; }.workbench-tabs button::after { position: absolute; right: 10px; bottom: 0; left: 10px; height: 3px; border-radius: 3px 3px 0 0; background: transparent; content: ''; }.workbench-tabs button:hover { color: var(--ant-color-primary); background: var(--ant-color-fill-quaternary); }.workbench-tabs button.active { color: var(--ant-color-primary); }.workbench-tabs button.active::after { background: var(--ant-color-primary); }.workbench-tabs span { font-size: 16px; }.workbench-tabs b { font-size: 12px; font-weight: 500; }
 .workbench-tabs button.active { color: var(--ant-color-primary); background: var(--ant-color-primary-bg); }
 .workbench-tabs button.active span { color: var(--ant-color-primary); }
 .workbench-tabs button.active b { color: var(--ant-color-primary); font-weight: 600; }
@@ -734,7 +737,6 @@ onMounted(async () => {
 .player-placeholder { display: grid; gap: 10px; color: #94a3b8; text-align: center; place-items: center; }.player-placeholder span { display: grid; width: 64px; height: 64px; border-radius: 50%; background: rgb(255 255 255 / 10%); font-size: 24px; place-items: center; }.player-placeholder p { margin: 0; }
 .generation-settings { display: grid; width: 100%; max-width: 100%; min-width: 0; overflow: hidden; gap: 0; padding: 20px; border-left: 1px solid var(--ant-color-border-secondary); background: var(--ant-color-bg-layout); box-sizing: border-box; }.setting-block { min-width: 0; padding: 14px; overflow: hidden; border: 1px solid var(--ant-color-border-secondary); border-radius: 0; background: var(--ant-color-bg-container); box-sizing: border-box; }.setting-block + .setting-block { border-top: 0; }.generation-settings > .setting-block:first-child { border-radius: 8px 8px 0 0; }.generation-settings > .setting-block:last-child { border-radius: 0 0 8px 8px; }.setting-block .section-heading { margin-bottom: 10px; }
 .prompt-block :deep(textarea) { min-height: 240px !important; resize: vertical; }
-.generation-track-selector label { display: grid; gap: 6px; }.generation-track-selector label > span { color: var(--ant-color-text-secondary); font-size: 12px; }.generation-track-selector small { display: block; margin-top: 8px; color: var(--ant-color-success); font-size: 11px; }
 .parameter-grid { display: grid; margin-bottom: 14px; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); }.parameter-grid label { display: grid; min-width: 0; gap: 5px; }.parameter-grid label > span { color: var(--ant-color-text-secondary); font-size: 12px; }.parameter-grid :deep(.ant-select), .parameter-grid :deep(.ant-input-number) { width: 100%; }
 .parameter-grid :deep(.ant-select-selector), .parameter-grid :deep(.ant-select-selection-item) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .generate-actions { display: flex; align-items: center; justify-content: space-between; gap: 16px; }.generate-actions .audio-setting { display: flex; align-items: center; gap: 9px; color: var(--ant-color-text-secondary); font-size: 12px; }
@@ -749,6 +751,7 @@ onMounted(async () => {
 .asset-picker { display: grid; max-height: 65vh; overflow-y: auto; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }.asset-picker button { position: relative; display: grid; overflow: hidden; padding: 6px; border: 1px solid var(--ant-color-border-secondary); border-radius: 8px; background: var(--ant-color-bg-container); cursor: pointer; gap: 6px; }.asset-picker button:hover { border-color: var(--ant-color-primary); }.asset-picker img { width: 100%; height: 112px; object-fit: contain; background: var(--ant-color-fill-secondary); }.asset-picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.asset-picker b { position: absolute; top: 10px; right: 10px; display: grid; width: 24px; height: 24px; border-radius: 50%; color: #fff; background: var(--ant-color-primary); place-items: center; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 900px) { .toonflow-workbench { grid-template-columns: 1fr; }.track-sidebar { display: flex; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--ant-color-border-secondary); }.sidebar-title { display: none; }.track-tab { width: 190px; flex: 0 0 190px; }.track-workspace { padding: 12px; } }
+@media (max-width: 900px) { .toonflow-workbench-shell { grid-template-rows: 58px minmax(0, 1fr); }.workbench-topbar { grid-template-columns: 1fr auto; padding: 0 12px; }.workbench-tabs { grid-column: 1; justify-self: start; gap: 2px; overflow-x: auto; }.workbench-tabs button { min-width: 96px; padding: 0 10px; }.workbench-nav-status { grid-column: 2; font-size: 10px; } }
 @media (max-width: 900px) { .generation-main { grid-template-columns: 1fr; }.generation-player { width: calc(100% - 32px); max-width: none; height: auto; min-height: 260px; aspect-ratio: 16 / 9; margin: 16px; }.generation-settings { padding: 16px; border-top: 1px solid var(--ant-color-border-secondary); border-left: 0; }.parameter-grid { grid-template-columns: 1fr; } }
 
 .toonflow-workbench-shell,
@@ -757,7 +760,7 @@ onMounted(async () => {
 .track-workspace,
 .editor-pane {
   min-width: 0;
-  max-width: 100vw;
+  max-width: 100%;
   box-sizing: border-box;
 }
 .track-strip button { width: 300px; flex-basis: 300px; }
@@ -881,4 +884,525 @@ onMounted(async () => {
 .timeline-scroll .empty-track { margin-left: 0; }
 .timeline-scroll .timeline-clip { flex-grow: 0; flex-shrink: 0; }
 .timeline-scroll .timeline-clip > video { pointer-events: none; }
+
+/* Second-pass generation workspace polish. */
+.generation-page {
+  gap: 12px;
+  padding: 12px;
+  background: var(--ant-color-bg-layout);
+}
+
+.generation-main {
+  gap: 12px;
+  overflow: visible;
+}
+
+.generation-player {
+  width: calc(100% - 24px);
+  min-height: 260px;
+  margin: 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 14px;
+  box-shadow: 0 10px 24px rgb(15 23 42 / 8%);
+}
+
+.player-placeholder {
+  min-height: 220px;
+  padding: 24px;
+  border: 1px dashed rgb(148 163 184 / 45%);
+  border-radius: 12px;
+  background: radial-gradient(circle at 50% 35%, rgb(30 41 59 / 72%), rgb(7 11 18 / 96%));
+  box-sizing: border-box;
+}
+
+.player-placeholder span {
+  box-shadow: 0 0 0 8px rgb(255 255 255 / 4%);
+}
+
+.generation-settings {
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 14px;
+  background: var(--ant-color-bg-container);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 6%);
+}
+
+.generation-settings > .setting-block,
+.generation-settings > .setting-block:first-child,
+.generation-settings > .setting-block:last-child {
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 10px;
+}
+
+.generation-settings > .setting-block + .setting-block {
+  border-top: 1px solid var(--ant-color-border-secondary);
+}
+
+.prompt-block :deep(textarea) {
+  min-height: 190px !important;
+  padding: 10px 12px;
+  border-radius: 8px;
+  line-height: 1.6;
+}
+
+.generate-actions {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--ant-color-border-secondary);
+}
+
+.generate-actions > .ant-btn {
+  min-width: 112px;
+  font-weight: 600;
+}
+
+.generation-page > .history-section,
+.generation-page > .track-filmstrip {
+  margin: 0;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 12px;
+  background: var(--ant-color-bg-container);
+  box-shadow: 0 6px 16px rgb(15 23 42 / 5%);
+}
+
+.generation-page > .history-section {
+  padding: 14px;
+}
+
+.generation-page > .track-filmstrip {
+  padding: 14px 14px 10px;
+}
+
+.generation-page > .track-filmstrip .section-heading {
+  margin-bottom: 10px;
+}
+
+.track-strip-group {
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.track-strip-group:hover {
+  border-color: var(--ant-color-primary-border);
+  box-shadow: 0 5px 14px rgb(15 23 42 / 8%);
+  transform: translateY(-1px);
+}
+
+.track-strip-group.active {
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg), 0 5px 14px rgb(22 119 255 / 12%);
+}
+
+.video-card {
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.video-card:hover {
+  border-color: var(--ant-color-primary-border);
+  box-shadow: 0 6px 16px rgb(15 23 42 / 9%);
+  transform: translateY(-1px);
+}
+
+.video-card--selected {
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg), 0 6px 16px rgb(22 119 255 / 12%);
+}
+
+.video-placeholder {
+  min-height: 96px;
+  background: radial-gradient(circle at 50% 35%, #273449, #111827);
+}
+
+.editor-workspace {
+  box-shadow: 0 8px 20px rgb(15 23 42 / 6%);
+}
+
+.editor-stage {
+  background: radial-gradient(circle at 50% 30%, #f8fafc, #e2e8f0);
+}
+
+@media (max-width: 900px) {
+  .generation-page {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .generation-main {
+    gap: 8px;
+  }
+
+  .generation-player {
+    width: calc(100% - 16px);
+    margin: 8px;
+  }
+
+  .generation-settings {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .generation-page > .history-section,
+  .generation-page > .track-filmstrip {
+    border-radius: 10px;
+  }
+}
+
+/* Make generation parameters readable in the narrow settings column. */
+.parameter-block {
+  padding: 16px;
+}
+
+.parameter-heading {
+  margin-bottom: 14px;
+}
+
+.parameter-heading > div {
+  min-width: 0;
+}
+
+.parameter-heading > div > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.parameter-heading :deep(.ant-tag) {
+  flex: none;
+  margin: 0;
+  font-weight: 600;
+}
+
+.parameter-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.parameter-grid label {
+  gap: 7px;
+  padding: 9px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 8px;
+  background: var(--ant-color-bg-layout);
+}
+
+.parameter-grid label > span:first-child {
+  color: var(--ant-color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.parameter-grid :deep(.ant-select-selector),
+.parameter-grid :deep(.ant-input-number) {
+  border-radius: 6px;
+}
+
+.duration-readonly {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 3px 8px;
+  overflow: hidden;
+  border-radius: 6px;
+  color: var(--ant-color-text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--ant-color-fill-tertiary);
+}
+
+@media (max-width: 900px) {
+  .parameter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Refine the three editing surfaces without changing the playback model. */
+.editor-pane {
+  padding: 16px 22px 22px;
+}
+
+.editor-workspace {
+  min-height: 520px;
+  border-radius: 12px 12px 0 0;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 6%);
+  grid-template-columns: 220px minmax(0, 1fr) 248px;
+}
+
+.editor-media-library,
+.editor-properties {
+  padding: 14px;
+}
+
+.editor-media-library header,
+.editor-properties header {
+  height: auto;
+  min-height: 38px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.editor-panel-title {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.editor-panel-title small {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+}
+
+.editor-media-header-actions {
+  align-items: flex-start;
+}
+
+.editor-media-header-actions :deep(.ant-tag) {
+  margin: 0;
+  line-height: 20px;
+}
+
+.editor-media-library > button {
+  margin-bottom: 8px;
+  padding: 6px;
+  border-radius: 8px;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.editor-media-library > button:hover {
+  border-color: var(--ant-color-primary-border);
+  box-shadow: 0 4px 10px rgb(15 23 42 / 7%);
+  transform: translateY(-1px);
+}
+
+.editor-media-library > button.active {
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg), 0 4px 10px rgb(22 119 255 / 9%);
+}
+
+.editor-stage {
+  min-width: 0;
+  padding: 14px 18px 12px;
+  background: radial-gradient(circle at 50% 20%, #f8fafc, #e2e8f0);
+  grid-template-rows: 32px minmax(0, 1fr) 48px;
+}
+
+.editor-stage-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.editor-stage-heading > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.editor-stage-heading span {
+  overflow: hidden;
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.editor-stage-heading :deep(.ant-tag) {
+  margin: 0;
+  flex: none;
+}
+
+.editor-canvas {
+  border: 1px solid rgb(15 23 42 / 12%);
+  border-radius: 10px;
+  box-shadow: 0 8px 18px rgb(15 23 42 / 12%);
+}
+
+.editor-transport {
+  height: 42px;
+  gap: 8px;
+}
+
+.editor-transport :deep(.ant-btn) {
+  box-shadow: none;
+}
+
+.editor-transport-status {
+  display: grid;
+  min-width: 56px;
+  gap: 2px;
+  margin-left: 4px;
+  text-align: center;
+}
+
+.editor-transport-status b {
+  color: var(--ant-color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.editor-transport-status small {
+  color: var(--ant-color-text-tertiary);
+  font-size: 10px;
+}
+
+.editor-properties {
+  background: linear-gradient(180deg, var(--ant-color-bg-container), var(--ant-color-bg-layout));
+}
+
+.editor-properties label {
+  padding: 11px 0;
+}
+
+.editor-properties label b {
+  color: var(--ant-color-text);
+  font-size: 12px;
+}
+
+.volume-control {
+  margin: 16px 0;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--ant-color-fill-tertiary);
+}
+
+.editor-timeline {
+  margin-top: 12px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 0 0 12px 12px;
+  box-shadow: 0 6px 16px rgb(15 23 42 / 5%);
+}
+
+.timeline-toolbar {
+  min-height: 26px;
+}
+
+.timeline-clip {
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.timeline-clip:hover {
+  box-shadow: 0 4px 10px rgb(15 23 42 / 16%);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 1200px) {
+  .editor-workspace {
+    grid-template-columns: 190px minmax(0, 1fr) 214px;
+  }
+
+  .editor-pane {
+    padding-inline: 14px;
+  }
+}
+
+@media (max-width: 900px) {
+  .editor-pane {
+    padding: 12px;
+  }
+
+  .editor-workspace {
+    min-height: 0;
+    grid-template-columns: 1fr;
+  }
+
+  .editor-media-library {
+    max-height: 238px;
+    border-right: 0;
+    border-bottom: 1px solid var(--ant-color-border-secondary);
+  }
+
+  .editor-stage {
+    min-height: 390px;
+    padding: 12px;
+    grid-template-rows: 30px minmax(0, 1fr) 48px;
+  }
+
+  .editor-properties {
+    border-top: 1px solid var(--ant-color-border-secondary);
+    border-left: 0;
+  }
+
+  .editor-timeline {
+    margin-top: 8px;
+    border-radius: 0 0 10px 10px;
+  }
+}
+
+/* Keep the generation cards in their own columns. The right settings card
+ * must not stretch the preview/history column to the same height. */
+.generation-page {
+  display: block;
+  min-height: 0;
+  padding: 16px;
+  overflow: visible;
+  background: var(--ant-color-bg-layout);
+}
+
+.generation-main {
+  display: grid;
+  min-height: 0;
+  align-items: start;
+  gap: 16px;
+  overflow: visible;
+  grid-template-columns: minmax(0, 1.12fr) minmax(360px, 0.88fr);
+}
+
+.generation-left-column {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: 16px;
+}
+
+.generation-player {
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  border-radius: 14px;
+}
+
+.history-under-preview {
+  grid-column: auto;
+  grid-row: auto;
+  margin: 0;
+}
+
+.generation-settings {
+  grid-column: auto;
+  grid-row: auto;
+  align-self: start;
+  max-height: calc(100vh - 142px);
+  overflow-y: auto;
+}
+
+.generation-page > .track-filmstrip {
+  margin-top: 16px;
+  align-self: auto;
+}
+
+@media (max-width: 1100px) {
+  .generation-main {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.82fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .generation-page {
+    padding: 10px;
+  }
+
+  .generation-main {
+    grid-template-columns: 1fr;
+  }
+
+  .generation-settings {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .generation-page > .track-filmstrip {
+    margin-top: 10px;
+  }
+}
 </style>

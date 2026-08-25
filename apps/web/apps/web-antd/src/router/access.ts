@@ -4,12 +4,15 @@ import type {
   GenerateMenuAndRoutesOptions,
 } from '@vben/types';
 
+import type { Router } from 'vue-router';
+
 import { generateAccessible } from '@vben/access';
 import { preferences } from '@vben/preferences';
 import { useAccessStore } from '@vben/stores';
 import { convertServerMenuToRouteRecordStringComponent } from '@vben/utils';
 
 import { BasicLayout, IFrameView } from '#/layouts';
+import { accessRoutes } from '#/router/routes';
 
 const forbiddenComponent = () => import('#/views/_core/fallback/forbidden.vue');
 
@@ -22,7 +25,7 @@ async function generateAccess(options: GenerateMenuAndRoutesOptions) {
     IFrameView,
   };
 
-  return await generateAccessible(preferences.app.accessMode, {
+  const result = await generateAccessible(preferences.app.accessMode, {
     ...options,
     fetchMenuListAsync: async () => {
       // 由于 yudao 通过 accessStore 读取，所以不在进行 message.loading 提示
@@ -35,6 +38,43 @@ async function generateAccess(options: GenerateMenuAndRoutesOptions) {
     // 如果 route.meta.menuVisibleWithForbidden = true
     layoutMap,
     pageMap,
+  });
+
+  normalizeToonflowTabRoutes(options.router);
+  registerProjectWorkbenchRoute(options.router);
+  return result;
+}
+
+function normalizeToonflowTabRoutes(router: Router) {
+  const tabRoutes = new Map([
+    ['ToonflowProjectDetail', '/toonflow/projects/:id'],
+    ['ToonflowTasks', '/toonflow/tasks'],
+  ]);
+  for (const [name, path] of tabRoutes) {
+    const route = router
+      .getRoutes()
+      .find((item) => item.name === name || item.path === path);
+    if (route) {
+      route.meta.fullPathKey = false;
+    }
+  }
+}
+
+function registerProjectWorkbenchRoute(router: Router) {
+  const workbenchRoute = accessRoutes.find(
+    (route) => route.name === 'ToonflowVideoWorkbench',
+  );
+  if (!workbenchRoute || !router.hasRoute('Toonflow')) return;
+
+  // The server owns the Toonflow menu tree. Reparent this hidden project route
+  // under that tree after it has been generated so it uses the same layout and
+  // route hierarchy as /toonflow/projects/:id.
+  if (router.hasRoute('ToonflowVideoWorkbench')) {
+    router.removeRoute('ToonflowVideoWorkbench');
+  }
+  router.addRoute('Toonflow', {
+    ...workbenchRoute,
+    meta: workbenchRoute.meta,
   });
 }
 

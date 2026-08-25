@@ -4,6 +4,7 @@ import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
 import type { ProductionWorkflowDefinition } from './production-workflow';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
@@ -49,7 +50,6 @@ import {
   workflowNodeViewType,
 } from './production-workflow';
 import StoryboardPanel from './StoryboardPanel.vue';
-import VideoWorkbenchPanel from './VideoWorkbenchPanel.vue';
 
 const props = defineProps<{
   assets: ToonflowApi.Asset[];
@@ -100,16 +100,17 @@ const emit = defineEmits<{
   saveVideoPrompt: [track: any];
   updateContinuityMode: [track: any];
   selectTrackVideo: [track: any, video: any];
-  refreshWorkbench: [];
   updateFlowSection: [key: 'scriptPlan' | 'storyboardTable', value: string];
   removeStoryboard: [storyboard: ToonflowApi.Storyboard];
   reorderStoryboards: [ids: number[]];
 }>();
 
+const route = useRoute();
+const router = useRouter();
+
 const flowInstance = ref<any>();
 const spacePressed = ref(false);
 const editorOpen = ref(false);
-const workbenchOpen = ref(false);
 const selectedNodeId = ref<string>();
 const selectedNodeIds = ref<string[]>([]);
 const nodeConfigDraft = ref<Record<string, any>>({});
@@ -135,6 +136,14 @@ const storyboardPlan = computed(() =>
   normalizeProductionDocument(flowData.value.storyboardTable, 'storyboardTable'),
 );
 const workbenchCover = computed(() => assetFileUrl(selectedWorkbenchCover(props.videoTracks)));
+
+function openVideoWorkbench() {
+  void router.push({
+    name: 'ToonflowVideoWorkbench',
+    params: { id: route.params.id },
+    query: props.script?.id ? { scriptId: String(props.script.id) } : undefined,
+  });
+}
 const savedPositions = computed(() =>
   flowData.value.canvas?.layoutVersion === 7 ? flowData.value.canvas.positions || {} : {},
 );
@@ -230,7 +239,7 @@ function selectPath(direction: 'upstream' | 'downstream') {
   if (!nodeId) return message.info('请先点击一个节点');
   const ids = workflowPath(workflow.value, nodeId, direction);
   selectedNodeIds.value = ids;
-  flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = ids.includes(node.id); });
+  flowInstance.value?.getNodes?.forEach((node: Node) => { (node as any).selected = ids.includes(node.id); });
 }
 
 function saveWorkflow(definition: ProductionWorkflowDefinition) {
@@ -356,7 +365,7 @@ function saveNodePositions(event: any) {
     ...Object.fromEntries(workflow.value.nodes.map((node) => [node.id, node.position])),
     ...savedPositions.value,
   };
-  for (const node of flowInstance.value?.getNodes?.() || []) {
+  for (const node of flowInstance.value?.getNodes || []) {
     positions[node.id] = { x: node.position.x, y: node.position.y };
   }
   for (const node of event?.nodes || []) {
@@ -384,11 +393,11 @@ function agentForNode(type: string) {
 }
 
 function saveCanvasLayout() {
-  saveNodePositions({ nodes: flowInstance.value?.getNodes?.() || [] });
+  saveNodePositions({ nodes: flowInstance.value?.getNodes || [] });
 }
 
 function currentCanvasPositions() {
-  return Object.fromEntries((flowInstance.value?.getNodes?.() || []).map((node: any) => [node.id, { x: node.position.x, y: node.position.y }]));
+  return Object.fromEntries((flowInstance.value?.getNodes || []).map((node: any) => [node.id, { x: node.position.x, y: node.position.y }]));
 }
 
 function rememberLayout() {
@@ -400,7 +409,7 @@ function rememberLayout() {
 }
 
 function restoreLayout(positions: Record<string, { x: number; y: number }>) {
-  for (const node of flowInstance.value?.getNodes?.() || []) {
+  for (const node of flowInstance.value?.getNodes || []) {
     if (positions[node.id]) node.position = { ...positions[node.id] };
   }
   emit('savePositions', positions);
@@ -445,12 +454,12 @@ function handleSpaceDown(event: KeyboardEvent) {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault();
     selectedNodeIds.value = workflow.value.nodes.map((node) => node.id);
-    flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = true; });
+    flowInstance.value?.getNodes?.forEach((node: Node) => { (node as any).selected = true; });
     return;
   }
   if (event.key === 'Escape') {
     selectedNodeIds.value = [];
-    flowInstance.value?.getNodes?.().forEach((node: Node) => { (node as any).selected = false; });
+    flowInstance.value?.getNodes?.forEach((node: Node) => { (node as any).selected = false; });
     return;
   }
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
@@ -656,7 +665,7 @@ onBeforeUnmount(() => {
             <div>视频工作台</div>
             <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
-          <div class="workbench-preview" @click.stop="workbenchOpen = true">
+          <div class="workbench-preview" @click.stop="openVideoWorkbench">
             <video v-if="workbenchCover" :src="workbenchCover" muted preload="metadata" />
             <div class="workbench-play" aria-hidden="true"><span /></div>
           </div>
@@ -798,42 +807,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Drawer>
-    <Modal
-      v-model:open="workbenchOpen"
-      :closable="false"
-      :footer="null"
-      :keyboard="true"
-      :mask-closable="false"
-      :style="{ top: '0', paddingBottom: '0' }"
-      :width="'100vw'"
-      wrap-class-name="toonflow-workbench-modal"
-    >
-      <VideoWorkbenchPanel
-        :assets="assets"
-        :storyboards="storyboards"
-        :tracks="videoTracks"
-        :video-mode="videoMode"
-        :video-model="videoModel"
-        :video-ratio="videoRatio"
-        @close="workbenchOpen = false"
-        @batch-generate-prompts="emit('batchGenerateVideoPrompts', $event)"
-        @batch-generate-videos="emit('batchGenerateVideos', $event)"
-        @batch-download="emit('batchDownloadVideos', $event)"
-        @cancel-video="emit('cancelTrackVideo', $event)"
-        @delete-video="emit('deleteTrackVideo', $event)"
-        @generate-prompt="emit('generateVideoPrompt', $event)"
-        @generate-video="emit('generateTrackVideo', $event)"
-        @open-track="emit('openVideoTrack', $event)"
-        @retry-video="(video, track) => emit('retryTrackVideo', video, track)"
-        @reorder-storyboards="emit('reorderStoryboards', $event)"
-        @refresh="emit('refreshWorkbench')"
-        @save-prompt="emit('saveVideoPrompt', $event)"
-        @update-continuity-mode="emit('updateContinuityMode', $event)"
-        @select-video="(track, video) => emit('selectTrackVideo', track, video)"
-        @export-storyboard-images="emit('exportStoryboardImages', $event)"
-        @export-video="emit('exportVideo', $event)"
-      />
-    </Modal>
     <Modal v-model:open="editorOpen" :title="editorKey === 'scriptPlan' ? '编辑导演规划' : '编辑分镜表'" width="90vw" @ok="saveEditor">
       <Input.TextArea v-model:value="editorValue" :auto-size="{ minRows: 18, maxRows: 32 }" />
     </Modal>
@@ -841,10 +814,3 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped src="./production-flow-canvas.css"></style>
-
-<style>
-.toonflow-workbench-modal { overflow: hidden; }
-.toonflow-workbench-modal .ant-modal { width: 100vw !important; max-width: 100vw; margin: 0; padding: 0; inset-inline: 0; }
-.toonflow-workbench-modal .ant-modal-content { width: 100vw; max-width: 100vw; height: 100vh; padding: 0; overflow: hidden; border-radius: 0; box-sizing: border-box; }
-.toonflow-workbench-modal .ant-modal-body { width: 100%; max-width: 100vw; height: 100%; padding: 0; overflow: hidden; box-sizing: border-box; }
-</style>

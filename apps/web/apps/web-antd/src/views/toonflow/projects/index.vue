@@ -121,7 +121,7 @@ function modelLabel(options: Array<{ label: string; value: number }>, id?: numbe
 }
 function ratioLabel(ratio?: string) {
   const value = ratio || '16:9';
-  return value === '9:16' ? `竖屏 · ${value}` : value === '1:1' ? `方形 · ${value}` : `横屏 · ${value}`;
+  return value === '9:16' ? `竖屏 ${value}` : value === '1:1' ? `方形 ${value}` : `横屏 ${value}`;
 }
 
 async function openCreate() {
@@ -204,7 +204,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
       <div v-else class="toon-grid project-grid">
         <ToonCard v-for="record in projects" :key="record.id" clickable padding="none" class="project-card" @click="openProject(record)">
           <div class="project-card__cover toon-dots">
-            <span>{{ record.name.slice(0, 1) }}</span>
+            <span class="project-card__initial">{{ record.name.slice(0, 1) }}</span>
             <span class="ratio-badge">{{ ratioLabel(record.videoRatio) }}</span>
           </div>
           <div class="project-card__body">
@@ -300,13 +300,13 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
   white-space: nowrap;
 }
 .project-loading { display: grid; min-height: 280px; color: #737373; place-items: center; }
-.project-grid { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)) !important; }
-.project-card { padding: 0 !important; overflow: hidden; border: 0 !important; border-radius: 0 !important; background: transparent !important; box-shadow: none !important; }
-.project-card:hover { box-shadow: none !important; transform: none; }
-.project-card__cover { position: relative; display: grid; height: 138px; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 55%, #eef2ff 100%); place-items: center; }
-.project-card__cover > span { display: grid; width: 54px; height: 54px; border: 1px solid rgb(255 255 255 / 80%); border-radius: 16px; color: #2563eb; background: rgb(255 255 255 / 85%); font-size: 24px; font-weight: 700; box-shadow: 0 6px 16px rgb(37 99 235 / 12%); place-items: center; }
-.project-card__cover > .ratio-badge { position: absolute; top: 12px; right: 12px; margin: 0; padding: 2px 8px; border-radius: 999px; color: #334155; background: rgb(255 255 255 / 88%); font-size: 11px; }
-.project-card__body { padding: 17px; }.project-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.project-card__heading h3 { overflow: hidden; margin: 0; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }.project-card__body > p { height: 40px; overflow: hidden; margin: 9px 0 12px; color: #737373; font-size: 12px; line-height: 20px; }
-.project-type { flex: none; margin: 0; padding: 2px 8px; border-radius: 999px; color: #2563eb; background: #eff6ff; font-size: 11px; }
-.project-card__tags { display: flex; flex-wrap: wrap; gap: 5px; }.project-card__models { display: grid; margin-top: 14px; color: #8a8a8a; font-size: 11px; gap: 4px; }.project-card__actions { display: flex; justify-content: flex-end; margin: 13px -8px -7px; border-top: 1px solid #f0f0f0; padding-top: 8px; }
+.project-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important; gap: 18px; }
+.project-card { display: flex; min-height: 372px; flex-direction: column; padding: 0 !important; overflow: hidden; border: 1px solid var(--toon-line) !important; border-radius: 18px !important; background: var(--toon-panel) !important; box-shadow: 0 8px 26px rgb(0 0 0 / 10%) !important; }
+.project-card:hover { border-color: var(--ant-color-primary-border) !important; box-shadow: 0 14px 34px rgb(0 0 0 / 16%) !important; transform: translateY(-3px); }
+.project-card__cover { position: relative; display: grid; height: 148px; flex: 0 0 148px; background-color: var(--toon-canvas); place-items: center; }
+.project-card__initial { display: grid; width: 58px; height: 58px; border: 1px solid var(--ant-color-primary-border); border-radius: 17px; color: var(--ant-color-primary); background: var(--toon-panel); font-size: 25px; font-weight: 700; box-shadow: 0 8px 20px rgb(0 0 0 / 12%); place-items: center; }
+.project-card__cover > .ratio-badge { position: absolute; top: 13px; right: 14px; margin: 0; color: var(--toon-muted); font-size: 11px; font-weight: 600; letter-spacing: .01em; }
+.project-card__body { display: flex; min-width: 0; flex: 1; flex-direction: column; padding: 17px 18px 14px; }.project-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.project-card__heading h3 { overflow: hidden; margin: 0; color: var(--toon-ink); font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }.project-card__body > p { height: 40px; overflow: hidden; margin: 9px 0 12px; color: var(--toon-muted); font-size: 12px; line-height: 20px; }
+.project-type { flex: none; margin: 0; padding: 3px 9px; border-radius: 999px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); font-size: 11px; }
+.project-card__tags { display: flex; flex-wrap: wrap; gap: 5px; }.project-card__models { display: grid; margin-top: 14px; color: var(--toon-muted); font-size: 11px; gap: 5px; }.project-card__models span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.project-card__actions { display: flex; justify-content: flex-end; gap: 2px; margin: auto -8px 0; border-top: 1px solid var(--toon-line); padding-top: 9px; }
 </style>

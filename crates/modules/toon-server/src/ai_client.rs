@@ -75,6 +75,48 @@ where
     }
 }
 
+/// Records a generated image together with its result so the task center can
+/// render the image instead of treating it as a text-only task.
+async fn recorded_image_with_context<F>(
+    pool: &PgPool,
+    project_id: Option<i64>,
+    model: &str,
+    future: F,
+) -> Result<String, String>
+where
+    F: std::future::Future<Output = Result<String, String>>,
+{
+    let id = task_id();
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,model,description,state,start_time,progress_current,progress_total) VALUES($1,$2,'image',$3,'图片生成','running',$4,0,1)")
+        .bind(id)
+        .bind(project_id)
+        .bind(model)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .execute(pool)
+        .await
+        .map_err(|error| format!("创建 AI 任务记录失败：{error}"))?;
+    match future.await {
+        Ok(value) => {
+            let result = serde_json::json!({"url": &value}).to_string();
+            sqlx::query("UPDATE toonflow.tasks SET state='success',related_objects=CASE WHEN length($2)<=255 THEN $2 ELSE related_objects END,progress_current=1,reason=NULL WHERE id=$1")
+                .bind(id)
+                .bind(result)
+                .execute(pool)
+                .await
+                .map_err(|error| format!("更新 AI 任务记录失败：{error}"))?;
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = sqlx::query("UPDATE toonflow.tasks SET state='failed',reason=$2 WHERE id=$1")
+                .bind(id)
+                .bind(&error)
+                .execute(pool)
+                .await;
+            Err(error)
+        }
+    }
+}
+
 async fn project_agent_model(
     pool: &PgPool,
     key: &str,
@@ -356,41 +398,32 @@ pub async fn image_with_references_for_project(
     references: Vec<String>,
 ) -> Result<String, String> {
     let model = model_id(configured, "图片")?;
-    recorded_with_context(
-        pool,
-        project_id,
-        Some(1),
-        "image",
-        &model.to_string(),
-        "图片生成",
-        async move {
-            let mut last_error = String::new();
-            for attempt in 1..=3 {
-                match rust_toon_ai_server::AiModelFactory::new(pool.clone())
-                    .image(
-                        model,
-                        rust_toon_ai_api::ImageRequest {
-                            prompt: prompt.into(),
-                            size: size.into(),
-                            references: references.clone(),
-                        },
-                    )
-                    .await
-                {
-                    Ok(response) => return Ok(response.url),
-                    Err(error) => {
-                        last_error = normalized_app_error(error);
-                        if attempt == 3 || !is_transient_model_error(&last_error) {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_secs(attempt as u64 * 2))
-                            .await;
+    recorded_image_with_context(pool, project_id, &model.to_string(), async move {
+        let mut last_error = String::new();
+        for attempt in 1..=3 {
+            match rust_toon_ai_server::AiModelFactory::new(pool.clone())
+                .image(
+                    model,
+                    rust_toon_ai_api::ImageRequest {
+                        prompt: prompt.into(),
+                        size: size.into(),
+                        references: references.clone(),
+                    },
+                )
+                .await
+            {
+                Ok(response) => return Ok(response.url),
+                Err(error) => {
+                    last_error = normalized_app_error(error);
+                    if attempt == 3 || !is_transient_model_error(&last_error) {
+                        break;
                     }
+                    tokio::time::sleep(std::time::Duration::from_secs(attempt as u64 * 2)).await;
                 }
             }
-            Err(last_error)
-        },
-    )
+        }
+        Err(last_error)
+    })
     .await
 }
 
@@ -415,6 +448,20 @@ pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<St
     video_with_context(pool, configured, payload, None).await
 }
 
+/// Executes a video request without creating a generic `universalAi` task.
+///
+/// Video generation already has a project-scoped row in `toonflow.videos`
+/// whose state is polled by the workbench, so recording a second generic task
+/// only creates duplicate entries in the task center.
+pub async fn video_untracked(
+    pool: &PgPool,
+    configured: &str,
+    payload: Value,
+) -> Result<String, String> {
+    let model_id = validate_video_request(pool, configured, &payload).await?;
+    video_unrecorded(pool, model_id, payload, None).await
+}
+
 pub async fn project_video(
     pool: &PgPool,
     configured: &str,
@@ -430,6 +477,24 @@ async fn video_with_context(
     payload: Value,
     project_id: Option<i64>,
 ) -> Result<String, String> {
+    let model_id = validate_video_request(pool, configured, &payload).await?;
+    recorded_with_context(
+        pool,
+        project_id,
+        Some(1),
+        "video",
+        &model_id.to_string(),
+        "视频生成",
+        video_unrecorded(pool, model_id, payload, project_id),
+    )
+    .await
+}
+
+async fn validate_video_request(
+    pool: &PgPool,
+    configured: &str,
+    payload: &Value,
+) -> Result<i64, String> {
     let model_id = model_id(configured, "视频")?;
     let config = rust_toon_ai_server::AiModelFactory::new(pool.clone())
         .config(model_id)
@@ -460,16 +525,7 @@ async fn video_with_context(
             config.name
         ));
     }
-    recorded_with_context(
-        pool,
-        project_id,
-        Some(1),
-        "video",
-        &model_id.to_string(),
-        "视频生成",
-        video_unrecorded(pool, model_id, payload, project_id),
-    )
-    .await
+    Ok(model_id)
 }
 
 async fn video_unrecorded(

@@ -45,12 +45,6 @@ const currentDescription = computed(() =>
 const storyboardGroups = computed(() =>
   groupStoryboardsByTrack(orderedStoryboards.value, { preserveOrder: true }),
 );
-const currentGroup = computed(() =>
-  storyboardGroups.value.find((group) => group.items.some((item) => item.id === current.value?.id)),
-);
-const currentGroupIndex = computed(() =>
-  currentGroup.value?.items.findIndex((item) => item.id === current.value?.id) ?? -1,
-);
 function previewUrl(item: any) {
   return assetFileUrl(item?.imageFilePath || item?.filePath || item?.fileUrl || item?.src);
 }
@@ -63,12 +57,17 @@ function storyboardLabel(item: any) {
   return `轨道 ${group?.name || '默认轨道'} · 分镜 ${storyboardNumber(item)}`;
 }
 const currentLabel = computed(() => current.value ? storyboardLabel(current.value) : '暂无分镜');
+const canGoPrevious = computed(() => activeIndex.value > 0);
+const canGoNext = computed(() => activeIndex.value < orderedStoryboards.value.length - 1);
 const allSelected = computed({
   get: () => orderedIds.value.length > 0 && orderedIds.value.every((id) => selectedIds.value.includes(id)),
   set: (checked: boolean) => { selectedIds.value = checked ? [...orderedIds.value] : []; },
 });
 
-function selectShot(index: number) { activeIndex.value = index; }
+function selectShot(index: number) {
+  if (index < 0 || index >= orderedStoryboards.value.length) return;
+  activeIndex.value = index;
+}
 function toggleSelected(id: number, checked: boolean) {
   selectedIds.value = checked
     ? [...new Set([...selectedIds.value, id])]
@@ -99,7 +98,9 @@ function restoreOrder() {
   <div v-if="current" class="quick-preview">
     <section class="preview-main">
       <div class="visual-column">
-        <div class="hero-image">
+        <div
+          class="hero-image"
+        >
           <img
             v-if="previewUrl(current)"
             :src="previewUrl(current)"
@@ -107,18 +108,40 @@ function restoreOrder() {
             class="hero-image-content"
           />
           <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无图片" />
-        </div>
-        <div class="image-navigation">
-          <Button shape="circle" :disabled="activeIndex === 0" @click="selectShot(activeIndex - 1)">‹</Button>
-          <span>{{ currentLabel }}（{{ currentGroupIndex + 1 }} / {{ currentGroup?.items.length || 0 }}）</span>
-          <Button shape="circle" :disabled="activeIndex >= orderedStoryboards.length - 1" @click="selectShot(activeIndex + 1)">›</Button>
+          <Button
+            v-if="orderedStoryboards.length > 1"
+            class="preview-nav-icon preview-nav-icon--prev"
+            size="small"
+            shape="circle"
+            :disabled="!canGoPrevious"
+            aria-label="上一张分镜"
+            title="上一张分镜"
+            @click.stop="selectShot(activeIndex - 1)"
+          >
+            ‹
+          </Button>
+          <Button
+            v-if="orderedStoryboards.length > 1"
+            class="preview-nav-icon preview-nav-icon--next"
+            size="small"
+            shape="circle"
+            :disabled="!canGoNext"
+            aria-label="下一张分镜"
+            title="下一张分镜"
+            @click.stop="selectShot(activeIndex + 1)"
+          >
+            ›
+          </Button>
         </div>
       </div>
 
       <aside class="info-panel">
-        <section><h4><i />分镜描述</h4><p>【{{ currentLabel }}】{{ currentDescription || '暂无描述' }}</p></section>
-        <section><h4><i />时长</h4><p>{{ current.duration || 3 }} 秒</p></section>
-        <section>
+        <header class="preview-info-header">
+          <div><span>当前分镜</span><h3>{{ currentLabel }}</h3></div>
+          <Tag color="blue">{{ current.duration || 3 }} 秒</Tag>
+        </header>
+        <section class="info-section info-section--description"><h4><i />分镜描述</h4><p>{{ currentDescription || '暂无描述' }}</p></section>
+        <section class="info-section">
           <h4><i />涉及资产</h4>
           <div v-if="currentAssets.length" class="asset-list">
             <article v-for="asset in currentAssets" :key="asset.id">
@@ -129,14 +152,14 @@ function restoreOrder() {
           </div>
           <Tag v-else>暂无出场人物</Tag>
         </section>
-        <section class="prompt-info"><h4><i />图片提示词</h4><p><b>场景描述：</b>{{ currentDescription || '暂无描述' }}</p><p><b>提示词：</b>{{ current.prompt || '暂无提示词' }}</p></section>
+        <section class="prompt-info info-section"><h4><i />图片提示词</h4><p><b>场景描述：</b>{{ currentDescription || '暂无描述' }}</p><p><b>提示词：</b>{{ current.prompt || '暂无提示词' }}</p></section>
       </aside>
     </section>
 
     <section class="shot-list-area">
-      <header>
-        <div><Checkbox v-model:checked="allSelected">全选</Checkbox><Button type="text" @click="restoreOrder">↶ 还原排序</Button></div>
-        <Button type="text" @click="emit('exportImages', selectedIds)">⇩ 导出图片</Button>
+      <header class="shot-list-toolbar">
+        <div class="shot-list-heading"><div><b>分镜序列</b><span>{{ orderedStoryboards.length }} 个分镜 · {{ selectedIds.length }} 个已选</span></div><Checkbox v-model:checked="allSelected">全选</Checkbox></div>
+        <div class="shot-list-actions"><Button type="text" @click="restoreOrder">↶ 还原排序</Button><Button type="primary" ghost :disabled="selectedIds.length === 0" @click="emit('exportImages', selectedIds)">⇩ 导出图片</Button></div>
       </header>
       <StoryboardTrackStrip
         :active-storyboard-id="current?.id"
@@ -529,5 +552,281 @@ function restoreOrder() {
 @media (max-width: 900px) {
   .quick-preview { height: auto; min-height: 100%; overflow: visible; grid-template-rows: auto auto; }
   .shot-list-area { height: 256px; overflow: hidden; }
+}
+
+/* Keep the active storyboard preview visually clear. */
+.hero-image {
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  outline: none;
+}
+
+.preview-nav-icon {
+  position: absolute;
+  z-index: 3;
+  top: 50%;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 48%) !important;
+  color: #fff !important;
+  font-size: 20px;
+  font-weight: 700;
+  background: rgb(15 23 42 / 80%) !important;
+  box-shadow: 0 3px 10px rgb(0 0 0 / 28%);
+  transform: translateY(-50%);
+}
+
+.preview-nav-icon:hover:not(:disabled) {
+  color: #fff !important;
+  border-color: #fff !important;
+  background: #1677ff !important;
+  box-shadow: 0 4px 12px rgb(22 119 255 / 35%);
+  transform: translateY(-50%) scale(1.06);
+}
+
+.preview-nav-icon:disabled {
+  color: rgb(255 255 255 / 58%) !important;
+  border-color: rgb(255 255 255 / 22%) !important;
+  background: rgb(15 23 42 / 42%) !important;
+  box-shadow: none;
+  opacity: 0.75;
+}
+
+.preview-nav-icon--prev {
+  left: 12px;
+}
+
+.preview-nav-icon--next {
+  right: 12px;
+}
+
+.preview-nav-icon :deep(span) {
+  font-size: 18px;
+  line-height: 1;
+}
+
+/* Refine the information panel and storyboard sequence without changing selection behavior. */
+.quick-preview {
+  grid-template-rows: minmax(0, 1fr) 220px;
+}
+
+.info-panel {
+  padding: 16px 18px;
+  background: var(--ant-color-bg-layout);
+}
+
+.preview-info-header {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.preview-info-header > div {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.preview-info-header span {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+}
+
+.preview-info-header h3 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--ant-color-text);
+  font-size: 16px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preview-info-header :deep(.ant-tag) {
+  flex: none;
+  margin: 0;
+}
+
+.info-section {
+  margin-bottom: 16px !important;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--ant-color-border-secondary);
+}
+
+.info-section:last-child {
+  margin-bottom: 0 !important;
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.info-section h4 {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.info-section p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.asset-list {
+  gap: 8px;
+}
+
+.asset-list article {
+  width: 82px;
+  max-width: 82px;
+  gap: 4px;
+}
+
+.asset-list :deep(.ant-image),
+.asset-list :deep(img) {
+  width: 82px !important;
+  height: 64px !important;
+}
+
+.asset-list :deep(.ant-tag) {
+  max-width: 82px;
+  padding-inline: 5px;
+  font-size: 10px;
+}
+
+.shot-list-area {
+  height: 220px;
+  padding: 12px 16px 10px;
+  border-top: 1px solid var(--ant-color-border-secondary);
+  background: var(--ant-color-bg-container);
+}
+
+.shot-list-area .shot-list-toolbar {
+  display: flex;
+  height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.shot-list-heading,
+.shot-list-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.shot-list-heading > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.shot-list-heading > div span {
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
+}
+
+.shot-list-actions {
+  flex: none;
+  gap: 4px;
+}
+
+.shot-list-actions :deep(.ant-btn) {
+  height: 28px;
+  padding-inline: 8px;
+  font-size: 11px;
+}
+
+.shot-list-area :deep(.storyboard-track-strip) {
+  gap: 12px;
+  padding: 0 2px 6px;
+}
+
+.shot-list-area :deep(.storyboard-track-group) {
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid var(--ant-color-border-secondary);
+  border-radius: 9px;
+  background: var(--ant-color-bg-layout);
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.shot-list-area :deep(.storyboard-track-group:hover) {
+  border-color: var(--ant-color-primary-border);
+  box-shadow: 0 5px 12px rgb(15 23 42 / 8%);
+  transform: translateY(-1px);
+}
+
+.shot-list-area :deep(.storyboard-track-group.active) {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg), 0 5px 12px rgb(22 119 255 / 10%);
+}
+
+.shot-list-area :deep(.storyboard-track-group-title) {
+  height: 22px;
+  gap: 6px;
+  padding-inline: 2px;
+}
+
+.shot-list-area :deep(.storyboard-track-group-items) {
+  height: 112px;
+  gap: 8px;
+}
+
+.shot-list-area :deep(.storyboard-track-shot) {
+  width: 176px;
+  flex-basis: 176px;
+  padding: 4px;
+  border-radius: 7px;
+}
+
+.shot-list-area :deep(.storyboard-track-shot.active) {
+  border-color: var(--ant-color-primary);
+  box-shadow: 0 0 0 2px var(--ant-color-primary-bg);
+}
+
+.shot-list-area :deep(.storyboard-track-shot-media) {
+  border-radius: 5px;
+}
+
+@media (max-width: 900px) {
+  .quick-preview {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+    grid-template-rows: auto auto;
+  }
+
+  .preview-info-header h3 {
+    font-size: 14px;
+  }
+
+  .shot-list-area {
+    height: 220px;
+    padding-inline: 10px;
+  }
+
+  .shot-list-area .shot-list-toolbar {
+    align-items: flex-start;
+  }
+
+  .shot-list-heading > div {
+    display: grid;
+    gap: 2px;
+  }
+
+  .shot-list-area :deep(.storyboard-track-shot) {
+    width: 156px;
+    flex-basis: 156px;
+  }
+
 }
 </style>

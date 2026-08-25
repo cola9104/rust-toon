@@ -3,7 +3,7 @@ import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { Page } from '@vben/common-ui';
-import { Button, Card, Drawer, Empty, Progress, Select, Space, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Drawer, Empty, Progress, Select, Space, Table, Tag } from 'ant-design-vue';
 import { getTasks } from '#/api/toonflow';
 import { assetFileUrl } from '../assets/asset-types';
 import '../shared/page-card.css';
@@ -11,12 +11,26 @@ import '../styles/toon-theme.css';
 
 const loading = ref(false);
 const tasks = ref<ToonflowApi.Task[]>([]);
+const loadError = ref('');
 const category = ref('all');
 const state = ref('all');
 const detail = ref<ToonflowApi.Task>();
 let pollTimer: number | undefined;
 
-const typeLabel = (type: string) => ({ novelEvent: '章节事件提取', scriptAssetExtraction: '剧本资产提取', videoExport: '成片导出', '工作流图片生成': '工作流图片生成' }[type] ?? type);
+const taskKind = (type: string) => ({
+  video: 'video',
+  videoExport: 'video',
+  image: 'image',
+  '工作流图片生成': 'image',
+}[type] ?? 'default');
+const typeLabel = (type: string) => ({
+  novelEvent: '章节事件提取',
+  scriptAssetExtraction: '剧本资产提取',
+  video: '视频生成',
+  videoExport: '视频合成',
+  image: '图片生成',
+  '工作流图片生成': '图片生成',
+}[type] ?? type);
 const modelLabel = (model?: string) => ({ universalAi: '通用 AI' }[model ?? ''] ?? model ?? '—');
 const stateLabel = (value: string) => ({ success: '成功', completed: '已完成', running: '处理中', failed: '失败', error: '失败' }[value?.toLowerCase()] ?? value ?? '未知');
 const color = (value: string) => ({ success: 'green', completed: 'green', running: 'blue', failed: 'red', error: 'red' }[value?.toLowerCase()] ?? 'default');
@@ -35,7 +49,15 @@ const columns = [
 
 async function load(silent = false) {
   if (!silent) loading.value = true;
-  try { tasks.value = await getTasks(); } finally { loading.value = false; }
+  try {
+    tasks.value = await getTasks();
+    loadError.value = '';
+  } catch (error) {
+    loadError.value = error instanceof Error ? error.message : '任务中心暂时无法加载，请稍后重试';
+    if (!silent) tasks.value = [];
+  } finally {
+    loading.value = false;
+  }
 }
 function schedule() {
   window.clearInterval(pollTimer);
@@ -44,17 +66,22 @@ function schedule() {
 function onVisibilityChange() { schedule(); if (!document.hidden) void load(true); }
 function openDetail(record: Record<string, any>) { detail.value = record as ToonflowApi.Task; }
 function filterByState(next: string) { state.value = state.value === next ? 'all' : next; }
-function exportVideoUrl(task?: { taskClass?: string; state?: string; relatedObjects?: string }) {
-  if (!task || task.taskClass !== 'videoExport' || !['success', 'completed'].includes(task.state?.toLowerCase() ?? '')) return '';
-  try {
-    const payload = JSON.parse(task.relatedObjects || '{}') as { url?: unknown };
-    return typeof payload.url === 'string' ? assetFileUrl(payload.url) : '';
-  } catch {
-    return '';
+function taskResultUrl(task?: ToonflowApi.Task) {
+  if (!task || !['success', 'completed'].includes(task.state?.toLowerCase() ?? '')) return '';
+  const candidates = [task.relatedObjects, task.input ? JSON.stringify(task.input) : ''];
+  for (const candidate of candidates) {
+    try {
+      const payload = JSON.parse(candidate || '{}') as { filePath?: unknown; imageUrl?: unknown; path?: unknown; url?: unknown };
+      const raw = payload.url ?? payload.imageUrl ?? payload.filePath ?? payload.path;
+      if (typeof raw === 'string' && raw.trim()) return assetFileUrl(raw);
+    } catch {
+      // Older task rows contain plain text in relatedObjects.
+    }
   }
+  return '';
 }
-function downloadExportVideo(task: ToonflowApi.Task) {
-  const url = exportVideoUrl(task);
+function downloadVideo(task: ToonflowApi.Task) {
+  const url = taskResultUrl(task);
   if (!url) return;
   const link = document.createElement('a');
   link.href = url;
@@ -87,23 +114,24 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
         <button class="stat-card success" :class="{ active: state === 'completed' }" type="button" @click="filterByState('completed')"><span class="stat-label">已完成</span><strong>{{ taskStats.success }}</strong><small>执行成功</small></button>
         <button class="stat-card failed" :class="{ active: state === 'failed' }" type="button" @click="filterByState('failed')"><span class="stat-label">失败</span><strong>{{ taskStats.failed }}</strong><small>需要处理</small></button>
       </div>
-      <Empty v-if="!loading && visibleTasks.length === 0" description="暂无匹配任务" />
-      <Table v-else class="task-table" :columns="columns" :data-source="visibleTasks" :loading="loading" :pagination="{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20','50','100'], showTotal: (total: number) => `共 ${total} 个任务` }" :scroll="{ x: 1280 }" row-key="id" size="middle">
+      <Alert v-if="loadError" class="task-load-error" type="error" show-icon :message="loadError" />
+      <Empty v-if="!loadError && !loading && visibleTasks.length === 0" description="暂无匹配任务" />
+      <Table v-else-if="!loadError" class="task-table" :columns="columns" :data-source="visibleTasks" :loading="loading" :pagination="{ pageSize: 20, showSizeChanger: true, pageSizeOptions: ['20','50','100'], showTotal: (total: number) => `共 ${total} 个任务` }" :scroll="{ x: 1280 }" row-key="id" size="middle">
         <template #bodyCell="{column,record}">
-          <div v-if="column.dataIndex === 'description'" class="task-name"><span class="task-name__icon">✦</span><div><strong>{{ record.description || '未命名任务' }}</strong><small>#{{ record.id }}</small></div></div>
+          <div v-if="column.dataIndex === 'description'" class="task-name"><span class="task-name__icon" :class="`task-name__icon--${taskKind(record.taskClass)}`">{{ taskKind(record.taskClass) === 'video' ? '▶' : taskKind(record.taskClass) === 'image' ? '▧' : '✦' }}</span><div><strong>{{ record.description || '未命名任务' }}</strong><small>#{{ record.id }}</small></div></div>
           <div v-else-if="column.dataIndex === 'projectName'" class="project-name"><span class="project-mark">P</span><span>{{ record.projectName || '未关联项目' }}</span></div>
-          <Tag v-else-if="column.dataIndex === 'taskClass'" class="type-tag">{{ typeLabel(record.taskClass) }}</Tag>
+          <Tag v-else-if="column.dataIndex === 'taskClass'" class="type-tag" :class="`type-tag--${taskKind(record.taskClass)}`">{{ typeLabel(record.taskClass) }}</Tag>
           <template v-else-if="column.dataIndex === 'model'"><span class="model-name">{{ modelLabel(record.model) }}</span></template>
           <div v-else-if="column.key === 'progress'" class="progress-cell"><template v-if="progress(record as ToonflowApi.Task) !== undefined"><Progress :percent="progress(record as ToonflowApi.Task)" :status="record.state?.toLowerCase() === 'failed' ? 'exception' : undefined" :show-info="false" size="small" /><small>{{ record.progressCurrent ?? 0 }}/{{ record.progressTotal }}</small></template><span v-else class="muted">未提供</span></div>
           <span v-else-if="column.dataIndex === 'relatedObjects'" class="related-object">{{ record.relatedObjects || '—' }}</span>
           <template v-else-if="column.key === 'startTime'"><span class="time-text">{{ record.startTime ? new Date(record.startTime).toLocaleString() : '—' }}</span></template>
           <Tag v-else-if="column.dataIndex === 'state'" :color="color(record.state)" class="state-tag"><span class="state-dot" />{{ stateLabel(record.state) }}</Tag>
-          <Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">{{ exportVideoUrl(record) ? '查看成片' : '查看详情' }}</Button>
+          <Button v-else-if="column.key === 'action'" type="link" @click="openDetail(record)">{{ taskResultUrl(record as ToonflowApi.Task) ? (taskKind(record.taskClass) === 'image' ? '查看图片' : '查看视频') : '查看详情' }}</Button>
         </template>
       </Table>
     </Card>
     <Drawer :open="!!detail" title="任务详情" width="480" @close="detail = undefined">
-      <template v-if="detail"><div class="task-detail"><label>任务</label><p>{{ detail.description || '—' }}</p><label>项目</label><p>{{ detail.projectName || '—' }}</p><label>类型 / 模型</label><p>{{ typeLabel(detail.taskClass) }} · {{ modelLabel(detail.model) }}</p><label>关联对象</label><p>{{ detail.relatedObjects || '—' }}</p><section v-if="exportVideoUrl(detail)" class="export-result"><div class="export-result-heading"><b>成片结果</b><Button size="small" type="primary" @click="downloadExportVideo(detail)">下载 MP4</Button></div><video :key="detail.id" :src="exportVideoUrl(detail)" controls playsinline preload="metadata" /></section><label>状态 / 进度</label><p><Tag :color="color(detail.state)">{{ stateLabel(detail.state) }}</Tag><span v-if="progress(detail) !== undefined" class="detail-progress">{{ progress(detail) }}%（{{ detail.progressCurrent ?? 0 }}/{{ detail.progressTotal }}）</span></p><label v-if="detail.retryOfId">重试来源</label><p v-if="detail.retryOfId">任务 #{{ detail.retryOfId }}</p><label>失败原因</label><pre :class="{ error: detail.reason }">{{ detail.reason || '无' }}</pre><label>原始输入</label><pre>{{ detail.input && Object.keys(detail.input).length ? JSON.stringify(detail.input, null, 2) : '暂无记录（旧任务）' }}</pre></div></template>
+      <template v-if="detail"><div class="task-detail"><label>任务</label><p>{{ detail.description || '—' }}</p><label>项目</label><p>{{ detail.projectName || '—' }}</p><label>类型 / 模型</label><p>{{ typeLabel(detail.taskClass) }} · {{ modelLabel(detail.model) }}</p><label>关联对象</label><p>{{ detail.relatedObjects || '—' }}</p><section v-if="taskResultUrl(detail) && taskKind(detail.taskClass) === 'video'" class="export-result"><div class="export-result-heading"><b>视频结果</b><Button size="small" type="primary" @click="downloadVideo(detail)">下载 MP4</Button></div><video :key="detail.id" :src="taskResultUrl(detail)" controls playsinline preload="metadata" /></section><section v-else-if="taskResultUrl(detail) && taskKind(detail.taskClass) === 'image'" class="image-result"><b>图片结果</b><img :src="taskResultUrl(detail)" alt="生成结果" /></section><label>状态 / 进度</label><p><Tag :color="color(detail.state)">{{ stateLabel(detail.state) }}</Tag><span v-if="progress(detail) !== undefined" class="detail-progress">{{ progress(detail) }}%（{{ detail.progressCurrent ?? 0 }}/{{ detail.progressTotal }}）</span></p><label v-if="detail.retryOfId">重试来源</label><p v-if="detail.retryOfId">任务 #{{ detail.retryOfId }}</p><label>失败原因</label><pre :class="{ error: detail.reason }">{{ detail.reason || '无' }}</pre><label>原始输入</label><pre>{{ detail.input && Object.keys(detail.input).length ? JSON.stringify(detail.input, null, 2) : '暂无记录（旧任务）' }}</pre></div></template>
     </Drawer>
   </Page>
 </template>
@@ -125,8 +153,10 @@ onBeforeUnmount(() => { window.clearInterval(pollTimer); document.removeEventLis
 .stat-card.total { --stat-color: #8c8c8c; }.stat-card.running { --stat-color: #1677ff; }.stat-card.success { --stat-color: #52c41a; }.stat-card.failed { --stat-color: #ff4d4f; }
 .stat-label { color: var(--ant-color-text-secondary); font-size: 13px; }.stat-card strong { margin-top: 5px; color: var(--ant-color-text); font-size: 28px; font-weight: 650; line-height: 1.1; }.stat-card small { margin-top: 5px; color: var(--ant-color-text-tertiary); font-size: 11px; }
 .task-table { width: 100%; max-width: 100%; overflow: hidden; border: 1px solid var(--toon-line); border-radius: 14px; }.task-table :deep(.ant-table-container) { max-width: 100%; overflow-x: auto; }.task-table :deep(.ant-table-thead > tr > th) { color: var(--ant-color-text-secondary); background: #fafaf8; font-size: 12px; font-weight: 650; }.task-table :deep(.ant-table-tbody > tr > td) { padding-top: 14px; padding-bottom: 14px; }
-.task-name, .project-name { display: flex; align-items: center; gap: 9px; min-width: 0; }.task-name__icon, .project-mark { display: grid; flex: 0 0 auto; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #1677ff; background: #eaf3ff; font-size: 13px; }.task-name strong { display: block; overflow: hidden; max-width: 210px; text-overflow: ellipsis; white-space: nowrap; }.task-name small { display: block; margin-top: 3px; color: var(--ant-color-text-tertiary); font-size: 10px; }.project-mark { width: 24px; height: 24px; color: #7b61ff; background: #f0edff; font-size: 11px; font-weight: 700; }.project-name span:last-child, .related-object { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.model-name, .time-text, .muted { color: var(--ant-color-text-secondary); font-size: 12px; }.related-object { display: block; max-width: 180px; color: var(--ant-color-text-secondary); font-size: 12px; }.type-tag, .state-tag { margin-inline-end: 0; }.state-dot { display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentcolor; vertical-align: middle; }.progress-cell { display: grid; width: 120px; align-items: center; grid-template-columns: 1fr auto; gap: 8px; }.progress-cell :deep(.ant-progress) { margin: 0; }.progress-cell small { color: var(--ant-color-text-secondary); font-size: 11px; white-space: nowrap; }
+.task-name, .project-name { display: flex; align-items: center; gap: 9px; min-width: 0; }.task-name__icon, .project-mark { display: grid; flex: 0 0 auto; width: 28px; height: 28px; place-items: center; border-radius: 8px; color: #1677ff; background: #eaf3ff; font-size: 13px; }.task-name__icon--video { color: #1677ff; background: #eaf3ff; }.task-name__icon--image { color: #d46b08; background: #fff1d6; }.task-name strong { display: block; overflow: hidden; max-width: 210px; text-overflow: ellipsis; white-space: nowrap; }.task-name small { display: block; margin-top: 3px; color: var(--ant-color-text-tertiary); font-size: 10px; }.project-mark { width: 24px; height: 24px; color: #7b61ff; background: #f0edff; font-size: 11px; font-weight: 700; }.project-name span:last-child, .related-object { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.model-name, .time-text, .muted { color: var(--ant-color-text-secondary); font-size: 12px; }.related-object { display: block; max-width: 180px; color: var(--ant-color-text-secondary); font-size: 12px; }.type-tag, .state-tag { margin-inline-end: 0; }.type-tag--video { color: #0958d9; border-color: #91caff; background: #e6f4ff; }.type-tag--image { color: #ad4e00; border-color: #ffd591; background: #fff7e6; }.state-dot { display: inline-block; width: 5px; height: 5px; margin-right: 5px; border-radius: 50%; background: currentcolor; vertical-align: middle; }.progress-cell { display: grid; width: 120px; align-items: center; grid-template-columns: 1fr auto; gap: 8px; }.progress-cell :deep(.ant-progress) { margin: 0; }.progress-cell small { color: var(--ant-color-text-secondary); font-size: 11px; white-space: nowrap; }
 .task-detail { display: grid; min-width: 0; max-width: 100%; gap: 5px; overflow-x: hidden; }.task-detail label { margin-top: 12px; color: #8c8c8c; font-size: 12px; }.task-detail p { margin: 0; overflow-wrap: anywhere; word-break: break-word; }.task-detail pre { max-width: 100%; box-sizing: border-box; padding: 12px; overflow-x: auto; border-radius: 10px; white-space: pre-wrap; background: #f5f5f5; }.task-detail pre.error { color: #a8071a; background: #fff1f0; }.export-result { display: grid; min-width: 0; max-width: 100%; gap: 10px; margin-top: 12px; padding: 12px; overflow: hidden; box-sizing: border-box; border: 1px solid var(--ant-color-border-secondary); border-radius: 10px; background: var(--ant-color-fill-quaternary); }.export-result-heading { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }.export-result video { display: block; width: min(420px, 100%); max-width: 100%; height: min(250px, 42vh); min-width: 0; margin: 0; justify-self: start; box-sizing: border-box; border-radius: 7px; background: #000; object-fit: contain; }
+.image-result { display: grid; min-width: 0; max-width: 100%; gap: 10px; margin-top: 12px; padding: 12px; overflow: hidden; box-sizing: border-box; border: 1px solid var(--ant-color-border-secondary); border-radius: 10px; background: var(--ant-color-fill-quaternary); }.image-result img { display: block; width: min(420px, 100%); max-width: 100%; max-height: 360px; object-fit: contain; border-radius: 8px; background: #f5f5f5; }
+.task-load-error { margin-bottom: 16px; }
 @media (max-width: 720px) { .toonflow-page-card :deep(.ant-card-body) { padding: 14px; } .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .task-toolbar { justify-content: flex-start; width: 100%; } .task-filter, .task-filter--type { width: min(100%, 220px); } }
 @media (max-width: 420px) { .task-stats { grid-template-columns: 1fr; } }
 </style>

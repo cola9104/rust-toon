@@ -369,10 +369,14 @@ async function loadNovels() {
 
 async function loadScripts() {
   scripts.value = await getScripts(projectId.value);
+  const requestedScriptId = Number(route.query.scriptId);
+  const requestedScript = scripts.value.find((script) => script.id === requestedScriptId);
   const selectionStillExists = scripts.value.some(
     (script) => script.id === selectedScriptId.value,
   );
-  if (!selectionStillExists && orderedScripts.value.length > 0) {
+  if (requestedScript) {
+    selectedScriptId.value = requestedScript.id;
+  } else if (!selectionStillExists && orderedScripts.value.length > 0) {
     selectedScriptId.value = orderedScripts.value[0]!.id;
   }
 }
@@ -1573,17 +1577,25 @@ let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
 function startVideoPolling() {
   if (videoPollTimer) clearTimeout(videoPollTimer);
   const refresh = async () => {
-    if (!selectedScriptId.value) return;
-    const generating = videoTracks.value.flatMap((track: any) =>
-      (track.videoList ?? []).filter((video: any) => video.state === '生成中').map((video: any) => video.id),
-    );
+    const project = Number(projectId.value);
+    const script = Number(selectedScriptId.value);
+    if (!Number.isSafeInteger(project) || project <= 0 || !Number.isSafeInteger(script) || script <= 0) {
+      videoPollTimer = undefined;
+      return;
+    }
+    const generating = [...new Set(videoTracks.value.flatMap((track: any) =>
+      (track.videoList ?? [])
+        .filter((video: any) => video.state === '生成中')
+        .map((video: any) => Number(video.id))
+        .filter((id: number) => Number.isSafeInteger(id) && id > 0),
+    ))];
     if (!generating.length) {
       videoTracks.value.forEach((track: any) => { track.videoGenerating = false; });
       videoPollTimer = undefined;
       return;
     }
     try {
-      const updates = await pollTrackVideos(projectId.value, selectedScriptId.value, generating);
+      const updates = await pollTrackVideos(project, script, generating);
       for (const video of updates) {
         if (video.state === '生成成功') {
           message.success({ content: `视频任务 ${video.id} 生成完成`, key: `video-${video.id}` });
@@ -1600,7 +1612,12 @@ function startVideoPolling() {
           ...(updateMap.get(video.id) ?? {}),
         })),
       }));
-    } catch {
+    } catch (error: any) {
+      const status = Number(error?.code ?? error?.status ?? error?.response?.status);
+      if (status === 422) {
+        videoPollTimer = undefined;
+        return;
+      }
       // Keep polling; transient status failures should not hide the running task.
     }
     videoPollTimer = setTimeout(refresh, 2000);

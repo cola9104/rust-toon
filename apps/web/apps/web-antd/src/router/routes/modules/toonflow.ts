@@ -28,6 +28,7 @@ const routes: RouteRecordRaw[] = [
           icon: 'lucide:file-stack',
           activePath: '/toonflow/projects',
           hideInMenu: true,
+          fullPathKey: false,
           noCache: true,
         },
       },
@@ -47,7 +48,12 @@ const routes: RouteRecordRaw[] = [
         path: '/toonflow/tasks',
         component: () => import('#/views/toonflow/tasks/index.vue'),
         name: 'ToonflowTasks',
-        meta: { title: '任务中心', icon: 'lucide:list-checks' },
+        meta: {
+          title: '任务中心',
+          icon: 'lucide:list-checks',
+          // Query parameters from a source page must not create another task tab.
+          fullPathKey: false,
+        },
       },
       {
         path: '/toonflow/prompts',

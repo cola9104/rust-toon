@@ -855,7 +855,7 @@ pub(crate) async fn run_workflow_video_generation(
                     "aspect_ratio": job.ratio,
                     "references": job.references,
                 });
-                match ai_client::video(&pool, &job.model, payload).await {
+                match ai_client::video_untracked(&pool, &job.model, payload).await {
                     Ok(url) => {
                         let _ = sqlx::query("UPDATE toonflow.videos SET file_path=$2,state='生成成功',error_reason=NULL WHERE id=$1 AND state='生成中'")
                             .bind(job.id).bind(url).execute(&pool).await;
@@ -923,7 +923,7 @@ pub async fn generate_video(
                 .ok()
                 .flatten();
         let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":references});
-        match ai_client::video(&pool, &req.model, payload).await {
+        match ai_client::video_untracked(&pool, &req.model, payload).await {
             Ok(url) => {
                 let _ = sqlx::query(
                     "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1 AND state='生成中'",
@@ -1546,7 +1546,7 @@ pub async fn batch_videos(
                 }
             };
             let payload = json!({"prompt":track.prompt,"mode":req.mode,"resolution":req.resolution,"duration":track.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio,"references":references});
-            match ai_client::video(&pool, &req.model, payload).await {
+            match ai_client::video_untracked(&pool, &req.model, payload).await {
                 Ok(url) => {
                     let _ = sqlx::query(
                         "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1",

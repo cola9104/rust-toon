@@ -318,7 +318,7 @@ pub async fn generate_flow_image(
     let _ = sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'工作流图片生成',$3,$4,'工作流图片生成','success',$1,$5,1,1)")
         .bind(now)
         .bind(req.project_id)
-        .bind(json!({"prompt":req.prompt}).to_string())
+        .bind(json!({"prompt":req.prompt,"url":&url}).to_string())
         .bind(req.model)
         .bind(task_input)
         .execute(&state.pool)
