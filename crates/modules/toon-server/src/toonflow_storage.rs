@@ -1,17 +1,50 @@
 use base64::Engine;
 use chrono::Utc;
+use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use reqwest::{Method, Url, header};
 use rust_toon_framework_web::AppError;
 use sha2::{Digest, Sha256};
+use std::{
+    sync::{Mutex, OnceLock},
+    time::Duration,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_util::io::ReaderStream;
 
 use axum::{
     body::Body,
-    extract::Path,
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, Response, StatusCode, header as http_header},
 };
+use rust_toon_framework_security::CurrentUser;
+use serde::Deserialize;
+
+use crate::{ToonState, shared::require, toonflow_episode_renders::ensure_project_access};
 
 type HmacSha256 = Hmac<Sha256>;
+
+fn timeout_from_env(name: &str, default: u64, minimum: u64, maximum: u64) -> Duration {
+    Duration::from_secs(
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| (*value >= minimum) && (*value <= maximum))
+            .unwrap_or(default),
+    )
+}
+
+fn minio_connect_timeout() -> Duration {
+    timeout_from_env("MINIO_CONNECT_TIMEOUT_SECONDS", 10, 1, 300)
+}
+
+fn minio_request_timeout() -> Duration {
+    timeout_from_env("MINIO_REQUEST_TIMEOUT_SECONDS", 30, 1, 3_600)
+}
+
+fn minio_stream_timeout() -> Duration {
+    timeout_from_env("MINIO_STREAM_TIMEOUT_SECONDS", 1_800, 30, 86_400)
+}
 
 struct MinioConfig {
     endpoint: String,
@@ -59,6 +92,26 @@ async fn signed_request_with_range(
     body: Vec<u8>,
     range: Option<&str>,
 ) -> Result<reqwest::Response, String> {
+    let payload_hash = sha256_hex(&body);
+    let timeout = if method == Method::GET {
+        minio_stream_timeout()
+    } else {
+        minio_request_timeout()
+    };
+    signed_request_builder_with_timeout(method, object_key, &payload_hash, range, timeout)?
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn signed_request_builder_with_timeout(
+    method: Method,
+    object_key: Option<&str>,
+    payload_hash: &str,
+    range: Option<&str>,
+    timeout: Duration,
+) -> Result<reqwest::RequestBuilder, String> {
     let config = config();
     let canonical_uri = match object_key {
         Some(key) => format!("/{}/{}", config.bucket, key.trim_start_matches('/')),
@@ -73,7 +126,6 @@ async fn signed_request_with_range(
     let now = Utc::now();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let date = now.format("%Y%m%d").to_string();
-    let payload_hash = sha256_hex(&body);
     let canonical_headers =
         format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
@@ -95,20 +147,31 @@ async fn signed_request_with_range(
         "AWS4-HMAC-SHA256 Credential={}/{scope}, SignedHeaders={signed_headers}, Signature={signature}",
         config.access_key,
     );
-    let mut request = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(minio_connect_timeout())
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client
         .request(method, url)
+        .timeout(timeout)
         .header(header::HOST, host)
         .header("x-amz-content-sha256", payload_hash)
         .header("x-amz-date", amz_date)
-        .header(header::AUTHORIZATION, authorization)
-        .body(body);
+        .header(header::AUTHORIZATION, authorization);
     if let Some(range) = range {
         request = request.header(header::RANGE, range);
     }
-    request.send().await.map_err(|error| error.to_string())
+    Ok(request)
 }
 
 async fn ensure_bucket() -> Result<(), String> {
+    let head = signed_request(Method::HEAD, None, Vec::new()).await?;
+    if head.status().is_success() {
+        return Ok(());
+    }
+    if head.status().as_u16() != 404 {
+        return Err(format!("访问 MinIO bucket 失败：HTTP {}", head.status()));
+    }
     let response = signed_request(Method::PUT, None, Vec::new()).await?;
     if response.status().is_success() || response.status().as_u16() == 409 {
         return Ok(());
@@ -120,16 +183,9 @@ async fn ensure_bucket() -> Result<(), String> {
 }
 
 pub(crate) async fn check_bucket_readiness() -> Result<(), String> {
-    let mut response = signed_request(Method::HEAD, None, Vec::new()).await?;
+    let response = signed_request(Method::HEAD, None, Vec::new()).await?;
     if response.status().is_success() {
         return Ok(());
-    }
-    if response.status().as_u16() == 404 {
-        ensure_bucket().await?;
-        response = signed_request(Method::HEAD, None, Vec::new()).await?;
-        if response.status().is_success() {
-            return Ok(());
-        }
     }
     Err(format!(
         "对象存储 bucket 不可访问：HTTP {}",
@@ -137,11 +193,19 @@ pub(crate) async fn check_bucket_readiness() -> Result<(), String> {
     ))
 }
 
+pub(crate) async fn initialize_bucket() -> Result<(), String> {
+    ensure_bucket().await
+}
+
 pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(url.to_string());
     }
-    let response = reqwest::Client::new()
+    let response = reqwest::Client::builder()
+        .connect_timeout(minio_connect_timeout())
+        .timeout(minio_stream_timeout())
+        .build()
+        .map_err(|error| format!("创建图片下载客户端失败：{error}"))?
         .get(url)
         .send()
         .await
@@ -179,23 +243,168 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     Ok(format!("/toonflow/assets/files/{key}"))
 }
 
-pub async fn persist_remote_video(url: &str, project_id: i64) -> Result<String, String> {
+fn existing_project_video_path(url: &str, project_id: i64) -> Result<Option<String>, String> {
+    if let Some(key) = asset_image_key(url) {
+        if key.starts_with(&format!("toonflow/{project_id}/assets/")) {
+            return Ok(Some(url.to_string()));
+        }
+        return Err("生成视频返回了其他项目的对象路径".to_string());
+    }
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Ok(url.to_string());
+        return Err("生成视频返回了不受支持的非 HTTP 地址".to_string());
     }
-    let response = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("下载生成视频失败：{error}"))?;
-    if !response.status().is_success() {
-        return Err(format!("下载生成视频失败：HTTP {}", response.status()));
+    Ok(None)
+}
+
+#[derive(Default)]
+struct ProviderTempQuota {
+    reserved_bytes: u64,
+}
+
+static PROVIDER_TEMP_QUOTA: OnceLock<Mutex<ProviderTempQuota>> = OnceLock::new();
+
+struct ProviderTempReservation {
+    bytes: u64,
+}
+
+impl Drop for ProviderTempReservation {
+    fn drop(&mut self) {
+        if let Some(quota) = PROVIDER_TEMP_QUOTA.get()
+            && let Ok(mut quota) = quota.lock()
+        {
+            quota.reserved_bytes = quota.reserved_bytes.saturating_sub(self.bytes);
+        }
     }
-    let bytes = response
-        .bytes()
+}
+
+fn provider_video_max_bytes() -> u64 {
+    std::env::var("TOON_PROVIDER_VIDEO_MAX_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1024 * 1024..=100 * 1024 * 1024 * 1024).contains(value))
+        .unwrap_or(2 * 1024 * 1024 * 1024)
+}
+
+fn provider_video_temp_quota_bytes() -> u64 {
+    std::env::var("TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1024 * 1024..=500 * 1024 * 1024 * 1024).contains(value))
+        .unwrap_or(4 * 1024 * 1024 * 1024)
+}
+
+fn reserve_provider_temp(bytes: u64) -> Result<ProviderTempReservation, String> {
+    let quota = PROVIDER_TEMP_QUOTA.get_or_init(|| Mutex::new(ProviderTempQuota::default()));
+    let mut quota = quota
+        .lock()
+        .map_err(|_| "生成视频临时空间配额锁不可用".to_string())?;
+    let limit = provider_video_temp_quota_bytes();
+    let next = quota
+        .reserved_bytes
+        .checked_add(bytes)
+        .ok_or_else(|| "生成视频临时空间配额溢出".to_string())?;
+    if next > limit {
+        return Err(format!(
+            "生成视频临时空间不足：已预留 {} 字节，单任务上限 {} 字节，总配额 {} 字节",
+            quota.reserved_bytes, bytes, limit
+        ));
+    }
+    quota.reserved_bytes = next;
+    Ok(ProviderTempReservation { bytes })
+}
+
+fn provider_video_temp_directory() -> std::path::PathBuf {
+    std::env::temp_dir().join("rust-toon/provider-videos")
+}
+
+/// Gateway startup owns this directory, so every `.download` file is residue
+/// from an interrupted previous process and can be removed before accepting traffic.
+pub async fn cleanup_provider_video_temp_on_startup() -> Result<u64, String> {
+    let directory = provider_video_temp_directory();
+    let mut entries = match tokio::fs::read_dir(&directory).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("读取生成视频临时目录失败：{error}")),
+    };
+    let mut removed = 0;
+    while let Some(entry) = entries
+        .next_entry()
         .await
-        .map_err(|error| format!("读取生成视频失败：{error}"))?;
-    persist_asset_bytes(project_id, "videos", "mp4", bytes.to_vec()).await
+        .map_err(|error| format!("遍历生成视频临时目录失败：{error}"))?
+    {
+        let path = entry.path();
+        let is_download = path.extension().and_then(|value| value.to_str()) == Some("download");
+        if is_download
+            && entry
+                .file_type()
+                .await
+                .map_err(|error| format!("读取生成视频临时文件类型失败：{error}"))?
+                .is_file()
+        {
+            tokio::fs::remove_file(&path)
+                .await
+                .map_err(|error| format!("清理生成视频临时文件失败：{error}"))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+/// Reserve the final object path in PostgreSQL before any MinIO write. The
+/// delayed cleanup row is an outbox: a crash after PUT but before the video
+/// row update still leaves enough durable information to delete the orphan.
+pub async fn persist_remote_video_for_row(
+    pool: &sqlx::PgPool,
+    url: &str,
+    project_id: i64,
+    video_id: i64,
+) -> Result<String, String> {
+    if let Some(existing) = existing_project_video_path(url, project_id)? {
+        return Ok(existing);
+    }
+
+    let object_name = format!("video-{video_id}-{}", uuid::Uuid::new_v4());
+    let file_path = asset_file_path_named(project_id, "videos", &object_name, "mp4")?;
+    let cleanup_delay = crate::toonflow_video_export::source_download_timeout()
+        .as_secs()
+        .saturating_add(minio_stream_timeout().as_secs())
+        .saturating_add(3_600)
+        .min(i64::MAX as u64) as i64;
+    sqlx::query(
+        "INSERT INTO toonflow.storage_cleanup_tasks(
+           object_path,resource_type,resource_id,error_reason,attempts,state,
+           next_attempt_at,create_time,update_time
+         ) VALUES(
+           $1,'generated_video_reservation',$2,
+           '生成视频对象预留：成功落库后由引用检查安全跳过，否则清理孤儿对象',
+           0,'pending',now()+make_interval(secs => $3::double precision),
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+         )",
+    )
+    .bind(&file_path)
+    .bind(video_id)
+    .bind(cleanup_delay)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("预留生成视频对象清理记录失败：{error}"))?;
+
+    struct TemporaryVideo(std::path::PathBuf);
+    impl Drop for TemporaryVideo {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    let max_bytes = provider_video_max_bytes();
+    let _quota = reserve_provider_temp(max_bytes)?;
+    let directory = provider_video_temp_directory();
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| format!("创建生成视频临时目录失败：{error}"))?;
+    let temporary = TemporaryVideo(directory.join(format!("{object_name}.download")));
+    crate::toonflow_video_export::download_external_video(url, &temporary.0, max_bytes).await?;
+    persist_asset_file_named(project_id, "videos", &object_name, "mp4", &temporary.0).await
 }
 
 pub async fn persist_asset_bytes(
@@ -204,25 +413,154 @@ pub async fn persist_asset_bytes(
     extension: &str,
     bytes: Vec<u8>,
 ) -> Result<String, String> {
+    persist_asset_bytes_named(
+        project_id,
+        category,
+        &uuid::Uuid::new_v4().to_string(),
+        extension,
+        bytes,
+    )
+    .await
+}
+
+/// Reserve a continuity-frame path before the MinIO PUT. The delayed cleanup
+/// record survives a process crash between object upload and the cache-row
+/// upsert; once referenced, the normal reference check safely keeps it.
+pub(crate) async fn persist_continuity_frame_with_reservation(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    previous_video_id: i64,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
+    let object_name = format!("frame-{previous_video_id}-{}", uuid::Uuid::new_v4());
+    let file_path = asset_file_path_named(project_id, "continuity-frames", &object_name, "png")?;
+    let cleanup_delay = minio_request_timeout()
+        .as_secs()
+        .saturating_add(3_600)
+        .min(i64::MAX as u64) as i64;
+    sqlx::query(
+        "INSERT INTO toonflow.storage_cleanup_tasks(
+           object_path,resource_type,resource_id,error_reason,attempts,state,
+           next_attempt_at,create_time,update_time
+         ) VALUES(
+           $1,'continuity_frame_reservation',$2,
+           '连续帧对象预留：成功落库后由引用检查安全跳过，否则清理孤儿对象',
+           0,'pending',now()+make_interval(secs => $3::double precision),
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+         )",
+    )
+    .bind(&file_path)
+    .bind(previous_video_id)
+    .bind(cleanup_delay)
+    .execute(pool)
+    .await
+    .map_err(|error| format!("预留连续帧对象清理记录失败：{error}"))?;
+    persist_asset_bytes_named(project_id, "continuity-frames", &object_name, "png", bytes).await
+}
+
+/// Store an in-memory asset at an explicitly named object key.
+pub(crate) async fn persist_asset_bytes_named(
+    project_id: i64,
+    category: &str,
+    object_name: &str,
+    extension: &str,
+    bytes: Vec<u8>,
+) -> Result<String, String> {
     ensure_bucket().await?;
+    let file_path = asset_file_path_named(project_id, category, object_name, extension)?;
+    let key = asset_image_key(&file_path).ok_or_else(|| "无法生成资产对象路径".to_string())?;
+    let upload = signed_request(Method::PUT, Some(key), bytes).await?;
+    if !upload.status().is_success() {
+        return Err(format!("上传资产到 MinIO 失败：HTTP {}", upload.status()));
+    }
+    Ok(file_path)
+}
+
+pub(crate) fn asset_file_path_named(
+    project_id: i64,
+    category: &str,
+    object_name: &str,
+    extension: &str,
+) -> Result<String, String> {
+    let safe_category = category
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .collect::<String>();
+    let safe_object_name = object_name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        .collect::<String>();
     let safe_extension = extension
         .chars()
         .filter(|character| character.is_ascii_alphanumeric())
         .collect::<String>();
+    if safe_category.is_empty() || safe_object_name.is_empty() {
+        return Err("资产类别和对象名不能为空".into());
+    }
     let key = format!(
-        "toonflow/{project_id}/assets/{category}/{}.{}",
-        uuid::Uuid::new_v4(),
+        "toonflow/{project_id}/assets/{safe_category}/{safe_object_name}.{}",
         if safe_extension.is_empty() {
             "bin"
         } else {
             &safe_extension
         }
     );
-    let upload = signed_request(Method::PUT, Some(&key), bytes).await?;
+    Ok(format!("/toonflow/assets/files/{key}"))
+}
+
+/// Stream a local file into object storage without buffering an entire video
+/// in the worker heap. The content hash is calculated in a bounded buffer and
+/// is then used for the normal SigV4 payload signature.
+pub(crate) async fn persist_asset_file_named(
+    project_id: i64,
+    category: &str,
+    object_name: &str,
+    extension: &str,
+    source: &std::path::Path,
+) -> Result<String, String> {
+    ensure_bucket().await?;
+    let file_path = asset_file_path_named(project_id, category, object_name, extension)?;
+    let key = asset_image_key(&file_path).ok_or_else(|| "无法生成资产对象路径".to_string())?;
+    let metadata = tokio::fs::metadata(source)
+        .await
+        .map_err(|error| format!("读取待上传资产失败：{error}"))?;
+    let mut hash_file = tokio::fs::File::open(source)
+        .await
+        .map_err(|error| format!("打开待上传资产失败：{error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = hash_file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("计算资产摘要失败：{error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let payload_hash = hex::encode(hasher.finalize());
+    let upload_file = tokio::fs::File::open(source)
+        .await
+        .map_err(|error| format!("重新打开待上传资产失败：{error}"))?;
+    let body = reqwest::Body::wrap_stream(ReaderStream::new(upload_file));
+    let upload = signed_request_builder_with_timeout(
+        Method::PUT,
+        Some(key),
+        &payload_hash,
+        None,
+        minio_stream_timeout(),
+    )?
+    .header(header::CONTENT_LENGTH, metadata.len())
+    .body(body)
+    .send()
+    .await
+    .map_err(|error| format!("上传资产到 MinIO 失败：{error}"))?;
     if !upload.status().is_success() {
         return Err(format!("上传资产到 MinIO 失败：HTTP {}", upload.status()));
     }
-    Ok(format!("/toonflow/assets/files/{key}"))
+    Ok(file_path)
 }
 
 async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
@@ -312,20 +650,49 @@ pub(crate) async fn record_cleanup_failure(
     resource_id: Option<i64>,
     error: &str,
 ) {
-    let id = chrono::Utc::now().timestamp_millis();
     let _ = sqlx::query(
-        "INSERT INTO toonflow.storage_cleanup_tasks(id,object_path,resource_type,resource_id,error_reason,attempts,state,create_time,update_time)
-         VALUES($1,$2,$3,$4,$5,1,'pending',$6,$6)
-         ON CONFLICT(id) DO NOTHING",
+        "INSERT INTO toonflow.storage_cleanup_tasks(object_path,resource_type,resource_id,error_reason,attempts,state,create_time,update_time)
+         VALUES(
+           $1,$2,$3,$4,1,'pending',
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+         )",
     )
-    .bind(id)
     .bind(object_path)
     .bind(resource_type)
     .bind(resource_id)
     .bind(error)
-    .bind(id)
     .execute(pool)
     .await;
+}
+
+pub(crate) async fn enqueue_cleanup_paths(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    paths: &[String],
+    resource_type: &str,
+    resource_id: Option<i64>,
+    reason: &str,
+) -> Result<u64, sqlx::Error> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    sqlx::query(
+        "INSERT INTO toonflow.storage_cleanup_tasks(
+           object_path,resource_type,resource_id,error_reason,attempts,state,create_time,update_time
+         )
+         SELECT DISTINCT path,$2,$3,$4,0,'pending',
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+           (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+         FROM unnest($1::text[]) AS path
+         WHERE btrim(path)<>''",
+    )
+    .bind(paths)
+    .bind(resource_type)
+    .bind(resource_id)
+    .bind(reason)
+    .execute(&mut **tx)
+    .await
+    .map(|result| result.rows_affected())
 }
 
 fn asset_image_key(file_path: &str) -> Option<&str> {
@@ -333,6 +700,10 @@ fn asset_image_key(file_path: &str) -> Option<&str> {
         .strip_prefix("/toonflow/assets/files/")
         .or_else(|| file_path.strip_prefix("/api/toonflow/assets/files/"))
         .filter(|key| !key.is_empty())
+}
+
+pub(crate) fn asset_object_key(file_path: &str) -> Option<&str> {
+    asset_image_key(file_path)
 }
 
 /// Check that a persisted Toonflow asset is readable from the configured object store.
@@ -364,6 +735,49 @@ pub(crate) async fn read_asset_bytes(file_path: &str) -> Result<Vec<u8>, String>
         .map_err(|error| error.to_string())
 }
 
+pub(crate) async fn copy_asset_to_file(
+    file_path: &str,
+    destination: &std::path::Path,
+    max_bytes: u64,
+) -> Result<u64, String> {
+    let Some(key) = asset_image_key(file_path) else {
+        return Err("不支持的 MinIO 资产路径".into());
+    };
+    let response = signed_request(Method::GET, Some(key), Vec::new()).await?;
+    if !response.status().is_success() {
+        return Err(format!("读取 MinIO 资产失败：HTTP {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        return Err(format!("源视频超过大小限制（最大 {max_bytes} 字节）"));
+    }
+    let mut destination_file = tokio::fs::File::create(destination)
+        .await
+        .map_err(|error| format!("创建源视频临时文件失败：{error}"))?;
+    let mut total = 0_u64;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("读取 MinIO 视频流失败：{error}"))?;
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| "源视频大小溢出".to_string())?;
+        if total > max_bytes {
+            return Err(format!("源视频超过大小限制（最大 {max_bytes} 字节）"));
+        }
+        destination_file
+            .write_all(&chunk)
+            .await
+            .map_err(|error| format!("写入源视频临时文件失败：{error}"))?;
+    }
+    destination_file
+        .flush()
+        .await
+        .map_err(|error| format!("刷新源视频临时文件失败：{error}"))?;
+    Ok(total)
+}
+
 fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         Some("image/png")
@@ -378,10 +792,53 @@ fn image_content_type(bytes: &[u8]) -> Option<&'static str> {
     }
 }
 
+#[derive(Deserialize)]
+pub struct AssetAccessQuery {
+    pub(crate) token: String,
+}
+
+async fn authorize_asset_key(
+    state: &ToonState,
+    user: &CurrentUser,
+    key: &str,
+) -> Result<(), AppError> {
+    let segments = key.split('/').collect::<Vec<_>>();
+    let project_id = if let ["toonflow", project_id, "assets", ..] = segments.as_slice() {
+        project_id
+            .parse::<i64>()
+            .map_err(|_| AppError::not_found("asset file not found"))?
+    } else if let ["toonflow", "assets", asset_id, ..] = segments.as_slice() {
+        let asset_id = asset_id
+            .parse::<i64>()
+            .map_err(|_| AppError::not_found("asset file not found"))?;
+        sqlx::query_scalar::<_, i64>("SELECT project_id FROM toonflow.assets WHERE id=$1")
+            .bind(asset_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|error| {
+                tracing::error!(asset_id, %error, "failed to authorize asset file");
+                AppError::internal("failed to authorize asset file")
+            })?
+            .ok_or_else(|| AppError::not_found("asset file not found"))?
+    } else {
+        return Err(AppError::not_found("asset file not found"));
+    };
+    ensure_project_access(&state.pool, user, project_id).await?;
+    Ok(())
+}
+
 pub async fn serve_image(
+    State(state): State<ToonState>,
     Path(key): Path<String>,
+    Query(query): Query<AssetAccessQuery>,
     request_headers: HeaderMap,
 ) -> Result<Response<Body>, AppError> {
+    let claims = state
+        .tokens
+        .verify_access_token(&query.token)
+        .map_err(|_| AppError::unauthorized("invalid token"))?;
+    require(&claims.user, "toon:project:read")?;
+    authorize_asset_key(&state, &claims.user, &key).await?;
     let range = request_headers
         .get(http_header::RANGE)
         .and_then(|value| value.to_str().ok());
@@ -397,10 +854,6 @@ pub async fn serve_image(
         StatusCode::OK
     };
     let upstream_headers = upstream.headers().clone();
-    let bytes = upstream
-        .bytes()
-        .await
-        .map_err(|_| AppError::not_found("asset file not found"))?;
     let content_type = upstream_headers
         .get(http_header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -414,7 +867,7 @@ pub async fn serve_image(
         .unwrap_or_else(|| stored_content_type_for_key(&key).to_string());
     let mut response = Response::builder()
         .status(status)
-        .body(Body::from(bytes.clone()))
+        .body(Body::from_stream(upstream.bytes_stream()))
         .map_err(|_| AppError::internal("failed to build asset response"))?;
     response.headers_mut().insert(
         http_header::CONTENT_TYPE,
@@ -425,14 +878,22 @@ pub async fn serve_image(
         http_header::ACCEPT_RANGES,
         HeaderValue::from_static("bytes"),
     );
-    response.headers_mut().insert(
-        http_header::CONTENT_LENGTH,
-        HeaderValue::from_str(&bytes.len().to_string())
-            .map_err(|_| AppError::internal("invalid asset content length"))?,
-    );
+    if let Some(content_length) = upstream_headers.get(http_header::CONTENT_LENGTH) {
+        response
+            .headers_mut()
+            .insert(http_header::CONTENT_LENGTH, content_length.clone());
+    }
     response.headers_mut().insert(
         http_header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
+        HeaderValue::from_static("private, max-age=300"),
+    );
+    response.headers_mut().insert(
+        http_header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response.headers_mut().insert(
+        http_header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
     );
     if let Some(content_range) = upstream_headers.get(http_header::CONTENT_RANGE) {
         response
@@ -476,6 +937,21 @@ mod tests {
     }
 
     #[test]
+    fn named_export_paths_preserve_the_attempt_fencing_token() {
+        let path = asset_file_path_named(
+            7,
+            "exports",
+            "task-42-lease-8db4fda4-72e6-4e0c-9b66-067b46c284a4",
+            "mp4",
+        )
+        .expect("valid attempt path");
+        assert_eq!(
+            path,
+            "/toonflow/assets/files/toonflow/7/assets/exports/task-42-lease-8db4fda4-72e6-4e0c-9b66-067b46c284a4.mp4"
+        );
+    }
+
+    #[test]
     fn detects_video_content_type_from_object_key() {
         assert_eq!(
             stored_content_type_for_key("toonflow/assets/1/video.mp4"),
@@ -485,6 +961,17 @@ mod tests {
             stored_content_type_for_key("toonflow/assets/1/video.webm"),
             "video/webm"
         );
+    }
+
+    #[test]
+    fn generated_video_paths_must_stay_inside_the_target_project() {
+        let own_path = "/toonflow/assets/files/toonflow/7/assets/videos/generated.mp4";
+        assert_eq!(
+            existing_project_video_path(own_path, 7).expect("same-project object"),
+            Some(own_path.to_string())
+        );
+        assert!(existing_project_video_path(own_path, 8).is_err());
+        assert!(existing_project_video_path("/tmp/provider.mp4", 7).is_err());
     }
 
     #[tokio::test]

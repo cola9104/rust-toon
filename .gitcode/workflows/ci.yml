@@ -1,0 +1,261 @@
+name: Rust Toon CI
+
+"on":
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  repository: read
+
+concurrency:
+  enable: true
+  max: 2
+  exceed-action: QUEUE
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  MINIO_IMAGE: minio/minio:RELEASE.2025-04-22T22-12-26Z
+  MINIO_MC_IMAGE: minio/mc:RELEASE.2025-04-16T18-13-26Z
+
+jobs:
+  rust:
+    name: Rust format, lint, and tests
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup component add --toolchain stable rustfmt clippy
+          rustup default stable
+          rustc --version
+          cargo --version
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  frontend:
+    name: Frontend typecheck, unit tests, and build
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Set up Node.js
+        uses: setup-node
+        with:
+          node-version: "22.18.0"
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@11.13.0 --activate
+          pnpm --dir apps/web --version
+      - name: Restore pnpm cache
+        uses: cache
+        with:
+          path: ~/.local/share/pnpm/store
+          key: pnpm-${{ runner.os }}-${{ hashFiles('apps/web/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-${{ runner.os }}-
+      - name: Install frontend dependencies
+        run: pnpm --dir apps/web install --frozen-lockfile
+      - name: Typecheck frontend
+        run: pnpm --dir apps/web --filter @vben/web-antd run typecheck
+      - name: Run frontend unit tests
+        run: pnpm --dir apps/web run test:unit
+      - name: Build frontend
+        run: pnpm --dir apps/web --filter @vben/web-antd run build
+
+  migrations:
+    name: Empty database migration chain
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Verify Docker daemon
+        run: docker version
+      - name: Test migrations from an empty PostgreSQL database
+        run: bash script/test-database-migrations.sh
+
+  ai-e2e:
+    name: Mock AI provider E2E
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Verify Docker daemon
+        run: docker version
+      - name: Run mock AI provider E2E
+        run: bash script/test-ai-e2e.sh
+
+  gateway-e2e:
+    name: Gateway HTTP and WebSocket E2E
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Set up Node.js
+        uses: setup-node
+        with:
+          node-version: "22.18.0"
+      - name: Prepare media and container dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          docker version
+      - name: Run gateway HTTP and WebSocket E2E
+        run: bash script/test-gateway-e2e.sh
+
+  production-e2e:
+    name: Final video export and archive E2E
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Prepare media and container dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          docker version
+      - name: Run final video export E2E
+        run: bash script/test-production-e2e.sh
+
+  distributed-e2e:
+    name: Distributed deployment and lease failover E2E
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Set up Node.js
+        uses: setup-node
+        with:
+          node-version: "22.18.0"
+      - name: Prepare media, Docker, and Compose
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          docker version
+          if ! docker compose version >/dev/null 2>&1 && \
+             ! docker-compose version >/dev/null 2>&1; then
+            sudo apt-get install -y docker-compose-v2 || \
+              sudo apt-get install -y docker-compose-plugin
+          fi
+      - name: Validate distributed Compose and edge routing
+        run: bash script/test-distributed-deployment.sh
+      - name: Test JetStream redelivery and database lease takeover
+        run: bash script/test-distributed-jobs-e2e.sh
+
+  minio-backup-e2e:
+    name: MinIO backup and restore E2E
+    runs-on: [ubuntu-24, x64, small]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Verify container and backup tools
+        run: |
+          docker version
+          jq --version
+      - name: Test consistent backup coordination
+        run: bash script/test-consistent-backup.sh
+      - name: Run MinIO backup and restore E2E
+        run: bash script/test-minio-backup.sh

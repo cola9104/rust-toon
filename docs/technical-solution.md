@@ -6,15 +6,16 @@
 
 rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成：
 
-- **后端**：Rust workspace，单一网关进程 `rust-toon-gateway`（`services/gateway`），基于 axum 0.8 / tokio / SQLx（PostgreSQL）。
+- **后端**：Rust workspace，HTTP/WS 网关 `rust-toon-gateway`（`services/gateway`）与可横向扩容的持久媒体 worker（`services/toon-worker`），基于 axum 0.8 / tokio / SQLx（PostgreSQL）。
 - **前端**：Vben Admin（5.7.0）monorepo，位于 `apps/web`，主应用包 `@vben/web-antd`（Vue + Ant Design Vue）。
-- **数据与基础设施**：PostgreSQL（主存储，SQLx 迁移）、Redis（缓存与限流，可选）、NATS（消息队列预留）、MinIO（S3 兼容对象存储）。
+- **数据与基础设施**：PostgreSQL（主存储、任务 outbox 与 SQLx 迁移）、Redis（缓存与限流，可选）、NATS JetStream（持久任务投递）、MinIO（S3 兼容对象存储）。
 
 ## 2. 仓库结构
 
 ```
 ├── Cargo.toml                 # Rust workspace（resolver = "3"，edition 2024）
 ├── services/gateway/          # 网关入口：路由组装、中间件、启动流程
+├── services/toon-worker/      # 分布式媒体任务、租约接管、对象清理与探针
 ├── crates/
 │   ├── framework/             # 框架层（与业务无关）
 │   │   ├── common/            # 配置、健康检查、统一响应、日志、HTTP 服务启动
@@ -22,7 +23,7 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 │   │   ├── redis/             # Redis 客户端、JSON 缓存、限流中间件
 │   │   ├── security/          # JWT、密码散列、认证/鉴权、权限模型
 │   │   ├── web/               # AppError、CORS/RequestId/Trace 等 Web 层
-│   │   ├── mq/                # 消息队列扩展点（NATS/Kafka 适配器预留）
+│   │   ├── mq/                # NATS JetStream 连接、消息信封与显式 ACK
 │   │   ├── tenant/            # 租户上下文扩展点（预留）
 │   │   └── telemetry/         # 遥测扩展点（当前 re-export init_tracing）
 │   └── modules/               # 业务模块，每模块一对 crate：
@@ -44,7 +45,7 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 
 ## 3. 整体架构
 
-### 3.1 单进程多模块
+### 3.1 模块化网关与持久媒体 Worker
 
 所有业务模块编译进同一个网关二进制（`cargo run -p rust-toon-gateway`）。gateway 在 `services/gateway/src/main.rs` 中：
 
@@ -58,6 +59,8 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 8. 全局中间件（自内向外生效）：数据库认证中间件 `authenticate_from_database` → 审计中间件 `audit::record`；若 Redis 可用，再加全局限流中间件 `rate_limit`。
 9. `apply_web_layers` 追加 RequestId（`x-request-id`）、Trace、以及可选的宽松 CORS。
 10. `serve()` 绑定 `GATEWAY_HOST:GATEWAY_PORT`（默认 `0.0.0.0:8080`），支持 Ctrl+C / SIGTERM 优雅停机。
+
+最终成片合并与对象清理由 `rust-toon-worker` 执行。Gateway 在同一 PostgreSQL 事务中写入用户任务和 `distributed_jobs` outbox；Worker 将待投递行发布到 JetStream，并以数据库 lease、heartbeat 与 fencing token 保证多副本竞争、进程崩溃接管和过期结果拒绝。PostgreSQL 是任务真相源，JetStream 丢失消息后可由 outbox 重建。当前媒体 Worker 可运行 N 个副本；Agent/Workflow 的实时运行表仍含进程内协调，因此 Gateway 暂保持 1 个副本。
 
 ### 3.2 统一响应与错误
 
@@ -86,7 +89,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前最新为新增剧集成片归档结构的 `0002_episode_renders.sql`，新数据库由 gateway 自动执行完整迁移链。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0005`，依次包含基线、剧集成片归档、分布式任务、投递防护与数据库视频 ID/连续帧约束，新数据库由 gateway 自动执行完整迁移链。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。
@@ -151,10 +154,11 @@ AI 能力域：
 | 组件 | 端口 | 说明 |
 | --- | --- | --- |
 | gateway | 8080 | HTTP API |
+| toon-worker | 8081 | 仅运维用 `/livez`、`/readyz` |
 | 前端 dev server | 5666 | `VITE_PORT` |
 | PostgreSQL | 5432 | 主数据库 |
 | Redis | 6379 | 缓存/限流（可选） |
-| NATS | 4222 / 8222 | 预留（mq crate 尚未接线） |
+| NATS | 4222 / 8222 | JetStream 客户端 / 监控端口 |
 | MinIO | 9000 / 9001 | S3 API / 控制台 |
 
 compose 定义见 `script/docker/docker-compose.yml` 与 [deployment.md](deployment.md)。

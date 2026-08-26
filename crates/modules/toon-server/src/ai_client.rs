@@ -455,7 +455,7 @@ pub async fn video_untracked(
     payload: Value,
 ) -> Result<String, String> {
     let model_id = validate_video_request(pool, configured, &payload).await?;
-    video_unrecorded(pool, model_id, payload, None).await
+    video_unrecorded(pool, model_id, payload).await
 }
 
 async fn validate_video_request(
@@ -496,19 +496,14 @@ async fn validate_video_request(
     Ok(model_id)
 }
 
-async fn video_unrecorded(
-    pool: &PgPool,
-    model_id: i64,
-    payload: Value,
-    project_id: Option<i64>,
-) -> Result<String, String> {
+async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Result<String, String> {
     let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
     let response = factory
         .video(model_id, payload)
         .await
         .map_err(normalized_app_error)?;
     if !response.url.is_empty() {
-        return persist_video_result(response.url, project_id).await;
+        return Ok(response.url);
     }
     let task_id = response
         .task_id
@@ -530,7 +525,7 @@ async fn video_unrecorded(
             .await
             .map_err(normalized_app_error)?;
         if !result.url.is_empty() {
-            return persist_video_result(result.url, project_id).await;
+            return Ok(result.url);
         }
         let state = result
             .raw
@@ -559,12 +554,6 @@ async fn video_unrecorded(
     Err(format!("视频任务 {task_id} 等待超时"))
 }
 
-async fn persist_video_result(url: String, project_id: Option<i64>) -> Result<String, String> {
-    match project_id {
-        Some(project_id) => crate::toonflow_storage::persist_remote_video(&url, project_id).await,
-        None => Ok(url),
-    }
-}
 pub async fn speech(
     pool: &PgPool,
     configured: &str,

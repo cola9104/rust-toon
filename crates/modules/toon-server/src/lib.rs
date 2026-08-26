@@ -56,10 +56,25 @@ use axum::{
     middleware::from_fn_with_state,
     routing::{get, post, put},
 };
+use futures_util::{StreamExt, stream};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_database::PgPool;
 use rust_toon_framework_security::{TokenService, authenticate};
 use rust_toon_toon_api::ToonCapability;
+
+pub use toonflow_video_export::{
+    VIDEO_EXPORT_JOB_KIND, cleanup_stale_export_workdirs, execute_distributed_export,
+};
+
+const STORAGE_CLEANUP_CONCURRENCY: usize = 8;
+const STORAGE_CLEANUP_REFERENCE_RECHECK_SECONDS: u64 = 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageObjectReference {
+    None,
+    Permanent,
+    ActiveJob,
+}
 
 #[derive(Clone)]
 pub struct ToonState {
@@ -71,6 +86,436 @@ pub struct ToonState {
 /// signed S3 requests as Toonflow's production media pipeline.
 pub async fn check_object_storage_readiness() -> Result<(), String> {
     toonflow_storage::check_bucket_readiness().await
+}
+
+/// Initialize the configured object-store bucket once during service startup.
+/// Readiness probes remain side-effect free and only perform a signed HEAD.
+pub async fn initialize_object_storage() -> Result<(), String> {
+    toonflow_storage::initialize_bucket().await
+}
+
+/// Remove provider-download files left by a previous Gateway process. This is
+/// safe only during startup, before this process can own an active download.
+pub async fn cleanup_provider_video_temp_on_startup() -> Result<u64, String> {
+    toonflow_storage::cleanup_provider_video_temp_on_startup().await
+}
+
+/// Mark only Gateway-owned in-process work as interrupted after a restart.
+/// Durable media tasks are deliberately excluded and remain owned by the
+/// worker lease/reaper protocol.
+pub async fn repair_gateway_interrupted_state(pool: &PgPool) -> Result<u64, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let mut repaired = 0_u64;
+    repaired += sqlx::query("UPDATE toonflow.workflow_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.workflow_node_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.novels SET event_state=-1,error_reason='服务重启导致失败' WHERE event_state=0")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.assets SET prompt_state='生成失败',prompt_error_reason='服务重启导致失败' WHERE prompt_state='生成中'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.images SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.video_tracks SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
+        .execute(&mut *tx).await?.rows_affected();
+    repaired += sqlx::query(
+        "UPDATE toonflow.tasks tasks
+         SET state='failed',reason='服务重启导致失败'
+         WHERE tasks.state='running'
+           -- An active durable job survives a Gateway restart and remains the
+           -- worker/reaper's responsibility. Terminal jobs are intentionally
+           -- not exempt: their task row should already have been finalized in
+           -- the same worker transaction, so a still-running task is stale.
+           AND NOT EXISTS(
+             SELECT 1 FROM toonflow.distributed_jobs jobs
+             WHERE jobs.task_id=tasks.id
+               AND jobs.state IN ('queued','retry','running')
+           )",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    tx.commit().await?;
+    Ok(repaired)
+}
+
+#[cfg(test)]
+mod gateway_repair_database_tests {
+    use std::time::Duration;
+
+    use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+
+    use super::repair_gateway_interrupted_state;
+
+    async fn insert_running_task(pool: &sqlx::PgPool, description: &str) -> i64 {
+        sqlx::query_scalar(
+            "INSERT INTO toonflow.tasks(
+               task_class,description,state,start_time,reason
+             )
+             VALUES('gatewayRepairTest',$1,'running',
+                    (extract(epoch from clock_timestamp())*1000)::bigint,
+                    'original reason')
+             RETURNING id",
+        )
+        .bind(description)
+        .fetch_one(pool)
+        .await
+        .expect("insert running task fixture")
+    }
+
+    async fn insert_distributed_job(pool: &sqlx::PgPool, task_id: i64, state: &str) {
+        if state == "running" {
+            sqlx::query(
+                "INSERT INTO toonflow.distributed_jobs(
+                   task_id,kind,trace_id,payload,state,
+                   lease_owner,lease_token,lease_until,heartbeat_at
+                 )
+                 VALUES($1,'video.export','gateway-repair-test','{}'::jsonb,$2,
+                        'gateway-repair-worker',gen_random_uuid(),
+                        now()+interval '5 minutes',now())",
+            )
+            .bind(task_id)
+            .bind(state)
+            .execute(pool)
+            .await
+            .expect("insert running distributed job fixture");
+        } else {
+            sqlx::query(
+                "INSERT INTO toonflow.distributed_jobs(
+                   task_id,kind,trace_id,payload,state
+                 )
+                 VALUES($1,'video.export','gateway-repair-test','{}'::jsonb,$2)",
+            )
+            .bind(task_id)
+            .bind(state)
+            .execute(pool)
+            .await
+            .expect("insert queued or retry distributed job fixture");
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn only_repairs_running_tasks_without_an_active_distributed_job() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10))
+            .expect("valid test database config");
+        let pool = connect(&config).await.expect("connect test database");
+        migrate(&pool).await.expect("apply migrations");
+
+        let local_task_id = insert_running_task(&pool, "local Gateway task").await;
+        let mut durable_tasks = Vec::new();
+        for job_state in ["queued", "retry", "running"] {
+            let task_id = insert_running_task(&pool, &format!("durable {job_state} task")).await;
+            insert_distributed_job(&pool, task_id, job_state).await;
+            durable_tasks.push((task_id, job_state));
+        }
+
+        let repaired = repair_gateway_interrupted_state(&pool)
+            .await
+            .expect("repair interrupted Gateway state");
+        assert!(repaired >= 1, "the local running task must be repaired");
+
+        let local: (String, Option<String>) =
+            sqlx::query_as("SELECT state,reason FROM toonflow.tasks WHERE id=$1")
+                .bind(local_task_id)
+                .fetch_one(&pool)
+                .await
+                .expect("load repaired local task");
+        assert_eq!(local.0, "failed");
+        assert_eq!(local.1.as_deref(), Some("服务重启导致失败"));
+
+        for (task_id, expected_job_state) in &durable_tasks {
+            let durable: (String, Option<String>, String) = sqlx::query_as(
+                "SELECT tasks.state,tasks.reason,jobs.state
+                 FROM toonflow.tasks tasks
+                 JOIN toonflow.distributed_jobs jobs ON jobs.task_id=tasks.id
+                 WHERE tasks.id=$1",
+            )
+            .bind(task_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load protected durable task");
+            assert_eq!(durable.0, "running", "{expected_job_state} task changed");
+            assert_eq!(
+                durable.1.as_deref(),
+                Some("original reason"),
+                "{expected_job_state} task reason changed"
+            );
+            assert_eq!(&durable.2, expected_job_state);
+        }
+
+        let task_ids = std::iter::once(local_task_id)
+            .chain(durable_tasks.into_iter().map(|(task_id, _)| task_id))
+            .collect::<Vec<_>>();
+        sqlx::query("DELETE FROM toonflow.tasks WHERE id=ANY($1)")
+            .bind(&task_ids)
+            .execute(&pool)
+            .await
+            .expect("remove Gateway repair fixtures");
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StorageCleanupResult {
+    pub completed: u64,
+    pub deferred: u64,
+    pub failed: u64,
+}
+
+/// Claim and process object cleanup records using database leases. Multiple
+/// worker replicas may call this concurrently; `SKIP LOCKED` and the fencing
+/// token ensure only the current owner can commit a result.
+pub async fn process_storage_cleanup_batch(
+    pool: &PgPool,
+    worker_id: &str,
+    limit: i64,
+    lease: std::time::Duration,
+    operation_timeout: std::time::Duration,
+) -> Result<StorageCleanupResult, sqlx::Error> {
+    let rows: Vec<(i64, String, uuid::Uuid)> = sqlx::query_as(
+        "WITH candidates AS (
+           SELECT id FROM toonflow.storage_cleanup_tasks
+           WHERE (
+             state='pending' AND next_attempt_at <= now() AND attempts < max_attempts
+           ) OR (
+             state='running' AND lease_until <= now() AND attempts < max_attempts
+           )
+           ORDER BY update_time,id
+           FOR UPDATE SKIP LOCKED
+           LIMIT $1
+         )
+         UPDATE toonflow.storage_cleanup_tasks cleanup
+         SET state='running',lease_owner=$2,lease_token=gen_random_uuid(),
+             lease_until=now()+make_interval(secs => $3::double precision),
+             update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+         FROM candidates
+         WHERE cleanup.id=candidates.id
+         RETURNING cleanup.id,cleanup.object_path,cleanup.lease_token",
+    )
+    .bind(limit.clamp(1, STORAGE_CLEANUP_CONCURRENCY as i64))
+    .bind(worker_id)
+    .bind(lease.as_secs_f64())
+    .fetch_all(pool)
+    .await?;
+    let outcomes = stream::iter(rows.into_iter().map(|(id, object_path, lease_token)| {
+        let pool = pool.clone();
+        async move {
+            process_storage_cleanup_row(
+                &pool,
+                id,
+                object_path,
+                lease_token,
+                lease,
+                operation_timeout,
+            )
+            .await
+        }
+    }))
+    .buffer_unordered(STORAGE_CLEANUP_CONCURRENCY)
+    .collect::<Vec<_>>()
+    .await;
+    let mut result = StorageCleanupResult::default();
+    for outcome in outcomes {
+        let (completed, deferred, failed) = outcome?;
+        result.completed += completed;
+        result.deferred += deferred;
+        result.failed += failed;
+    }
+    Ok(result)
+}
+
+async fn process_storage_cleanup_row(
+    pool: &PgPool,
+    id: i64,
+    object_path: String,
+    lease_token: uuid::Uuid,
+    lease: std::time::Duration,
+    operation_timeout: std::time::Duration,
+) -> Result<(u64, u64, u64), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let fence_seconds = lease
+        .as_secs_f64()
+        .max(operation_timeout.as_secs_f64() + 5.0);
+    let still_owned: bool = sqlx::query_scalar(
+        "WITH renewed AS (
+           UPDATE toonflow.storage_cleanup_tasks
+           SET lease_until=now()+make_interval(secs => $3::double precision),
+               update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+           WHERE id=$1 AND state='running' AND lease_token=$2
+             AND lease_until > now()
+           RETURNING 1
+         )
+         SELECT EXISTS(SELECT 1 FROM renewed)",
+    )
+    .bind(id)
+    .bind(lease_token)
+    .bind(fence_seconds)
+    .fetch_one(&mut *tx)
+    .await?;
+    if !still_owned {
+        tx.rollback().await?;
+        return Ok((0, 0, 0));
+    }
+    match storage_object_reference(&mut tx, &object_path).await? {
+        StorageObjectReference::Permanent => {
+            let updated = sqlx::query(
+                "UPDATE toonflow.storage_cleanup_tasks
+                 SET state='completed',lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                     error_reason='对象仍被业务记录引用（永久引用），已安全跳过删除',next_attempt_at=now(),
+                     update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+                 WHERE id=$1 AND state='running' AND lease_token=$2",
+            )
+            .bind(id)
+            .bind(lease_token)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok((updated.rows_affected(), 0, 0));
+        }
+        StorageObjectReference::ActiveJob => {
+            let updated = sqlx::query(
+                "UPDATE toonflow.storage_cleanup_tasks
+                 SET state='pending',lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                     error_reason='对象被非终态分布式任务临时引用，已延后清理',
+                     next_attempt_at=now()+make_interval(secs => $3::double precision),
+                     update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+                 WHERE id=$1 AND state='running' AND lease_token=$2",
+            )
+            .bind(id)
+            .bind(lease_token)
+            .bind(STORAGE_CLEANUP_REFERENCE_RECHECK_SECONDS as f64)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            return Ok((0, updated.rows_affected(), 0));
+        }
+        StorageObjectReference::None => {}
+    }
+    tx.commit().await?;
+
+    let deletion = match tokio::time::timeout(
+        operation_timeout,
+        toonflow_storage::delete_asset_file(&object_path),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "删除 MinIO 对象超时（{} 秒）",
+            operation_timeout.as_secs()
+        )),
+    };
+    match deletion {
+        Ok(()) => {
+            let updated = sqlx::query(
+                "UPDATE toonflow.storage_cleanup_tasks
+                 SET state='completed',lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                     error_reason='',next_attempt_at=now(),
+                     update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+                 WHERE id=$1 AND state='running' AND lease_token=$2
+                   AND lease_until > now()",
+            )
+            .bind(id)
+            .bind(lease_token)
+            .execute(pool)
+            .await?;
+            Ok((updated.rows_affected(), 0, 0))
+        }
+        Err(error) => {
+            let error: String = error.chars().take(4_000).collect();
+            let state: Option<String> = sqlx::query_scalar(
+                "UPDATE toonflow.storage_cleanup_tasks
+                 SET state=CASE
+                       WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE 'pending'
+                     END,
+                     attempts=LEAST(attempts + 1,max_attempts),error_reason=$3,
+                     next_attempt_at=CASE
+                       WHEN attempts + 1 >= max_attempts THEN now()
+                       ELSE now() + make_interval(
+                         secs => LEAST(3600::double precision,
+                           power(2::double precision,LEAST(attempts,10)))
+                       )
+                     END,
+                     lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                     update_time=(extract(epoch from clock_timestamp())*1000)::bigint
+                 WHERE id=$1 AND state='running' AND lease_token=$2
+                   AND lease_until > now()
+                 RETURNING state",
+            )
+            .bind(id)
+            .bind(lease_token)
+            .bind(error)
+            .fetch_optional(pool)
+            .await?;
+            Ok(match state.as_deref() {
+                Some("failed") => (0, 0, 1),
+                Some("pending") => (0, 1, 0),
+                _ => (0, 0, 0),
+            })
+        }
+    }
+}
+
+async fn storage_object_reference(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    object_path: &str,
+) -> Result<StorageObjectReference, sqlx::Error> {
+    let object_key = toonflow_storage::asset_object_key(object_path).unwrap_or(object_path);
+    let direct_asset_path = format!("/toonflow/assets/files/{object_key}");
+    let gateway_asset_path = format!("/api/toonflow/assets/files/{object_key}");
+    let (permanent, active_job): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS(
+           SELECT 1 FROM toonflow.images
+           WHERE file_path IN ($1,$2,$3,$4)
+           UNION ALL
+           SELECT 1 FROM toonflow.storyboards
+           WHERE file_path IN ($1,$2,$3,$4)
+           UNION ALL
+           SELECT 1 FROM toonflow.videos
+           WHERE file_path IN ($1,$2,$3,$4)
+           UNION ALL
+           SELECT 1 FROM toonflow.video_continuity_frames
+           WHERE file_path IN ($1,$2,$3,$4)
+           UNION ALL
+           SELECT 1 FROM toonflow.episode_renders
+           WHERE file_path IN ($1,$2,$3,$4) OR cover_path IN ($1,$2,$3,$4)
+              OR object_path IN ($1,$2,$3,$4)
+         ), EXISTS(
+           SELECT 1 FROM toonflow.distributed_jobs
+           WHERE state IN ('queued','retry','running')
+             AND result->>'stagingObjectPath' IN ($1,$2,$3,$4)
+           UNION ALL
+           SELECT 1
+           FROM toonflow.distributed_jobs jobs
+           CROSS JOIN LATERAL jsonb_array_elements(
+             CASE
+               WHEN jsonb_typeof(jobs.payload->'sources')='array'
+                 THEN jobs.payload->'sources'
+               ELSE '[]'::jsonb
+             END
+           ) AS source(value)
+           WHERE jobs.state IN ('queued','retry','running')
+             AND source.value->>'filePath' IN ($1,$2,$3,$4)
+         )",
+    )
+    .bind(object_path)
+    .bind(object_key)
+    .bind(&direct_asset_path)
+    .bind(&gateway_asset_path)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(if permanent {
+        StorageObjectReference::Permanent
+    } else if active_job {
+        StorageObjectReference::ActiveJob
+    } else {
+        StorageObjectReference::None
+    })
 }
 
 #[cfg(test)]
@@ -256,7 +701,10 @@ mod agent_memory_database_tests {
     use rust_toon_framework_security::{SecurityConfig, TokenService};
     use serde_json::json;
 
-    use super::{ToonState, toonflow_agent_runtime, toonflow_agent_tools, toonflow_agents};
+    use super::{
+        StorageObjectReference, ToonState, process_storage_cleanup_batch, storage_object_reference,
+        toonflow_agent_runtime, toonflow_agent_tools, toonflow_agents,
+    };
 
     #[tokio::test]
     #[ignore = "run with script/test-database-migrations.sh"]
@@ -373,73 +821,242 @@ mod agent_memory_database_tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn cleanup_protects_frozen_sources_for_every_nonterminal_job_state() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let object_key = "projects/cleanup-reference-test/frozen-source.mp4";
+        let cleanup_path = format!("/toonflow/assets/files/{object_key}");
+        let source_paths = [
+            ("queued", object_key.to_string()),
+            ("retry", cleanup_path.clone()),
+            (
+                "running",
+                format!("/api/toonflow/assets/files/{object_key}"),
+            ),
+        ];
+
+        for (state, source_path) in source_paths {
+            let task_id: i64 = sqlx::query_scalar(
+                "INSERT INTO toonflow.tasks(
+                   task_class,related_objects,model,description,state,start_time,input,
+                   progress_current,progress_total
+                 ) VALUES(
+                   'cleanupReferenceTest','{}','toon.video_export',$1,'running',
+                   (extract(epoch FROM clock_timestamp())*1000)::bigint,'{}'::jsonb,0,1
+                 ) RETURNING id",
+            )
+            .bind(format!("cleanup source reference in {state}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let payload = json!({
+                "sources": [{"videoId": 1, "filePath": source_path}],
+            });
+            sqlx::query(
+                "INSERT INTO toonflow.distributed_jobs(
+                   task_id,kind,payload,state,lease_owner,lease_token,lease_until
+                 ) VALUES(
+                   $1,'toon.video_export',$2,$3,
+                   CASE WHEN $3='running' THEN 'cleanup-reference-test' END,
+                   CASE WHEN $3='running' THEN gen_random_uuid() END,
+                   CASE WHEN $3='running' THEN now()+interval '5 minutes' END
+                 )",
+            )
+            .bind(task_id)
+            .bind(payload)
+            .bind(state)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let mut tx = pool.begin().await.unwrap();
+            assert_eq!(
+                storage_object_reference(&mut tx, &cleanup_path)
+                    .await
+                    .unwrap(),
+                StorageObjectReference::ActiveJob,
+                "{state} source snapshot must protect its MinIO object"
+            );
+            tx.rollback().await.unwrap();
+
+            sqlx::query(
+                "UPDATE toonflow.distributed_jobs
+                 SET state='succeeded',lease_owner=NULL,lease_token=NULL,lease_until=NULL,
+                     completed_at=now()
+                 WHERE task_id=$1",
+            )
+            .bind(task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let mut tx = pool.begin().await.unwrap();
+            assert_eq!(
+                storage_object_reference(&mut tx, &cleanup_path)
+                    .await
+                    .unwrap(),
+                StorageObjectReference::None,
+                "terminal {state} job must release its source snapshot"
+            );
+            tx.rollback().await.unwrap();
+            sqlx::query("DELETE FROM toonflow.tasks WHERE id=$1")
+                .bind(task_id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        let task_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.tasks(
+               task_class,related_objects,model,description,state,start_time,input,
+               progress_current,progress_total
+             ) VALUES(
+               'cleanupReferenceTest','{}','toon.video_export','malformed sources','running',
+               (extract(epoch FROM clock_timestamp())*1000)::bigint,'{}'::jsonb,0,1
+             ) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.distributed_jobs(task_id,kind,payload,state)
+             VALUES($1,'toon.video_export','{\"sources\":{}}'::jsonb,'queued')",
+        )
+        .bind(task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        assert_eq!(
+            storage_object_reference(&mut tx, &cleanup_path)
+                .await
+                .unwrap(),
+            StorageObjectReference::None,
+            "malformed non-array sources must be ignored without failing cleanup"
+        );
+        tx.rollback().await.unwrap();
+        sqlx::query("DELETE FROM toonflow.tasks WHERE id=$1")
+            .bind(task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let transient_path = "cleanup-reference-test-transient-sentinel";
+        let task_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.tasks(
+               task_class,related_objects,model,description,state,start_time,input,
+               progress_current,progress_total
+             ) VALUES(
+               'cleanupReferenceTest','{}','toon.video_export','temporary source lifecycle','running',
+               (extract(epoch FROM clock_timestamp())*1000)::bigint,'{}'::jsonb,0,1
+             ) RETURNING id",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.distributed_jobs(task_id,kind,payload,state)
+             VALUES($1,'toon.video_export',$2,'queued')",
+        )
+        .bind(task_id)
+        .bind(json!({
+            "sources": [{"videoId": 2, "filePath": transient_path}],
+        }))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let cleanup_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.storage_cleanup_tasks(
+               object_path,resource_type,resource_id,error_reason,state,create_time,update_time
+             ) VALUES(
+               $1,'distributed_job_source',$2,'temporary source lifecycle','pending',
+               (extract(epoch FROM clock_timestamp())*1000)::bigint,
+               (extract(epoch FROM clock_timestamp())*1000)::bigint
+             ) RETURNING id",
+        )
+        .bind(transient_path)
+        .bind(task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let first_cleanup = process_storage_cleanup_batch(
+            &pool,
+            "cleanup-reference-test",
+            1,
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!((first_cleanup.completed, first_cleanup.deferred), (0, 1));
+        let deferred: (String, String, bool) = sqlx::query_as(
+            "SELECT state,error_reason,next_attempt_at > now()
+             FROM toonflow.storage_cleanup_tasks WHERE id=$1",
+        )
+        .bind(cleanup_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(deferred.0, "pending");
+        assert!(deferred.1.contains("临时引用"));
+        assert!(deferred.2, "temporary references must be rechecked later");
+
+        sqlx::query(
+            "UPDATE toonflow.distributed_jobs
+             SET state='succeeded',completed_at=now() WHERE task_id=$1",
+        )
+        .bind(task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE toonflow.storage_cleanup_tasks SET next_attempt_at=now() WHERE id=$1")
+            .bind(cleanup_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let terminal_cleanup = process_storage_cleanup_batch(
+            &pool,
+            "cleanup-reference-test",
+            1,
+            Duration::from_secs(30),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (terminal_cleanup.completed, terminal_cleanup.deferred),
+            (1, 0)
+        );
+        let cleanup_state: String =
+            sqlx::query_scalar("SELECT state FROM toonflow.storage_cleanup_tasks WHERE id=$1")
+                .bind(cleanup_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(cleanup_state, "completed");
+        sqlx::query("DELETE FROM toonflow.tasks WHERE id=$1")
+            .bind(task_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM toonflow.storage_cleanup_tasks WHERE id=$1")
+            .bind(cleanup_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }
 
 impl ToonState {
     pub fn new(pool: PgPool, tokens: TokenService) -> Self {
         Self { pool, tokens }
     }
-
-    pub async fn recover_interrupted_image_tasks(&self) -> Result<u64, sqlx::Error> {
-        sqlx::query(
-            "UPDATE toonflow.images SET state='生成失败',error_reason='服务重启导致生成中断，请重新生成' WHERE state='生成中'",
-        )
-        .execute(&self.pool)
-        .await
-        .map(|result| result.rows_affected())
-    }
-
-    pub async fn recover_storage_cleanup_tasks(&self) -> Result<u64, sqlx::Error> {
-        let rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id,object_path FROM toonflow.storage_cleanup_tasks
-             WHERE state='pending' ORDER BY update_time LIMIT 100",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        let mut completed = 0;
-        for (id, path) in rows {
-            match crate::toonflow_storage::delete_asset_file(&path).await {
-                Ok(()) => {
-                    sqlx::query("UPDATE toonflow.storage_cleanup_tasks SET state='completed',update_time=$2 WHERE id=$1")
-                        .bind(id).bind(chrono::Utc::now().timestamp_millis()).execute(&self.pool).await?;
-                    completed += 1;
-                }
-                Err(error) => {
-                    sqlx::query("UPDATE toonflow.storage_cleanup_tasks SET attempts=attempts+1,error_reason=$2,update_time=$3 WHERE id=$1")
-                        .bind(id).bind(error).bind(chrono::Utc::now().timestamp_millis()).execute(&self.pool).await?;
-                }
-            }
-        }
-        Ok(completed)
-    }
-}
-
-/// Marks work interrupted by a process restart as failed before serving traffic.
-pub async fn repair_interrupted_state(pool: &PgPool) -> Result<(), sqlx::Error> {
-    let mut tx = pool.begin().await?;
-    sqlx::query("UPDATE toonflow.workflow_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.workflow_node_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.novels SET event_state=-1,error_reason='服务重启导致失败' WHERE event_state=0")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.assets SET prompt_state='生成失败',prompt_error_reason='服务重启导致失败' WHERE prompt_state='生成中'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.images SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.video_tracks SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
-        .execute(&mut *tx).await?;
-    sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
-        .execute(&mut *tx).await?;
-    sqlx::query(
-        "UPDATE toonflow.tasks SET state='failed',reason='服务重启导致失败' WHERE state='running'",
-    )
-    .execute(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(())
 }
 
 pub fn routes(state: ToonState) -> Router {

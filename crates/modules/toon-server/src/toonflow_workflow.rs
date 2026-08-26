@@ -25,7 +25,11 @@ use crate::toonflow_workflow_utils::{
     default_concurrency, empty_object, manual_trigger, merge_node_settings,
 };
 use crate::{
-    ToonState, shared::require, toonflow_agent_tools, toonflow_image_workflow, toonflow_video,
+    ToonState,
+    shared::require,
+    toonflow_agent_tools,
+    toonflow_episode_renders::{ensure_project_access, ensure_script_in_project},
+    toonflow_image_workflow, toonflow_video,
 };
 
 static ACTIVE_NODE_RUNS: OnceLock<Mutex<HashMap<i64, AbortHandle>>> = OnceLock::new();
@@ -37,6 +41,24 @@ pub(crate) fn active_node_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
 
 pub(crate) fn active_workflow_runs() -> &'static Mutex<HashMap<i64, AbortHandle>> {
     ACTIVE_WORKFLOW_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(crate) async fn ensure_workflow_run_access(
+    pool: &PgPool,
+    user: &CurrentUser,
+    workflow_run_id: i64,
+) -> Result<(i64, i64), AppError> {
+    let run: Option<(i64, i64)> =
+        sqlx::query_as("SELECT project_id,script_id FROM toonflow.workflow_runs WHERE id=$1")
+            .bind(workflow_run_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| AppError::internal("failed to authorize workflow run"))?;
+    let (project_id, script_id) =
+        run.ok_or_else(|| AppError::not_found("workflow run not found"))?;
+    ensure_project_access(pool, user, project_id).await?;
+    ensure_script_in_project(pool, project_id, script_id).await?;
+    Ok((project_id, script_id))
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,6 +287,8 @@ pub async fn create_run(
     Json(request): Json<CreateWorkflowRunRequest>,
 ) -> Result<Json<ApiResponse<CreateWorkflowRunResponse>>, AppError> {
     require(&user, "toon:scene:update")?;
+    ensure_project_access(&state.pool, &user, request.project_id).await?;
+    ensure_script_in_project(&state.pool, request.project_id, request.script_id).await?;
     if !request.input.is_object() {
         return Err(AppError::bad_request(
             "workflow run input must be an object",
@@ -414,6 +438,15 @@ pub async fn create_run(
 }
 
 pub(crate) async fn recover_stale_node_runs(state: &ToonState) {
+    // Gateway startup repairs process-owned work immediately. This runtime
+    // sweep is only a panic fallback, so require an age threshold; otherwise
+    // a freshly CAS-claimed node can be mistaken for stale while it is still
+    // preparing references before its execution handle is registered.
+    let stale_after_seconds = std::env::var("TOON_WORKFLOW_STALE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| (60..=86_400).contains(value))
+        .unwrap_or(7_200);
     let active = active_node_runs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -424,9 +457,13 @@ pub(crate) async fn recover_stale_node_runs(state: &ToonState) {
         "SELECT nr.id,nr.workflow_run_id,nr.node_type,nr.input,r.project_id,r.script_id
          FROM toonflow.workflow_node_runs nr
          JOIN toonflow.workflow_runs r ON r.id=nr.workflow_run_id
-         WHERE nr.state='running' AND NOT(nr.id=ANY($1))",
+         WHERE nr.state='running' AND NOT(nr.id=ANY($1))
+           AND nr.start_time IS NOT NULL
+           AND nr.start_time <
+             (extract(epoch FROM clock_timestamp()) * 1000)::bigint - ($2 * 1000)",
     )
     .bind(&active)
+    .bind(stale_after_seconds)
     .fetch_all(&state.pool)
     .await
     .unwrap_or_default();
@@ -539,6 +576,68 @@ async fn finish_node_run(
     }
 }
 
+async fn claim_node_run(
+    pool: &PgPool,
+    node_run_id: i64,
+    workflow_run_id: i64,
+    input: &Value,
+) -> Result<(), AppError> {
+    let time = chrono::Utc::now().timestamp_millis();
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin workflow node claim"))?;
+    let claimed: Option<i64> = sqlx::query_scalar(
+        "UPDATE toonflow.workflow_node_runs
+         SET state='running',input=$2,output=NULL,error_reason=NULL,
+             progress_current=0,progress_total=0,start_time=$3,finish_time=NULL
+         WHERE id=$1 AND workflow_run_id=$4 AND state IN('pending','blocked')
+         RETURNING id",
+    )
+    .bind(node_run_id)
+    .bind(input)
+    .bind(time)
+    .bind(workflow_run_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| AppError::internal("failed to claim workflow node run"))?;
+    if claimed.is_none() {
+        transaction
+            .rollback()
+            .await
+            .map_err(|_| AppError::internal("failed to roll back workflow node claim"))?;
+        return Err(AppError::bad_request(
+            "workflow node run has already started",
+        ));
+    }
+    sqlx::query(
+        "UPDATE toonflow.workflow_runs
+         SET state='running',error_reason=NULL,start_time=coalesce(start_time,$2),finish_time=NULL
+         WHERE id=$1",
+    )
+    .bind(workflow_run_id)
+    .bind(time)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::internal("failed to start workflow run"))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit workflow node claim"))
+}
+
+async fn fail_claimed_node(pool: &PgPool, node_run_id: i64, workflow_run_id: i64, reason: &str) {
+    finish_node_run(
+        pool,
+        node_run_id,
+        workflow_run_id,
+        "failed",
+        json!({}),
+        Some(reason.to_string()),
+    )
+    .await;
+}
+
 async fn launch_storyboard_node(
     state: &ToonState,
     node_run_id: i64,
@@ -562,50 +661,50 @@ async fn launch_storyboard_node(
             "workflow node run has already started",
         ));
     }
-    let (_storyboards, jobs) = toonflow_image_workflow::prepare_storyboard_generation(
+    let input_json = serde_json::to_value(&input)
+        .map_err(|_| AppError::internal("failed to serialize workflow node input"))?;
+    claim_node_run(&state.pool, node_run_id, row.0, &input_json).await?;
+    let prepared = toonflow_image_workflow::prepare_storyboard_generation(
         &state.pool,
         row.3,
         row.4,
         &input.storyboard_ids,
         input.compulsory,
     )
-    .await?;
-    let input_json = serde_json::to_value(&input)
-        .map_err(|_| AppError::internal("failed to serialize workflow node input"))?;
-    let time = chrono::Utc::now().timestamp_millis();
-    let mut transaction = state
-        .pool
-        .begin()
-        .await
-        .map_err(|_| AppError::internal("failed to begin workflow node run"))?;
-    sqlx::query(
+    .await;
+    let (_storyboards, jobs) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            fail_claimed_node(&state.pool, node_run_id, row.0, error.message()).await;
+            return Err(error);
+        }
+    };
+    let updated = sqlx::query(
         "UPDATE toonflow.workflow_node_runs
-         SET state='running',input=$2,output=NULL,error_reason=NULL,
-             progress_current=0,progress_total=$3,start_time=$4,finish_time=NULL
-         WHERE id=$1",
+         SET input=$2,progress_total=$3
+         WHERE id=$1 AND state='running'",
     )
     .bind(node_run_id)
-    .bind(input_json)
+    .bind(&input_json)
     .bind(jobs.len() as i32)
-    .bind(time)
-    .execute(&mut *transaction)
+    .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to start workflow node run"))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::bad_request(
+            "workflow node run is no longer active",
+        ));
+    }
     sqlx::query(
         "UPDATE toonflow.workflow_runs
-         SET state='running',input=$2,output=NULL,error_reason=NULL,start_time=$3,finish_time=NULL
+         SET input=$2,output=NULL
          WHERE id=$1",
     )
     .bind(row.0)
     .bind(json!({"nodeId": row.1, "nodeRunId": node_run_id, "input": input}))
-    .bind(time)
-    .execute(&mut *transaction)
+    .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to start workflow run"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| AppError::internal("failed to commit workflow node run"))?;
 
     let total = jobs.len();
     let generated_storyboard_ids = jobs.iter().map(|job| job.id).collect::<Vec<_>>();
@@ -796,93 +895,104 @@ async fn launch_standard_node(
             "workflow node input must be an object",
         ));
     }
-    let (execution, progress_total) = match row.2.as_str() {
-        "script.source" => (PreparedNodeExecution::ScriptSource, 1),
-        "director.plan" | "storyboard.plan" => {
-            let prompt = input
-                .get("prompt")
-                .and_then(Value::as_str)
-                .filter(|prompt| !prompt.trim().is_empty())
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    if row.2 == "director.plan" {
-                        "读取当前剧本与资产，生成完整导演规划并写入工作区。".into()
-                    } else {
-                        "读取剧本、资产和导演规划，生成完整分镜表并写入工作区。".into()
-                    }
-                });
-            let tool_name = if row.2 == "director.plan" {
-                "run_sub_agent_director_plan"
-            } else {
-                "run_sub_agent_storyboard_table"
-            };
-            (
-                PreparedNodeExecution::Agent {
-                    tool_name: tool_name.into(),
-                    prompt,
-                    materialize_storyboard_panel: row.2 == "storyboard.plan",
-                },
-                if row.2 == "storyboard.plan" { 2 } else { 1 },
-            )
+    if !matches!(
+        row.2.as_str(),
+        "script.source" | "director.plan" | "storyboard.plan" | "video.generate"
+    ) {
+        return Err(AppError::bad_request("unsupported workflow node type"));
+    }
+    claim_node_run(&state.pool, node_run_id, row.0, &input).await?;
+    let preparation: Result<(PreparedNodeExecution, i32), AppError> = async {
+        Ok(match row.2.as_str() {
+            "script.source" => (PreparedNodeExecution::ScriptSource, 1),
+            "director.plan" | "storyboard.plan" => {
+                let prompt = input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .filter(|prompt| !prompt.trim().is_empty())
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        if row.2 == "director.plan" {
+                            "读取当前剧本与资产，生成完整导演规划并写入工作区。".into()
+                        } else {
+                            "读取剧本、资产和导演规划，生成完整分镜表并写入工作区。".into()
+                        }
+                    });
+                let tool_name = if row.2 == "director.plan" {
+                    "run_sub_agent_director_plan"
+                } else {
+                    "run_sub_agent_storyboard_table"
+                };
+                (
+                    PreparedNodeExecution::Agent {
+                        tool_name: tool_name.into(),
+                        prompt,
+                        materialize_storyboard_panel: row.2 == "storyboard.plan",
+                    },
+                    if row.2 == "storyboard.plan" { 2 } else { 1 },
+                )
+            }
+            "video.generate" => {
+                let mut video_input: toonflow_video::WorkflowVideoInput =
+                    serde_json::from_value(input.clone()).map_err(|_| {
+                        AppError::bad_request("video.generate node input is invalid")
+                    })?;
+                let jobs = toonflow_video::prepare_workflow_video_generation(
+                    &state.pool,
+                    row.3,
+                    row.4,
+                    &mut video_input,
+                )
+                .await?;
+                let total = jobs.len() as i32;
+                input = serde_json::to_value(&video_input)
+                    .map_err(|_| AppError::internal("failed to serialize video node input"))?;
+                (
+                    PreparedNodeExecution::Video {
+                        jobs,
+                        concurrency: video_input.concurrent_count,
+                        video_ids: video_input.video_ids,
+                    },
+                    total,
+                )
+            }
+            _ => unreachable!("node type was validated before claim"),
+        })
+    }
+    .await;
+    let (execution, progress_total) = match preparation {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            fail_claimed_node(&state.pool, node_run_id, row.0, error.message()).await;
+            return Err(error);
         }
-        "video.generate" => {
-            let mut video_input: toonflow_video::WorkflowVideoInput =
-                serde_json::from_value(input.clone())
-                    .map_err(|_| AppError::bad_request("video.generate node input is invalid"))?;
-            let jobs = toonflow_video::prepare_workflow_video_generation(
-                &state.pool,
-                row.3,
-                row.4,
-                &mut video_input,
-            )
-            .await?;
-            let total = jobs.len() as i32;
-            input = serde_json::to_value(&video_input)
-                .map_err(|_| AppError::internal("failed to serialize video node input"))?;
-            (
-                PreparedNodeExecution::Video {
-                    jobs,
-                    concurrency: video_input.concurrent_count,
-                    video_ids: video_input.video_ids,
-                },
-                total,
-            )
-        }
-        _ => return Err(AppError::bad_request("unsupported workflow node type")),
     };
-    let time = chrono::Utc::now().timestamp_millis();
-    let mut transaction = state
-        .pool
-        .begin()
-        .await
-        .map_err(|_| AppError::internal("failed to begin workflow node run"))?;
-    sqlx::query(
+    let updated = sqlx::query(
         "UPDATE toonflow.workflow_node_runs
-         SET state='running',input=$2,output=NULL,error_reason=NULL,
-             progress_current=0,progress_total=$3,start_time=$4,finish_time=NULL
-         WHERE id=$1",
+         SET input=$2,progress_total=$3
+         WHERE id=$1 AND state='running'",
     )
     .bind(node_run_id)
     .bind(&input)
     .bind(progress_total)
-    .bind(time)
-    .execute(&mut *transaction)
+    .execute(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to start workflow node run"))?;
-    sqlx::query(
-        "UPDATE toonflow.workflow_runs
-         SET state='running',error_reason=NULL,start_time=coalesce(start_time,$2),finish_time=NULL
-         WHERE id=$1",
-    )
-    .bind(row.0)
-    .bind(time)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| AppError::internal("failed to start workflow run"))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| AppError::internal("failed to commit workflow node run"))?;
+    if updated.rows_affected() != 1 {
+        if let PreparedNodeExecution::Video { video_ids, .. } = &execution {
+            let _ = sqlx::query(
+                "UPDATE toonflow.videos
+                 SET state='已取消',error_reason='工作流节点在准备期间已取消'
+                 WHERE id=ANY($1) AND state='生成中'",
+            )
+            .bind(video_ids)
+            .execute(&state.pool)
+            .await;
+        }
+        return Err(AppError::bad_request(
+            "workflow node run is no longer active",
+        ));
+    }
 
     let task_state = state.clone();
     let workflow_run_id = row.0;
@@ -1348,6 +1458,8 @@ pub async fn start_node(
 ) -> Result<Json<ApiResponse<StartWorkflowNodeResponse>>, AppError> {
     require(&user, "toon:scene:update")?;
     recover_stale_node_runs(&state).await;
+    let (project_id, script_id) =
+        ensure_workflow_run_access(&state.pool, &user, request.workflow_run_id).await?;
     let node_run_id: i64 = sqlx::query_scalar(
         "SELECT id FROM toonflow.workflow_node_runs
          WHERE workflow_run_id=$1 AND node_id=$2
@@ -1360,12 +1472,26 @@ pub async fn start_node(
     .map_err(|_| AppError::internal("failed to find workflow node run"))?
     .ok_or_else(|| AppError::not_found("workflow node run not found"))?;
     if let Some(agent_run_id) = request.agent_run_id {
-        sqlx::query("UPDATE toonflow.workflow_node_runs SET agent_run_id=$2 WHERE id=$1")
-            .bind(node_run_id)
-            .bind(agent_run_id)
-            .execute(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to link agent run"))?;
+        let linked = sqlx::query(
+            "UPDATE toonflow.workflow_node_runs node
+             SET agent_run_id=$2
+             WHERE node.id=$1 AND node.workflow_run_id=$3
+               AND EXISTS(
+                 SELECT 1 FROM toonflow.agent_runs agent
+                 WHERE agent.id=$2 AND agent.project_id=$4 AND agent.script_id=$5
+               )",
+        )
+        .bind(node_run_id)
+        .bind(agent_run_id)
+        .bind(request.workflow_run_id)
+        .bind(project_id)
+        .bind(script_id)
+        .execute(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to link agent run"))?;
+        if linked.rows_affected() != 1 {
+            return Err(AppError::not_found("agent run not found"));
+        }
     }
     let response = launch_node(&state, node_run_id, request.input).await?;
     Ok(Json(ApiResponse::new(response)))
@@ -1378,6 +1504,14 @@ pub async fn node_state(
 ) -> Result<Json<ApiResponse<WorkflowNodeRunResponse>>, AppError> {
     require(&user, "toon:scene:read")?;
     recover_stale_node_runs(&state).await;
+    let workflow_run_id: i64 =
+        sqlx::query_scalar("SELECT workflow_run_id FROM toonflow.workflow_node_runs WHERE id=$1")
+            .bind(request.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to authorize workflow node run"))?
+            .ok_or_else(|| AppError::not_found("workflow node run not found"))?;
+    ensure_workflow_run_access(&state.pool, &user, workflow_run_id).await?;
     let row = sqlx::query_as::<_, WorkflowNodeRunResponse>(
         "SELECT id,workflow_run_id,agent_run_id,node_id,node_type,attempt,state,input,output,error_reason,
                 progress_current,progress_total,retry_of_id,start_time,finish_time,create_time
@@ -1398,6 +1532,7 @@ pub async fn run_state(
 ) -> Result<Json<ApiResponse<WorkflowRunDetail>>, AppError> {
     require(&user, "toon:scene:read")?;
     recover_stale_node_runs(&state).await;
+    ensure_workflow_run_access(&state.pool, &user, request.id).await?;
     let run = sqlx::query_as::<
         _,
         (
@@ -1454,6 +1589,8 @@ pub async fn list_runs(
     Query(query): Query<ListWorkflowRunsQuery>,
 ) -> Result<Json<ApiResponse<Vec<WorkflowRunSummary>>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_access(&state.pool, &user, query.project_id).await?;
+    ensure_script_in_project(&state.pool, query.project_id, query.script_id).await?;
     let rows = sqlx::query_as::<_, WorkflowRunSummary>(
         "SELECT id,definition_version,state,trigger_type,error_reason,start_time,finish_time,create_time
          FROM toonflow.workflow_runs WHERE project_id=$1 AND script_id=$2

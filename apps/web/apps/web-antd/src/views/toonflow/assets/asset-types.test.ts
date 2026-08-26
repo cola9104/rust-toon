@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { useAccessStore } from '@vben/stores';
+import { createPinia, setActivePinia } from 'pinia';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   assetCategory,
@@ -8,6 +10,7 @@ import {
 } from './asset-types';
 
 describe('asset type categories', () => {
+  afterEach(() => setActivePinia(undefined));
   it.each([
     ['role', 'role', '角色'],
     ['scene', 'scene', '场景'],
@@ -32,5 +35,17 @@ describe('asset type categories', () => {
     expect(assetFileUrl('https://cdn.example.com/role.jpg')).toBe(
       'https://cdn.example.com/role.jpg',
     );
+  });
+
+  it('adds the current access token to protected media URLs without duplicating it', () => {
+    setActivePinia(createPinia());
+    useAccessStore().setAccessToken('header.payload.signature');
+    const protectedUrl = assetFileUrl(
+      '/toonflow/assets/files/toonflow/7/assets/exports/final.mp4',
+    );
+    expect(protectedUrl).toBe(
+      '/api/toonflow/assets/files/toonflow/7/assets/exports/final.mp4?token=header.payload.signature',
+    );
+    expect(assetFileUrl(protectedUrl)).toBe(protectedUrl);
   });
 });

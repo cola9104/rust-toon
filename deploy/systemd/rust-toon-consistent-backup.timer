@@ -1,11 +1,11 @@
 [Unit]
-Description=Daily Rust Toon PostgreSQL backup
+Description=Daily Rust Toon consistent backup set
 
 [Timer]
 OnCalendar=*-*-* 03:15:00
 Persistent=true
 RandomizedDelaySec=15m
-Unit=rust-toon-postgres-backup.service
+Unit=rust-toon-consistent-backup.service
 
 [Install]
 WantedBy=timers.target

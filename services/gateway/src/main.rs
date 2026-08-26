@@ -1,13 +1,16 @@
 #![recursion_limit = "256"]
 
+use std::{env, time::Duration};
+
 use axum::{Json, Router, middleware::from_fn_with_state, routing::get};
-use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route, init_tracing, serve};
+use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route, init_tracing};
 use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
 use rust_toon_framework_redis::{RateLimitConfig, RateLimitState, RedisClient, RedisConfig};
 use rust_toon_framework_security::{SecurityConfig, TokenService};
 use rust_toon_framework_web::{AppError, WebConfig, apply_web_layers};
 use serde::Serialize;
-use tracing::warn;
+use tokio::net::TcpListener;
+use tracing::{info, warn};
 
 mod audit;
 mod openapi;
@@ -27,7 +30,20 @@ async fn main() -> anyhow::Result<()> {
 
     let database = connect(&DatabaseConfig::from_env()?).await?;
     migrate(&database).await?;
-    rust_toon_toon_server::repair_interrupted_state(&database).await?;
+    let repaired = rust_toon_toon_server::repair_gateway_interrupted_state(&database).await?;
+    if repaired > 0 {
+        warn!(repaired, "marked interrupted Gateway-owned work as failed");
+    }
+    let removed_provider_downloads =
+        rust_toon_toon_server::cleanup_provider_video_temp_on_startup()
+            .await
+            .map_err(anyhow::Error::msg)?;
+    if removed_provider_downloads > 0 {
+        warn!(
+            removed_provider_downloads,
+            "removed interrupted provider video downloads"
+        );
+    }
     let redis_configured = std::env::var_os("REDIS_URL").is_some();
     let redis = connect_redis().await;
     let tokens = TokenService::new(SecurityConfig::from_env()?);
@@ -38,19 +54,18 @@ async fn main() -> anyhow::Result<()> {
     );
     let infra_state = rust_toon_infra_server::InfraState::new(database.clone());
     let ai_state = rust_toon_ai_server::AiState::new(database.clone(), tokens.clone());
+    if std::env::var_os("MINIO_ENDPOINT").is_some() {
+        rust_toon_toon_server::initialize_object_storage()
+            .await
+            .map_err(anyhow::Error::msg)?;
+    }
     let toon_state = rust_toon_toon_server::ToonState::new(database.clone(), tokens.clone());
-    let recovered_cleanup = toon_state.recover_storage_cleanup_tasks().await?;
-    tracing::info!(recovered_cleanup, "storage cleanup tasks recovered");
     let media_state = rust_toon_media_server::MediaState::new(database.clone(), tokens);
     system_state.bootstrap().await?;
-    let recovered_images = toon_state.recover_interrupted_image_tasks().await?;
-    if recovered_images > 0 {
-        warn!(
-            recovered_images,
-            "marked image tasks interrupted by the previous process as failed"
-        );
-    }
     let database_auth = system_state.database_auth_state();
+    let readiness_state =
+        readiness::ReadinessState::new(database.clone(), redis.clone(), redis_configured);
+    let drain = readiness_state.drain_handle();
 
     let mut app = Router::new()
         .route("/", get(index))
@@ -60,11 +75,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(rust_toon_ai_server::routes(ai_state))
         .merge(rust_toon_toon_server::routes(toon_state))
         .merge(rust_toon_media_server::routes(media_state))
-        .merge(readiness::routes(readiness::ReadinessState::new(
-            database.clone(),
-            redis.clone(),
-            redis_configured,
-        )))
+        .merge(readiness::routes(readiness_state))
         .merge(health_route(SERVICE_NAME))
         .fallback(not_found)
         .layer(from_fn_with_state(
@@ -85,7 +96,71 @@ async fn main() -> anyhow::Result<()> {
 
     let app = apply_web_layers(app, WebConfig::from_env());
 
-    serve(ServiceConfig::from_env(SERVICE_NAME, 8080), app).await
+    serve_gateway(ServiceConfig::from_env(SERVICE_NAME, 8080), app, drain).await
+}
+
+async fn serve_gateway(
+    config: ServiceConfig,
+    app: Router,
+    drain: readiness::DrainHandle,
+) -> anyhow::Result<()> {
+    let addr = config.addr()?;
+    let listener = TcpListener::bind(addr).await?;
+    info!(service = %config.name, address = %addr, "service listening");
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(drain))
+        .await?;
+
+    Ok(())
+}
+
+async fn shutdown_signal(drain: readiness::DrainHandle) {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install SIGTERM handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+
+    drain.begin_draining();
+    let delay = drain_delay();
+    info!(delay_ms = delay.as_millis(), "gateway is draining");
+    if !delay.is_zero() {
+        tokio::time::sleep(delay).await;
+    }
+}
+
+fn drain_delay() -> Duration {
+    let default_seconds = if env::var("RUST_ENV")
+        .map(|value| value.eq_ignore_ascii_case("production"))
+        .unwrap_or(false)
+    {
+        5
+    } else {
+        0
+    };
+    let seconds = env::var("GATEWAY_DRAIN_DELAY_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(default_seconds)
+        .min(300);
+    Duration::from_secs(seconds)
 }
 
 async fn connect_redis() -> Option<RedisClient> {

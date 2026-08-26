@@ -1518,7 +1518,9 @@ async function batchDeleteSelectedStoryboards(ids: number[]) {
 
 async function previewAllStoryboardImages() {
   if (storyboards.value.length === 0) return message.warning('当前没有分镜');
-  storyboardPreview.value = (await previewStoryboardImages(storyboards.value.map((item) => item.id))) || '';
+  storyboardPreview.value = assetFileUrl(
+    (await previewStoryboardImages(storyboards.value.map((item) => item.id))) || '',
+  );
   if (!storyboardPreview.value) return message.warning('还没有可预览的分镜图片');
   storyboardPreviewOpen.value = true;
 }

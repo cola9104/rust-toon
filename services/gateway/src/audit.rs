@@ -31,11 +31,10 @@ pub async fn record(
     let started_at = chrono::Utc::now().naive_utc();
     let timer = Instant::now();
     let method = request.method().to_string();
-    let path = request
-        .uri()
-        .path_and_query()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| request.uri().path().to_string());
+    // Query strings can contain credentials (the Toonflow WebSocket currently
+    // accepts a JWT query parameter), so the access log must only persist the
+    // normalized URI path.
+    let path = audit_path(request.uri());
     let user_agent = request
         .headers()
         .get("user-agent")
@@ -91,4 +90,27 @@ pub async fn record(
         .await;
     });
     response
+}
+
+fn audit_path(uri: &axum::http::Uri) -> String {
+    uri.path().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::audit_path;
+    use axum::http::Uri;
+
+    #[test]
+    fn audit_path_never_contains_query_credentials() {
+        let uri: Uri = "/toonflow/ws?token=super-secret-jwt&projectId=42"
+            .parse()
+            .expect("valid URI");
+
+        let path = audit_path(&uri);
+
+        assert_eq!(path, "/toonflow/ws");
+        assert!(!path.contains("super-secret-jwt"));
+        assert!(!path.contains('?'));
+    }
 }

@@ -1,13 +1,213 @@
-use crate::{ToonState, ai_client, shared::require};
-use axum::{Json, extract::State};
+use crate::{
+    ToonState, ai_client,
+    shared::require,
+    toonflow_episode_renders::{ensure_project_access, ensure_script_in_project},
+};
+use axum::{Json, extract::State, http::StatusCode};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
-use tokio::task::JoinSet;
+use std::sync::{Arc, OnceLock};
+use tokio::{sync::OwnedSemaphorePermit, task::JoinSet};
 
 type StoryboardAssetMediaRow = (i64, i64, String, String, Option<String>, Option<String>);
+
+static PROVIDER_VIDEO_SEMAPHORE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+
+fn provider_video_semaphore() -> Arc<tokio::sync::Semaphore> {
+    PROVIDER_VIDEO_SEMAPHORE
+        .get_or_init(|| {
+            let concurrency = std::env::var("TOON_PROVIDER_VIDEO_CONCURRENCY")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .filter(|value| (1..=32).contains(value))
+                .unwrap_or(2);
+            Arc::new(tokio::sync::Semaphore::new(concurrency))
+        })
+        .clone()
+}
+
+fn try_acquire_provider_video_slot() -> Result<OwnedSemaphorePermit, AppError> {
+    provider_video_semaphore().try_acquire_owned().map_err(|_| {
+        AppError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            429,
+            "视频生成任务已达到当前节点并发上限，请稍后重试",
+        )
+    })
+}
+
+async fn acquire_provider_video_slot() -> Option<OwnedSemaphorePermit> {
+    provider_video_semaphore().acquire_owned().await.ok()
+}
+
+async fn ensure_project_script_access(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    project_id: i64,
+    script_id: i64,
+) -> Result<(), AppError> {
+    ensure_project_access(pool, user, project_id).await?;
+    ensure_script_in_project(pool, project_id, script_id).await
+}
+
+async fn ensure_track_access(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    track_id: i64,
+) -> Result<(i64, Option<i64>), AppError> {
+    let track: Option<(i64, Option<i64>)> =
+        sqlx::query_as("SELECT project_id,script_id FROM toonflow.video_tracks WHERE id=$1")
+            .bind(track_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|_| AppError::internal("failed to authorize video track"))?;
+    let (project_id, script_id) =
+        track.ok_or_else(|| AppError::not_found("video track not found"))?;
+    ensure_project_access(pool, user, project_id).await?;
+    if let Some(script_id) = script_id {
+        ensure_script_in_project(pool, project_id, script_id).await?;
+    }
+    Ok((project_id, script_id))
+}
+
+async fn ensure_track_in_context(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    project_id: i64,
+    script_id: i64,
+    track_id: i64,
+) -> Result<(), AppError> {
+    ensure_project_script_access(pool, user, project_id, script_id).await?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM toonflow.video_tracks
+           WHERE id=$1 AND project_id=$2 AND script_id=$3
+         )",
+    )
+    .bind(track_id)
+    .bind(project_id)
+    .bind(script_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to authorize video track"))?;
+    if !exists {
+        return Err(AppError::not_found("video track not found"));
+    }
+    Ok(())
+}
+
+async fn ensure_resource_projects_access(
+    pool: &sqlx::PgPool,
+    user: &CurrentUser,
+    requested_ids: &[i64],
+    rows: Vec<(i64, i64)>,
+    resource_name: &str,
+) -> Result<(), AppError> {
+    let mut requested_ids = requested_ids.to_vec();
+    requested_ids.sort_unstable();
+    requested_ids.dedup();
+    let mut found_ids = rows.iter().map(|row| row.0).collect::<Vec<_>>();
+    found_ids.sort_unstable();
+    found_ids.dedup();
+    if requested_ids != found_ids {
+        return Err(AppError::not_found(format!("{resource_name} not found")));
+    }
+    let mut project_ids = rows.into_iter().map(|row| row.1).collect::<Vec<_>>();
+    project_ids.sort_unstable();
+    project_ids.dedup();
+    for project_id in project_ids {
+        ensure_project_access(pool, user, project_id).await?;
+    }
+    Ok(())
+}
+
+fn ensure_internal_references_in_project(value: &Value, project_id: i64) -> Result<(), AppError> {
+    let expected_prefix = format!("toonflow/{project_id}/assets/");
+    let references = value.as_array().into_iter().flatten().filter_map(|item| {
+        item.as_str()
+            .or_else(|| item.get("src").and_then(Value::as_str))
+    });
+    if references
+        .filter_map(crate::toonflow_storage::asset_object_key)
+        .any(|key| !key.starts_with(&expected_prefix))
+    {
+        return Err(AppError::bad_request("视频参考素材包含其他项目的对象路径"));
+    }
+    Ok(())
+}
+
+async fn store_generated_video(
+    pool: &sqlx::PgPool,
+    video_id: i64,
+    project_id: i64,
+    provider_url: &str,
+) -> bool {
+    match crate::toonflow_storage::persist_remote_video_for_row(
+        pool,
+        provider_url,
+        project_id,
+        video_id,
+    )
+    .await
+    {
+        Ok(file_path) => {
+            let updated = sqlx::query(
+                "UPDATE toonflow.videos
+                 SET file_path=$2,state='生成成功',error_reason=NULL
+                 WHERE id=$1 AND state='生成中'",
+            )
+            .bind(video_id)
+            .bind(&file_path)
+            .execute(pool)
+            .await;
+            match updated {
+                Ok(result) if result.rows_affected() == 1 => true,
+                Ok(_) => {
+                    crate::toonflow_storage::record_cleanup_failure(
+                        pool,
+                        &file_path,
+                        "canceled_video_generation",
+                        Some(video_id),
+                        "视频生成已取消，等待引用感知清理",
+                    )
+                    .await;
+                    false
+                }
+                Err(error) => {
+                    // An autocommit acknowledgement can be lost after the row
+                    // update became visible. The cleanup worker rechecks live
+                    // references before DELETE, so queue instead of deleting
+                    // the possibly committed file here.
+                    crate::toonflow_storage::record_cleanup_failure(
+                        pool,
+                        &file_path,
+                        "video_generation_update",
+                        Some(video_id),
+                        &error.to_string(),
+                    )
+                    .await;
+                    tracing::error!(video_id, %error, "failed to finalize persisted video");
+                    false
+                }
+            }
+        }
+        Err(reason) => {
+            let _ = sqlx::query(
+                "UPDATE toonflow.videos
+                 SET state='生成失败',error_reason=$2
+                 WHERE id=$1 AND state='生成中'",
+            )
+            .bind(video_id)
+            .bind(format!("归档生成视频失败：{reason}"))
+            .execute(pool)
+            .await;
+            false
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +221,22 @@ pub async fn audio_bind_assets(
     Json(req): Json<AudioAssetsRequest>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
-    let rows=sqlx::query_as::<_,(i64,String,String,Option<String>,i64)>("SELECT audio.id,audio.prompt,audio.type,i.file_path,b.asset_role_id FROM toonflow.asset_audio_bindings b JOIN toonflow.assets audio ON audio.id=b.asset_audio_id LEFT JOIN toonflow.images i ON i.id=audio.image_id WHERE b.asset_role_id=ANY($1) ORDER BY audio.id").bind(req.assets_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list bound audio assets"))?;
+    let resource_projects = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT id,project_id FROM toonflow.assets WHERE id=ANY($1)",
+    )
+    .bind(&req.assets_ids)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to authorize bound audio assets"))?;
+    ensure_resource_projects_access(
+        &state.pool,
+        &user,
+        &req.assets_ids,
+        resource_projects,
+        "asset",
+    )
+    .await?;
+    let rows=sqlx::query_as::<_,(i64,String,String,Option<String>,i64)>("SELECT audio.id,audio.prompt,audio.type,i.file_path,b.asset_role_id FROM toonflow.asset_audio_bindings b JOIN toonflow.assets role ON role.id=b.asset_role_id JOIN toonflow.assets audio ON audio.id=b.asset_audio_id AND audio.project_id=role.project_id LEFT JOIN toonflow.images i ON i.id=audio.image_id WHERE b.asset_role_id=ANY($1) ORDER BY audio.id").bind(req.assets_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list bound audio assets"))?;
     Ok(Json(ApiResponse::new(rows.into_iter().map(|row|json!({"fileType":"audio","sources":"assets","src":row.3,"id":row.0,"prompt":row.1,"type":row.2,"assetsRoleId":row.4})).collect())))
 }
 
@@ -56,6 +271,21 @@ pub async fn file_urls(
         .collect::<Vec<_>>();
     let mut result = serde_json::Map::new();
     if !storyboard_ids.is_empty() {
+        let resource_projects = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT id,project_id FROM toonflow.storyboards WHERE id=ANY($1)",
+        )
+        .bind(&storyboard_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to authorize storyboard files"))?;
+        ensure_resource_projects_access(
+            &state.pool,
+            &user,
+            &storyboard_ids,
+            resource_projects,
+            "storyboard",
+        )
+        .await?;
         let rows = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT id,file_path FROM toonflow.storyboards WHERE id=ANY($1)",
         )
@@ -68,6 +298,15 @@ pub async fn file_urls(
         }
     }
     if !asset_ids.is_empty() {
+        let resource_projects = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT id,project_id FROM toonflow.assets WHERE id=ANY($1)",
+        )
+        .bind(&asset_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to authorize asset files"))?;
+        ensure_resource_projects_access(&state.pool, &user, &asset_ids, resource_projects, "asset")
+            .await?;
         let rows=sqlx::query_as::<_,(i64,Option<String>)>("SELECT a.id,i.file_path FROM toonflow.assets a LEFT JOIN toonflow.images i ON i.id=a.image_id WHERE a.id=ANY($1)").bind(asset_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load asset files"))?;
         for (id, path) in rows {
             result.insert(format!("{id}:assets"), json!(path.unwrap_or_default()));
@@ -88,13 +327,14 @@ pub async fn add_track(
     Json(req): Json<TrackRequest>,
 ) -> Result<Json<ApiResponse<i64>>, AppError> {
     require(&user, "toon:scene:update")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     let id = chrono::Utc::now().timestamp_millis();
     sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,duration,state,sort_order) VALUES($1,$2,$3,$4,'未生成',coalesce((SELECT max(sort_order)+1 FROM toonflow.video_tracks WHERE project_id=$2 AND script_id=$3),0))").bind(id).bind(req.project_id).bind(req.script_id).bind(req.duration).execute(&state.pool).await.map_err(|_|AppError::internal("failed to add video track"))?;
     Ok(Json(ApiResponse::new(id)))
 }
 #[derive(Deserialize)]
 pub struct Id {
-    id: i64,
+    pub(crate) id: i64,
 }
 pub async fn delete_track(
     user: CurrentUser,
@@ -102,21 +342,29 @@ pub async fn delete_track(
     Json(req): Json<Id>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:delete")?;
+    let (project_id, _) = ensure_track_access(&state.pool, &user, req.id).await?;
     let mut tx = state
         .pool
         .begin()
         .await
         .map_err(|_| AppError::internal("failed transaction"))?;
-    sqlx::query("UPDATE toonflow.storyboards SET track_id=NULL WHERE track_id=$1")
+    sqlx::query(
+        "UPDATE toonflow.storyboards SET track_id=NULL WHERE track_id=$1 AND project_id=$2",
+    )
+    .bind(req.id)
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to unbind track"))?;
+    let deleted = sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=$1 AND project_id=$2")
         .bind(req.id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| AppError::internal("failed to unbind track"))?;
-    sqlx::query("DELETE FROM toonflow.video_tracks WHERE id=$1")
-        .bind(req.id)
+        .bind(project_id)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete track"))?;
+    if deleted.rows_affected() != 1 {
+        return Err(AppError::not_found("video track not found"));
+    }
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed transaction"))?;
@@ -134,6 +382,7 @@ pub async fn video_list(
     Json(req): Json<Workbench>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     let rows=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 ORDER BY id DESC").bind(req.project_id).bind(req.script_id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
     Ok(Json(ApiResponse::new(rows.into_iter().map(|r|json!({"id":r.0,"filePath":r.1,"src":r.1,"state":r.2,"errorReason":r.3,"videoTrackId":r.4})).collect())))
 }
@@ -148,12 +397,18 @@ pub async fn update_prompt(
     Json(req): Json<Prompt>,
 ) -> Result<Json<ApiResponse<&'static str>>, AppError> {
     require(&user, "toon:scene:update")?;
-    sqlx::query("UPDATE toonflow.video_tracks SET prompt=$2 WHERE id=$1")
-        .bind(req.id)
-        .bind(req.prompt)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to update prompt"))?;
+    let (project_id, _) = ensure_track_access(&state.pool, &user, req.id).await?;
+    let updated =
+        sqlx::query("UPDATE toonflow.video_tracks SET prompt=$2 WHERE id=$1 AND project_id=$3")
+            .bind(req.id)
+            .bind(req.prompt)
+            .bind(project_id)
+            .execute(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to update prompt"))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::not_found("video track not found"));
+    }
     Ok(Json(ApiResponse::new("更新成功")))
 }
 #[derive(Deserialize)]
@@ -167,12 +422,18 @@ pub async fn update_duration(
     Json(req): Json<Duration>,
 ) -> Result<Json<ApiResponse<&'static str>>, AppError> {
     require(&user, "toon:scene:update")?;
-    sqlx::query("UPDATE toonflow.video_tracks SET duration=$2 WHERE id=$1")
-        .bind(req.id)
-        .bind(req.duration)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to update duration"))?;
+    let (project_id, _) = ensure_track_access(&state.pool, &user, req.id).await?;
+    let updated =
+        sqlx::query("UPDATE toonflow.video_tracks SET duration=$2 WHERE id=$1 AND project_id=$3")
+            .bind(req.id)
+            .bind(req.duration)
+            .bind(project_id)
+            .execute(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to update duration"))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::not_found("video track not found"));
+    }
     Ok(Json(ApiResponse::new("更新成功")))
 }
 
@@ -192,19 +453,26 @@ pub async fn update_continuity_mode(
     if !matches!(req.continuity_mode.as_str(), "auto" | "always" | "never") {
         return Err(AppError::bad_request("无效的视频衔接模式"));
     }
-    sqlx::query("UPDATE toonflow.video_tracks SET continuity_mode=$2 WHERE id=$1")
-        .bind(req.id)
-        .bind(req.continuity_mode)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to update continuity mode"))?;
+    let (project_id, _) = ensure_track_access(&state.pool, &user, req.id).await?;
+    let updated = sqlx::query(
+        "UPDATE toonflow.video_tracks SET continuity_mode=$2 WHERE id=$1 AND project_id=$3",
+    )
+    .bind(req.id)
+    .bind(req.continuity_mode)
+    .bind(project_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to update continuity mode"))?;
+    if updated.rows_affected() != 1 {
+        return Err(AppError::not_found("video track not found"));
+    }
     Ok(Json(ApiResponse::new("更新成功")))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Select {
-    track_id: i64,
-    video_id: i64,
+    pub(crate) track_id: i64,
+    pub(crate) video_id: i64,
 }
 pub async fn select_video(
     user: CurrentUser,
@@ -212,12 +480,36 @@ pub async fn select_video(
     Json(req): Json<Select>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:update")?;
-    sqlx::query("UPDATE toonflow.video_tracks SET video_id=$2 WHERE id=$1")
-        .bind(req.track_id)
-        .bind(req.video_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to select video"))?;
+    let project_id: i64 =
+        sqlx::query_scalar("SELECT project_id FROM toonflow.video_tracks WHERE id=$1")
+            .bind(req.track_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to load video track"))?
+            .ok_or_else(|| AppError::not_found("video track not found"))?;
+    ensure_project_access(&state.pool, &user, project_id).await?;
+    let selected = sqlx::query(
+        "UPDATE toonflow.video_tracks track
+         SET video_id=video.id
+         FROM toonflow.videos video
+         WHERE track.id=$1 AND video.id=$2 AND track.project_id=$3
+           AND video.video_track_id=track.id
+           AND video.project_id=track.project_id
+           AND video.script_id=track.script_id
+           AND video.state='生成成功'
+           AND coalesce(video.file_path,'')<>''",
+    )
+    .bind(req.track_id)
+    .bind(req.video_id)
+    .bind(project_id)
+    .execute(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to select video"))?;
+    if selected.rows_affected() != 1 {
+        return Err(AppError::bad_request(
+            "视频不存在、尚未生成成功或不属于当前轨道",
+        ));
+    }
     Ok(Json(ApiResponse::new(json!({"message":"视频选择成功"}))))
 }
 pub async fn delete_video(
@@ -226,31 +518,93 @@ pub async fn delete_video(
     Json(req): Json<Id>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:delete")?;
-    sqlx::query("UPDATE toonflow.video_tracks SET video_id=NULL WHERE video_id=$1")
+    let project_id: i64 = sqlx::query_scalar("SELECT project_id FROM toonflow.videos WHERE id=$1")
         .bind(req.id)
-        .execute(&state.pool)
+        .fetch_optional(&state.pool)
         .await
-        .map_err(|_| AppError::internal("failed to unbind video"))?;
-    let cached_frames: Vec<String> = sqlx::query_scalar(
-        "SELECT file_path FROM toonflow.video_continuity_frames WHERE previous_video_id=$1",
+        .map_err(|_| AppError::internal("failed to authorize video"))?
+        .ok_or_else(|| AppError::not_found("video not found"))?;
+    ensure_project_access(&state.pool, &user, project_id).await?;
+
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
+    let file_path: Option<String> = sqlx::query_scalar(
+        "SELECT file_path FROM toonflow.videos WHERE id=$1 AND project_id=$2 FOR UPDATE",
     )
     .bind(req.id)
-    .fetch_all(&state.pool)
+    .bind(project_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to load video"))?
+    .ok_or_else(|| AppError::not_found("video not found"))?;
+    sqlx::query(
+        "UPDATE toonflow.video_tracks SET video_id=NULL WHERE video_id=$1 AND project_id=$2",
+    )
+    .bind(req.id)
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to unbind video"))?;
+    let cached_frames: Vec<String> = sqlx::query_scalar(
+        "SELECT file_path FROM toonflow.video_continuity_frames
+         WHERE previous_video_id=$1 AND project_id=$2",
+    )
+    .bind(req.id)
+    .bind(project_id)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to load continuity frame cache"))?;
-    sqlx::query("DELETE FROM toonflow.video_continuity_frames WHERE previous_video_id=$1")
+    sqlx::query(
+        "DELETE FROM toonflow.video_continuity_frames
+         WHERE previous_video_id=$1 AND project_id=$2",
+    )
+    .bind(req.id)
+    .bind(project_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to delete continuity frame cache"))?;
+    let mut cleanup_paths = cached_frames
+        .iter()
+        .map(|path| (path.as_str(), "deleted_video_continuity_frame"))
+        .collect::<Vec<_>>();
+    if let Some(file_path) = file_path
+        .as_deref()
+        .filter(|file_path| !file_path.trim().is_empty())
+    {
+        cleanup_paths.push((file_path, "deleted_video"));
+    }
+    for (object_path, resource_type) in cleanup_paths {
+        sqlx::query(
+            "INSERT INTO toonflow.storage_cleanup_tasks(
+               object_path,resource_type,resource_id,error_reason,attempts,state,create_time,update_time
+             ) VALUES(
+               $1,$2,$3,'视频记录已删除，等待引用感知清理',1,'pending',
+               (extract(epoch FROM clock_timestamp()) * 1000)::bigint,
+               (extract(epoch FROM clock_timestamp()) * 1000)::bigint
+             )",
+        )
+        .bind(object_path)
+        .bind(resource_type)
         .bind(req.id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
-        .map_err(|_| AppError::internal("failed to delete continuity frame cache"))?;
-    sqlx::query("DELETE FROM toonflow.videos WHERE id=$1")
+        .map_err(|_| AppError::internal("failed to enqueue video object cleanup"))?;
+    }
+    let deleted = sqlx::query("DELETE FROM toonflow.videos WHERE id=$1 AND project_id=$2")
         .bind(req.id)
-        .execute(&state.pool)
+        .bind(project_id)
+        .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete video"))?;
-    for frame in cached_frames {
-        let _ = crate::toonflow_storage::delete_asset_file(&frame).await;
+    if deleted.rows_affected() != 1 {
+        return Err(AppError::not_found("video not found"));
     }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
     Ok(Json(ApiResponse::new(json!({"message":"视频删除成功"}))))
 }
 
@@ -260,6 +614,7 @@ pub async fn generate_data(
     Json(req): Json<Workbench>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     Ok(Json(ApiResponse::new(
         load_generate_data(&state.pool, req.project_id, req.script_id).await?,
     )))
@@ -485,9 +840,13 @@ async fn extract_last_frame_reference(
     let frame = tokio::fs::read(&frame_path)
         .await
         .map_err(|error| format!("读取上一轨道最后一帧失败：{error}"))?;
-    let reference =
-        crate::toonflow_storage::persist_asset_bytes(project_id, "continuity-frames", "png", frame)
-            .await?;
+    let reference = crate::toonflow_storage::persist_continuity_frame_with_reservation(
+        pool,
+        project_id,
+        previous_video_id,
+        frame,
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO toonflow.video_continuity_frames(previous_video_id,project_id,file_path,create_time)
          VALUES($1,$2,$3,$4)
@@ -735,9 +1094,8 @@ pub(crate) async fn prepare_workflow_video_generation(
         return Err(AppError::bad_request("当前没有可生成的视频轨道"));
     }
     input.track_ids = tracks.iter().map(|track| track.0).collect();
-    let mut jobs = Vec::with_capacity(tracks.len());
-    let base_id = chrono::Utc::now().timestamp_micros();
-    for (index, (track_id, prompt, duration)) in tracks.into_iter().enumerate() {
+    let mut prepared_jobs = Vec::with_capacity(tracks.len());
+    for (track_id, prompt, duration) in tracks {
         let frames: Vec<String> = sqlx::query_scalar(
             "SELECT file_path FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 AND track_id=$3 AND file_path IS NOT NULL AND file_path<>'' ORDER BY index,id",
         )
@@ -759,18 +1117,8 @@ pub(crate) async fn prepare_workflow_video_generation(
                     .await
                     .map_err(AppError::internal)?;
         }
-        let id = base_id + index as i64;
-        sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time) VALUES($1,'生成中',$2,$3,$4,$5)")
-            .bind(id)
-            .bind(script_id)
-            .bind(project_id)
-            .bind(track_id)
-            .bind(chrono::Utc::now().timestamp_millis())
-            .execute(pool)
-            .await
-            .map_err(|_| AppError::internal("failed to create workflow video"))?;
-        jobs.push(WorkflowVideoJob {
-            id,
+        prepared_jobs.push(WorkflowVideoJob {
+            id: 0,
             script_id,
             track_id,
             prompt: prompt.unwrap_or_default(),
@@ -787,6 +1135,42 @@ pub(crate) async fn prepare_workflow_video_generation(
             references,
         });
     }
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin workflow video creation"))?;
+    let mut jobs = Vec::with_capacity(prepared_jobs.len());
+    for mut job in prepared_jobs {
+        let id: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO toonflow.videos(state,script_id,project_id,video_track_id,time)
+             SELECT '生成中',$1,$2,$3,$4
+             WHERE EXISTS(
+               SELECT 1 FROM toonflow.video_tracks
+               WHERE id=$3 AND project_id=$2 AND script_id=$1
+             )
+             RETURNING id",
+        )
+        .bind(script_id)
+        .bind(project_id)
+        .bind(job.track_id)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| AppError::internal("failed to create workflow video"))?;
+        let Some(id) = id else {
+            transaction
+                .rollback()
+                .await
+                .map_err(|_| AppError::internal("failed to roll back workflow video creation"))?;
+            return Err(AppError::not_found("video track not found"));
+        };
+        job.id = id;
+        jobs.push(job);
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit workflow video creation"))?;
     input.video_ids = jobs.iter().map(|job| job.id).collect();
     Ok(jobs)
 }
@@ -817,6 +1201,9 @@ pub(crate) async fn run_workflow_video_generation(
             let Some(mut job) = pending.next() else { break };
             let pool = pool.clone();
             running.spawn(async move {
+                let Some(_provider_permit) = acquire_provider_video_slot().await else {
+                    return false;
+                };
                 let prompt = if job.prompt.trim().is_empty() {
                     match create_prompt(&pool, job.track_id, project_id, &job.model, &job.mode).await {
                         Ok(prompt) => prompt,
@@ -858,11 +1245,7 @@ pub(crate) async fn run_workflow_video_generation(
                     "references": job.references,
                 });
                 match ai_client::video_untracked(&pool, &job.model, payload).await {
-                    Ok(url) => {
-                        let _ = sqlx::query("UPDATE toonflow.videos SET file_path=$2,state='生成成功',error_reason=NULL WHERE id=$1 AND state='生成中'")
-                            .bind(job.id).bind(url).execute(&pool).await;
-                        true
-                    }
+                    Ok(url) => store_generated_video(&pool, job.id, project_id, &url).await,
                     Err(reason) => {
                         let _ = sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason=$2 WHERE id=$1 AND state='生成中'")
                             .bind(job.id).bind(reason).execute(&pool).await;
@@ -892,7 +1275,35 @@ pub async fn generate_video(
     Json(req): Json<Generate>,
 ) -> Result<Json<ApiResponse<i64>>, AppError> {
     require(&user, "toon:scene:update")?;
-    let id = chrono::Utc::now().timestamp_millis();
+    ensure_track_in_context(
+        &state.pool,
+        &user,
+        req.project_id,
+        req.script_id,
+        req.track_id,
+    )
+    .await?;
+    ensure_internal_references_in_project(&req.upload_data, req.project_id)?;
+    if let Some(retry_of_id) = req.retry_of_id {
+        let valid_retry: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM toonflow.videos
+               WHERE id=$1 AND project_id=$2 AND script_id=$3 AND video_track_id=$4
+                 AND state IN ('生成失败','已取消')
+             )",
+        )
+        .bind(retry_of_id)
+        .bind(req.project_id)
+        .bind(req.script_id)
+        .bind(req.track_id)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to authorize retry video"))?;
+        if !valid_retry {
+            return Err(AppError::not_found("retry video not found"));
+        }
+    }
+    let provider_permit = try_acquire_provider_video_slot()?;
     let asset_references = crate::toonflow_asset_context::load_track_asset_references(
         &state.pool,
         req.project_id,
@@ -914,9 +1325,29 @@ pub async fn generate_video(
         .await
         .map_err(AppError::internal)?;
     }
-    sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time,retry_of_id)VALUES($1,'生成中',$2,$3,$4,$1,$5)").bind(id).bind(req.script_id).bind(req.project_id).bind(req.track_id).bind(req.retry_of_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
+    let id: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO toonflow.videos(
+           state,script_id,project_id,video_track_id,time,retry_of_id
+         )
+         SELECT '生成中',$1,$2,$3,$4,$5
+         WHERE EXISTS(
+           SELECT 1 FROM toonflow.video_tracks
+           WHERE id=$3 AND project_id=$2 AND script_id=$1
+         )
+         RETURNING id",
+    )
+    .bind(req.script_id)
+    .bind(req.project_id)
+    .bind(req.track_id)
+    .bind(chrono::Utc::now().timestamp_millis())
+    .bind(req.retry_of_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to create video"))?;
+    let id = id.ok_or_else(|| AppError::not_found("video track not found"))?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
+        let _provider_permit = provider_permit;
         let ratio: Option<(String,)> =
             sqlx::query_as("SELECT video_ratio FROM toonflow.projects WHERE id=$1")
                 .bind(req.project_id)
@@ -927,13 +1358,7 @@ pub async fn generate_video(
         let payload = json!({"prompt":req.prompt,"mode":req.mode,"resolution":req.resolution,"duration":req.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio.map(|r|r.0).unwrap_or_else(||"16:9".into()),"references":references});
         match ai_client::video_untracked(&pool, &req.model, payload).await {
             Ok(url) => {
-                let _ = sqlx::query(
-                    "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1 AND state='生成中'",
-                )
-                .bind(id)
-                .bind(url)
-                .execute(&pool)
-                .await;
+                store_generated_video(&pool, id, req.project_id, &url).await;
             }
             Err(reason) => {
                 let _ = sqlx::query(
@@ -963,6 +1388,7 @@ pub async fn reorder_tracks(
     Json(req): Json<ReorderRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:update")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 AND id=ANY($3)")
         .bind(req.project_id).bind(req.script_id).bind(&req.track_ids).fetch_one(&state.pool).await.map_err(|_|AppError::internal("failed to validate tracks"))?;
     if count != req.track_ids.len() as i64 {
@@ -974,12 +1400,20 @@ pub async fn reorder_tracks(
         .await
         .map_err(|_| AppError::internal("failed transaction"))?;
     for (index, id) in req.track_ids.into_iter().enumerate() {
-        sqlx::query("UPDATE toonflow.video_tracks SET sort_order=$2 WHERE id=$1")
-            .bind(id)
-            .bind(index as i32)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| AppError::internal("failed to reorder tracks"))?;
+        let updated = sqlx::query(
+            "UPDATE toonflow.video_tracks SET sort_order=$2
+             WHERE id=$1 AND project_id=$3 AND script_id=$4",
+        )
+        .bind(id)
+        .bind(index as i32)
+        .bind(req.project_id)
+        .bind(req.script_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to reorder tracks"))?;
+        if updated.rows_affected() != 1 {
+            return Err(AppError::not_found("video track not found"));
+        }
     }
     tx.commit()
         .await
@@ -1014,6 +1448,9 @@ pub async fn bind_storyboards(
             .await
             .map_err(|_| AppError::internal("failed to load track"))?;
     let (project_id, script_id) = track.ok_or_else(|| AppError::not_found("track not found"))?;
+    ensure_project_access(&state.pool, &user, project_id).await?;
+    let script_id = script_id.ok_or_else(|| AppError::not_found("script not found"))?;
+    ensure_script_in_project(&state.pool, project_id, script_id).await?;
     let valid_storyboard_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM toonflow.storyboards WHERE id=ANY($1) AND project_id=$2 AND script_id=$3",
     )
@@ -1043,9 +1480,17 @@ pub async fn bind_storyboards(
     affected_track_ids.dedup();
     sqlx::query("UPDATE toonflow.storyboards SET track_id=$1 WHERE id=ANY($2) AND project_id=$3 AND script_id=$4").bind(req.track_id).bind(&storyboard_ids).bind(project_id).bind(script_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to bind storyboards"))?;
     sqlx::query(
-        "UPDATE toonflow.video_tracks vt SET duration=coalesce((SELECT sum(CASE WHEN s.duration ~ '^[0-9]+$' THEN s.duration::integer ELSE 0 END)::integer FROM toonflow.storyboards s WHERE s.track_id=vt.id),0) WHERE vt.id=ANY($1)",
+        "UPDATE toonflow.video_tracks vt
+         SET duration=coalesce((
+           SELECT sum(CASE WHEN s.duration ~ '^[0-9]+$' THEN s.duration::integer ELSE 0 END)::integer
+           FROM toonflow.storyboards s
+           WHERE s.track_id=vt.id AND s.project_id=$2 AND s.script_id=$3
+         ),0)
+         WHERE vt.id=ANY($1) AND vt.project_id=$2 AND vt.script_id=$3",
     )
     .bind(&affected_track_ids)
+    .bind(project_id)
+    .bind(script_id)
     .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to update track durations"))?;
@@ -1061,7 +1506,18 @@ pub async fn cancel_video(
     Json(req): Json<Id>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:update")?;
-    let result=sqlx::query("UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成' WHERE id=$1 AND state='生成中'").bind(req.id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to cancel video"))?;
+    let video: Option<(i64, Option<i64>)> =
+        sqlx::query_as("SELECT project_id,script_id FROM toonflow.videos WHERE id=$1")
+            .bind(req.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to authorize video"))?;
+    let (project_id, script_id) = video.ok_or_else(|| AppError::not_found("video not found"))?;
+    ensure_project_access(&state.pool, &user, project_id).await?;
+    if let Some(script_id) = script_id {
+        ensure_script_in_project(&state.pool, project_id, script_id).await?;
+    }
+    let result=sqlx::query("UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成' WHERE id=$1 AND project_id=$2 AND state='生成中'").bind(req.id).bind(project_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to cancel video"))?;
     Ok(Json(ApiResponse::new(
         json!({"canceled":result.rows_affected()>0}),
     )))
@@ -1093,6 +1549,7 @@ pub async fn retry_video(
     let (project_id, script_id, track_id, prompt, duration) =
         source.ok_or_else(|| AppError::bad_request("只有失败或已取消的视频可以重试"))?;
     let track_id = track_id.ok_or_else(|| AppError::bad_request("视频未关联轨道"))?;
+    ensure_track_in_context(&state.pool, &user, project_id, script_id, track_id).await?;
     generate_video(
         user,
         State(state),
@@ -1127,6 +1584,7 @@ pub async fn check_states(
     Json(req): Json<Check>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>,Option<i64>)>("SELECT id,state,error_reason,file_path,retry_of_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 AND id=ANY($3) AND state IN('生成成功','生成失败')").bind(req.project_id).bind(req.script_id).bind(req.video_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check videos"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()
@@ -1142,11 +1600,19 @@ pub(crate) async fn create_prompt(
     model: &str,
     mode: &str,
 ) -> Result<String, String> {
-    sqlx::query("UPDATE toonflow.video_tracks SET state='生成中',reason=NULL WHERE id=$1")
-        .bind(track_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    let updated = sqlx::query(
+        "UPDATE toonflow.video_tracks
+         SET state='生成中',reason=NULL
+         WHERE id=$1 AND project_id=$2",
+    )
+    .bind(track_id)
+    .bind(project_id)
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    if updated.rows_affected() != 1 {
+        return Err("视频轨道不属于当前项目".into());
+    }
     let style: Option<(String,)> =
         sqlx::query_as("SELECT art_style FROM toonflow.projects WHERE id=$1")
             .bind(project_id)
@@ -1191,7 +1657,7 @@ pub(crate) async fn create_prompt(
             })
         })
         .unwrap_or_default();
-    let boards=sqlx::query_as::<_,(String,Option<String>,Option<String>)>("SELECT prompt,video_desc,duration FROM toonflow.storyboards WHERE track_id=$1 ORDER BY index,id").bind(track_id).fetch_all(pool).await.map_err(|e|e.to_string())?;
+    let boards=sqlx::query_as::<_,(String,Option<String>,Option<String>)>("SELECT prompt,video_desc,duration FROM toonflow.storyboards WHERE track_id=$1 AND project_id=$2 ORDER BY index,id").bind(track_id).bind(project_id).fetch_all(pool).await.map_err(|e|e.to_string())?;
     let content = format!(
         "模型：{resolved_model}\n模式：{mode}\n视觉规范：{visual}\n{}",
         boards
@@ -1208,10 +1674,12 @@ pub(crate) async fn create_prompt(
     match ai_client::project_text(pool, "universalAi", project_id, &system, &content).await {
         Ok(text) => {
             sqlx::query(
-                "UPDATE toonflow.video_tracks SET prompt=$2,state='已完成',reason=NULL WHERE id=$1",
+                "UPDATE toonflow.video_tracks SET prompt=$2,state='已完成',reason=NULL
+                 WHERE id=$1 AND project_id=$3",
             )
             .bind(track_id)
             .bind(&text)
+            .bind(project_id)
             .execute(pool)
             .await
             .map_err(|e| e.to_string())?;
@@ -1219,10 +1687,12 @@ pub(crate) async fn create_prompt(
         }
         Err(reason) => {
             let _ = sqlx::query(
-                "UPDATE toonflow.video_tracks SET state='生成失败',reason=$2 WHERE id=$1",
+                "UPDATE toonflow.video_tracks SET state='生成失败',reason=$2
+                 WHERE id=$1 AND project_id=$3",
             )
             .bind(track_id)
             .bind(&reason)
+            .bind(project_id)
             .execute(pool)
             .await;
             Err(reason)
@@ -1380,6 +1850,10 @@ pub async fn generate_prompt(
     Json(req): Json<PromptGenerate>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
     require(&user, "toon:scene:update")?;
+    let (project_id, _) = ensure_track_access(&state.pool, &user, req.track_id).await?;
+    if project_id != req.project_id {
+        return Err(AppError::not_found("video track not found"));
+    }
     let _ = req.info;
     let model = model_parameter(&req.model)?;
     let text = create_prompt(&state.pool, req.track_id, req.project_id, &model, &req.mode)
@@ -1400,6 +1874,7 @@ pub async fn check_prompts(
     Json(req): Json<CheckPrompt>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
     let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>)>("SELECT id,coalesce(state,''),reason,prompt FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 AND id=ANY($3) AND state IN('已完成','生成失败')").bind(req.project_id).bind(req.script_id).bind(req.track_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check prompts"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()
@@ -1429,6 +1904,26 @@ pub async fn batch_prompts(
     Json(req): Json<BatchPrompts>,
 ) -> Result<Json<ApiResponse<&'static str>>, AppError> {
     require(&user, "toon:scene:update")?;
+    ensure_project_access(&state.pool, &user, req.project_id).await?;
+    let mut track_ids = req
+        .track_data
+        .iter()
+        .map(|track| track.track_id)
+        .collect::<Vec<_>>();
+    track_ids.sort_unstable();
+    track_ids.dedup();
+    let track_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM toonflow.video_tracks
+         WHERE project_id=$1 AND id=ANY($2)",
+    )
+    .bind(req.project_id)
+    .bind(&track_ids)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to authorize prompt tracks"))?;
+    if track_count != track_ids.len() as i64 {
+        return Err(AppError::not_found("video track not found"));
+    }
     let model = model_parameter(&req.model)?;
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -1494,9 +1989,33 @@ pub async fn batch_videos(
     Json(req): Json<BatchVideos>,
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:update")?;
-    let mut jobs = Vec::new();
-    for (index, mut track) in req.track_data.into_iter().enumerate() {
-        let id = chrono::Utc::now().timestamp_millis() + index as i64;
+    ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
+    let mut track_ids = req
+        .track_data
+        .iter()
+        .map(|track| track.track_id)
+        .collect::<Vec<_>>();
+    track_ids.sort_unstable();
+    track_ids.dedup();
+    let track_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM toonflow.video_tracks
+         WHERE project_id=$1 AND script_id=$2 AND id=ANY($3)",
+    )
+    .bind(req.project_id)
+    .bind(req.script_id)
+    .bind(&track_ids)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to authorize video tracks"))?;
+    if track_count != track_ids.len() as i64 {
+        return Err(AppError::not_found("video track not found"));
+    }
+    for track in &req.track_data {
+        ensure_internal_references_in_project(&track.upload_data, req.project_id)?;
+    }
+    let provider_permit = try_acquire_provider_video_slot()?;
+    let mut prepared_tracks = Vec::with_capacity(req.track_data.len());
+    for mut track in req.track_data {
         let asset_references = crate::toonflow_asset_context::load_track_asset_references(
             &state.pool,
             req.project_id,
@@ -1506,15 +2025,49 @@ pub async fn batch_videos(
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
         track.upload_data = references_for_mode(track.upload_data, asset_references, &req.mode);
-        sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time)VALUES($1,'生成中',$2,$3,$4,$1)").bind(id).bind(req.script_id).bind(req.project_id).bind(track.track_id).execute(&state.pool).await.map_err(|_|AppError::internal("failed to create video"))?;
+        prepared_tracks.push(track);
+    }
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
+    let mut jobs = Vec::with_capacity(prepared_tracks.len());
+    for track in prepared_tracks {
+        let id: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO toonflow.videos(state,script_id,project_id,video_track_id,time)
+             SELECT '生成中',$1,$2,$3,$4
+             WHERE EXISTS(
+               SELECT 1 FROM toonflow.video_tracks
+               WHERE id=$3 AND project_id=$2 AND script_id=$1
+             )
+             RETURNING id",
+        )
+        .bind(req.script_id)
+        .bind(req.project_id)
+        .bind(track.track_id)
+        .bind(chrono::Utc::now().timestamp_millis())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to create video"))?;
+        let Some(id) = id else {
+            tx.rollback()
+                .await
+                .map_err(|_| AppError::internal("failed transaction"))?;
+            return Err(AppError::not_found("video track not found"));
+        };
         jobs.push((id, track));
     }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed transaction"))?;
     let response = jobs
         .iter()
         .map(|j| json!({"videoId":j.0,"trackId":j.1.track_id}))
         .collect();
     let pool = state.pool.clone();
     tokio::spawn(async move {
+        let _provider_permit = provider_permit;
         let ratio: Option<(String,)> =
             sqlx::query_as("SELECT video_ratio FROM toonflow.projects WHERE id=$1")
                 .bind(req.project_id)
@@ -1552,13 +2105,7 @@ pub async fn batch_videos(
             let payload = json!({"prompt":track.prompt,"mode":req.mode,"resolution":req.resolution,"duration":track.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio,"references":references});
             match ai_client::video_untracked(&pool, &req.model, payload).await {
                 Ok(url) => {
-                    let _ = sqlx::query(
-                        "UPDATE toonflow.videos SET file_path=$2,state='生成成功' WHERE id=$1",
-                    )
-                    .bind(id)
-                    .bind(url)
-                    .execute(&pool)
-                    .await;
+                    store_generated_video(&pool, id, req.project_id, &url).await;
                 }
                 Err(reason) => {
                     let _ = sqlx::query(

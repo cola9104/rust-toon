@@ -20,6 +20,7 @@ members = [
     "crates/modules/toon-api",
     "crates/modules/toon-server",
     "services/gateway",
+    "services/toon-worker",
 ]
 
 [workspace.package]
@@ -30,6 +31,7 @@ repository = "https://example.com/rust-toon"
 
 [workspace.dependencies]
 anyhow = "1.0"
+async-nats = { version = "0.50", default-features = false, features = ["jetstream", "nkeys", "ring", "server_2_10"] }
 async-trait = "0.1"
 argon2 = "0.5"
 base64 = "0.22"
@@ -68,10 +70,11 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
-tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-uuid = { version = "1.16", features = ["v4"] }
+uuid = { version = "1.16", features = ["serde", "v4"] }
 zip = "8.6"

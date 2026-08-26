@@ -4,6 +4,7 @@ set -euo pipefail
 database_url="${DATABASE_URL:-}"
 backup_dir="${BACKUP_DIR:-/var/backups/rust-toon/postgresql}"
 retention_days="${BACKUP_RETENTION_DAYS:-14}"
+backup_set_id="${BACKUP_SET_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 usage() {
   echo "Usage: DATABASE_URL=postgres://... $0 [--output-dir DIR] [--retention-days DAYS]"
@@ -39,6 +40,10 @@ if [[ ! "$retention_days" =~ ^[0-9]+$ ]] || ((retention_days < 1)); then
   echo "BACKUP_RETENTION_DAYS must be a positive integer" >&2
   exit 1
 fi
+if [[ ! "$backup_set_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "BACKUP_SET_ID contains unsupported characters" >&2
+  exit 1
+fi
 case "$backup_dir" in
   ""|/|/var|/var/backups)
     echo "Refusing unsafe backup directory: $backup_dir" >&2
@@ -53,8 +58,7 @@ command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
 mkdir -p "$backup_dir"
 chmod 700 "$backup_dir"
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-final_path="$backup_dir/rust-toon-$timestamp.dump"
+final_path="$backup_dir/rust-toon-$backup_set_id.dump"
 temporary_path="$final_path.partial"
 
 cleanup() {

@@ -2,7 +2,9 @@ use std::{process::Command, time::Duration};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    body::to_bytes,
+    extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
 };
 use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
 use rust_toon_framework_security::{
@@ -11,7 +13,7 @@ use rust_toon_framework_security::{
 
 use crate::{
     ToonState, toonflow, toonflow_episode_renders, toonflow_project_crud, toonflow_storage,
-    toonflow_video_export,
+    toonflow_video, toonflow_video_export, toonflow_workflow,
 };
 
 fn user() -> CurrentUser {
@@ -35,6 +37,9 @@ fn scoped_user(user_id: &str) -> CurrentUser {
             Permission::new("toon:project:read").unwrap(),
             Permission::new("toon:episode:read").unwrap(),
             Permission::new("toon:episode:update").unwrap(),
+            Permission::new("toon:scene:read").unwrap(),
+            Permission::new("toon:scene:update").unwrap(),
+            Permission::new("toon:scene:delete").unwrap(),
         ]),
         data_scope: DataScope::SelfOnly,
     }
@@ -82,6 +87,12 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         )
         .expect("security config"),
     );
+    let owner_media_token = tokens
+        .issue_access_token(scoped_user("00000000-0000-0000-0000-000000000001"))
+        .expect("owner media token");
+    let outsider_media_token = tokens
+        .issue_access_token(scoped_user("00000000-0000-0000-0000-000000000002"))
+        .expect("outsider media token");
     let state = ToonState::new(pool.clone(), tokens);
 
     let project = toonflow_project_crud::create_project(
@@ -137,6 +148,146 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     .await
     .expect("add script");
     let script_id = script.0.data["id"].as_i64().expect("script id");
+
+    let outsider = scoped_user("00000000-0000-0000-0000-000000000002");
+    let outsider_flow = toonflow::get_flow_data(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow::FlowRequest {
+            project_id,
+            episodes_id: script_id,
+        }),
+    )
+    .await
+    .expect_err("another user must not read production flow data");
+    assert_eq!(outsider_flow.status(), StatusCode::NOT_FOUND);
+    let flow_data = toonflow::get_flow_data(
+        user(),
+        State(state.clone()),
+        Json(toonflow::FlowRequest {
+            project_id,
+            episodes_id: script_id,
+        }),
+    )
+    .await
+    .expect("load default production flow")
+    .0
+    .data;
+    let outsider_flow_write = toonflow::save_flow_data(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow::SaveFlowRequest {
+            project_id,
+            episodes_id: script_id,
+            data: flow_data.clone(),
+        }),
+    )
+    .await
+    .expect_err("another user must not overwrite production flow data");
+    assert_eq!(outsider_flow_write.status(), StatusCode::NOT_FOUND);
+    let _ = toonflow::save_flow_data(
+        user(),
+        State(state.clone()),
+        Json(toonflow::SaveFlowRequest {
+            project_id,
+            episodes_id: script_id,
+            data: flow_data,
+        }),
+    )
+    .await
+    .expect("persist production workflow");
+    let workflow_run = toonflow_workflow::create_run(
+        user(),
+        State(state.clone()),
+        Json(toonflow_workflow::CreateWorkflowRunRequest {
+            project_id,
+            script_id,
+            trigger_type: "manual".into(),
+            input: serde_json::json!({}),
+            auto_start: false,
+        }),
+    )
+    .await
+    .expect("create pending workflow run")
+    .0
+    .data;
+    let workflow_node_id: String = sqlx::query_scalar(
+        "SELECT node_id FROM toonflow.workflow_node_runs
+         WHERE workflow_run_id=$1 AND node_type='script.source' ORDER BY id LIMIT 1",
+    )
+    .bind(workflow_run.id)
+    .fetch_one(&pool)
+    .await
+    .expect("load pending workflow node");
+    let outsider_node_start = toonflow_workflow::start_node(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow_workflow::StartWorkflowNodeRequest {
+            workflow_run_id: workflow_run.id,
+            node_id: workflow_node_id.clone(),
+            input: serde_json::json!({}),
+            agent_run_id: None,
+        }),
+    )
+    .await
+    .expect_err("another user must not start a project workflow node");
+    assert_eq!(outsider_node_start.status(), StatusCode::NOT_FOUND);
+    let outsider_run_read = toonflow_workflow::run_state(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow_workflow::WorkflowRunIdRequest {
+            id: workflow_run.id,
+        }),
+    )
+    .await
+    .expect_err("another user must not read a project workflow run");
+    assert_eq!(outsider_run_read.status(), StatusCode::NOT_FOUND);
+    let outsider_run_cancel = toonflow_workflow::cancel_run(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow_workflow::WorkflowRunIdRequest {
+            id: workflow_run.id,
+        }),
+    )
+    .await
+    .expect_err("another user must not cancel a project workflow run");
+    assert_eq!(outsider_run_cancel.status(), StatusCode::NOT_FOUND);
+    let (first_start, second_start) = tokio::join!(
+        toonflow_workflow::start_node(
+            user(),
+            State(state.clone()),
+            Json(toonflow_workflow::StartWorkflowNodeRequest {
+                workflow_run_id: workflow_run.id,
+                node_id: workflow_node_id.clone(),
+                input: serde_json::json!({}),
+                agent_run_id: None,
+            }),
+        ),
+        toonflow_workflow::start_node(
+            user(),
+            State(state.clone()),
+            Json(toonflow_workflow::StartWorkflowNodeRequest {
+                workflow_run_id: workflow_run.id,
+                node_id: workflow_node_id,
+                input: serde_json::json!({}),
+                agent_run_id: None,
+            }),
+        )
+    );
+    assert_eq!(
+        usize::from(first_start.is_ok()) + usize::from(second_start.is_ok()),
+        1,
+        "a workflow node CAS claim must allow exactly one concurrent starter"
+    );
+    let _ = toonflow_workflow::cancel_run(
+        user(),
+        State(state.clone()),
+        Json(toonflow_workflow::WorkflowRunIdRequest {
+            id: workflow_run.id,
+        }),
+    )
+    .await
+    .expect("cancel workflow isolation fixture");
 
     let asset = toonflow::save_asset(
         user(),
@@ -223,15 +374,182 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         .bind(script_id)
         .bind(project_id)
         .bind(track_id)
+    .execute(&pool)
+    .await
+    .expect("insert selected video");
+    let outsider_video_list = toonflow_video::video_list(
+        outsider.clone(),
+        State(state.clone()),
+        Json(
+            serde_json::from_value(serde_json::json!({
+                "projectId": project_id,
+                "scriptId": script_id
+            }))
+            .expect("video list request"),
+        ),
+    )
+    .await
+    .expect_err("another user must not list project videos");
+    assert_eq!(outsider_video_list.status(), StatusCode::NOT_FOUND);
+    let outsider_video_cancel = toonflow_video::cancel_video(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow_video::Id { id: video_id }),
+    )
+    .await
+    .expect_err("another user must not cancel a project video");
+    assert_eq!(outsider_video_cancel.status(), StatusCode::NOT_FOUND);
+    let outsider_video_delete = toonflow_video::delete_video(
+        outsider.clone(),
+        State(state.clone()),
+        Json(toonflow_video::Id { id: video_id }),
+    )
+    .await
+    .expect_err("another user must not delete a project video");
+    assert_eq!(outsider_video_delete.status(), StatusCode::NOT_FOUND);
+    let video_still_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM toonflow.videos WHERE id=$1 AND state='生成成功')",
+    )
+    .bind(video_id)
+    .fetch_one(&pool)
+    .await
+    .expect("inspect protected video");
+    assert!(video_still_exists);
+    let outsider_generate_request = serde_json::from_value(serde_json::json!({
+        "projectId": project_id,
+        "scriptId": script_id,
+        "prompt": "unauthorized",
+        "model": "1",
+        "mode": "text",
+        "resolution": "720p",
+        "duration": 1,
+        "trackId": track_id,
+        "uploadData": []
+    }))
+    .expect("outsider video generation request");
+    let outsider_generate = toonflow_video::generate_video(
+        outsider.clone(),
+        State(state.clone()),
+        Json(outsider_generate_request),
+    )
+    .await
+    .expect_err("another user must not trigger paid video generation");
+    assert_eq!(outsider_generate.status(), StatusCode::NOT_FOUND);
+
+    let other_script_id = script_id + 70_000;
+    let other_track_id = track_id + 70_000;
+    sqlx::query(
+        "INSERT INTO toonflow.scripts(id,name,content,project_id,create_time)
+         VALUES($1,'归属隔离测试','',$2,$3)",
+    )
+    .bind(other_script_id)
+    .bind(project_id)
+    .bind(chrono::Utc::now().timestamp_millis())
+    .execute(&pool)
+    .await
+    .expect("insert secondary script");
+    sqlx::query(
+        "INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration)
+         VALUES($1,$2,$3,'未生成',1)",
+    )
+    .bind(other_track_id)
+    .bind(project_id)
+    .bind(other_script_id)
+    .execute(&pool)
+    .await
+    .expect("insert secondary script track");
+    let mismatched_generate_request = serde_json::from_value(serde_json::json!({
+        "projectId": project_id,
+        "scriptId": script_id,
+        "prompt": "mismatched",
+        "model": "1",
+        "mode": "text",
+        "resolution": "720p",
+        "duration": 1,
+        "trackId": other_track_id,
+        "uploadData": []
+    }))
+    .expect("mismatched video generation request");
+    let mismatched_generate = toonflow_video::generate_video(
+        user(),
+        State(state.clone()),
+        Json(mismatched_generate_request),
+    )
+    .await
+    .expect_err("a track from another script must not trigger generation");
+    assert_eq!(mismatched_generate.status(), StatusCode::NOT_FOUND);
+    let mismatched_batch_request = serde_json::from_value(serde_json::json!({
+        "projectId": project_id,
+        "scriptId": script_id,
+        "trackData": [{
+            "uploadData": [],
+            "trackId": other_track_id,
+            "prompt": "mismatched batch",
+            "duration": 1
+        }],
+        "model": "1",
+        "mode": "text",
+        "resolution": "720p"
+    }))
+    .expect("mismatched batch generation request");
+    let mismatched_batch =
+        toonflow_video::batch_videos(user(), State(state.clone()), Json(mismatched_batch_request))
+            .await
+            .expect_err("batch generation must reject a track from another script");
+    assert_eq!(mismatched_batch.status(), StatusCode::NOT_FOUND);
+    sqlx::query("DELETE FROM toonflow.scripts WHERE id=$1")
+        .bind(other_script_id)
         .execute(&pool)
         .await
-        .expect("insert selected video");
-    sqlx::query("UPDATE toonflow.video_tracks SET video_id=$2,select_video_id=$2,state='生成成功' WHERE id=$1")
+        .expect("remove secondary script isolation fixture");
+    let _ = toonflow_video::select_video(
+        user(),
+        State(state.clone()),
+        Json(toonflow_video::Select { track_id, video_id }),
+    )
+    .await
+    .expect("select generated video");
+    sqlx::query("UPDATE toonflow.video_tracks SET select_video_id=$2,state='生成成功' WHERE id=$1")
         .bind(track_id)
         .bind(video_id)
         .execute(&pool)
         .await
-        .expect("select generated video");
+        .expect("record compatible selected video state");
+
+    let unrelated_video_id = video_id + 1;
+    sqlx::query("INSERT INTO toonflow.videos(id,file_path,state,script_id,project_id,video_track_id) VALUES($1,$2,'生成成功',$3,$4,NULL)")
+        .bind(unrelated_video_id)
+        .bind(&source_url)
+        .bind(script_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .expect("insert video outside the selected track");
+    let cross_track_selection = toonflow_video::select_video(
+        user(),
+        State(state.clone()),
+        Json(toonflow_video::Select {
+            track_id,
+            video_id: unrelated_video_id,
+        }),
+    )
+    .await
+    .expect_err("a video outside the track must not be selectable");
+    assert_eq!(cross_track_selection.status(), StatusCode::BAD_REQUEST);
+    let outsider_selection = toonflow_video::select_video(
+        scoped_user("00000000-0000-0000-0000-000000000002"),
+        State(state.clone()),
+        Json(toonflow_video::Select { track_id, video_id }),
+    )
+    .await
+    .expect_err("another user must not change the selected project video");
+    assert_eq!(outsider_selection.status(), StatusCode::NOT_FOUND);
+    sqlx::query("UPDATE toonflow.video_tracks SET video_id=$2 WHERE id=$1")
+        .bind(track_id)
+        .bind(unrelated_video_id)
+        .execute(&pool)
+        .await
+        .expect("inject a legacy cross-track selection fixture");
 
     let export = toonflow_video_export::export(
         user(),
@@ -246,6 +564,18 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     .expect("submit export");
     let task_id = export.0.data["taskId"].as_i64().expect("export task id");
     let first_result = wait_for_export(&pool, task_id).await;
+    assert_eq!(first_result["videoIds"], serde_json::json!([video_id]));
+    sqlx::query("UPDATE toonflow.video_tracks SET video_id=$2 WHERE id=$1")
+        .bind(track_id)
+        .bind(video_id)
+        .execute(&pool)
+        .await
+        .expect("restore selected video after isolation check");
+    sqlx::query("DELETE FROM toonflow.videos WHERE id=$1")
+        .bind(unrelated_video_id)
+        .execute(&pool)
+        .await
+        .expect("remove selection isolation fixture");
     let first_url = first_result["url"]
         .as_str()
         .expect("first export url")
@@ -255,6 +585,7 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         .expect("first episode render id");
     assert_eq!(first_result["version"], 1);
     assert!(first_url.ends_with(".mp4"));
+    assert!(first_url.contains(&format!("task-{task_id}-lease-")));
     assert!(
         toonflow_storage::asset_exists(&first_url)
             .await
@@ -289,6 +620,86 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     assert_eq!(first_render.file_path, first_url);
     assert!(!first_render.object_path.starts_with('/'));
     assert_eq!(first_render.metadata["sourceCount"], 1);
+    let media_key = first_url
+        .strip_prefix("/toonflow/assets/files/")
+        .expect("exported media key")
+        .to_string();
+    let mut range_headers = HeaderMap::new();
+    range_headers.insert(header::RANGE, HeaderValue::from_static("bytes=0-1023"));
+    let media_response = toonflow_storage::serve_image(
+        State(state.clone()),
+        Path(media_key.clone()),
+        Query(toonflow_storage::AssetAccessQuery {
+            token: owner_media_token,
+        }),
+        range_headers,
+    )
+    .await
+    .expect("owner streams archived media");
+    assert_eq!(media_response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        media_response.headers()[header::CACHE_CONTROL],
+        "private, max-age=300"
+    );
+    assert_eq!(
+        media_response.headers()[header::REFERRER_POLICY],
+        "no-referrer"
+    );
+    let media_chunk = to_bytes(media_response.into_body(), 2048)
+        .await
+        .expect("read bounded media range");
+    assert!(!media_chunk.is_empty());
+    assert!(media_chunk.len() <= 1024);
+    let outsider_media_error = toonflow_storage::serve_image(
+        State(state.clone()),
+        Path(media_key),
+        Query(toonflow_storage::AssetAccessQuery {
+            token: outsider_media_token,
+        }),
+        HeaderMap::new(),
+    )
+    .await
+    .expect_err("another project owner must not stream archived media");
+    assert_eq!(outsider_media_error.status(), StatusCode::NOT_FOUND);
+    let cleanup_guard_id: i64 = sqlx::query_scalar(
+        "INSERT INTO toonflow.storage_cleanup_tasks(
+           object_path,resource_type,resource_id,error_reason,state,create_time,update_time
+         ) VALUES(
+           $1,'e2e_reference_guard',$2,'verify live-reference protection','pending',
+           (extract(epoch FROM clock_timestamp())*1000)::bigint,
+           (extract(epoch FROM clock_timestamp())*1000)::bigint
+         ) RETURNING id",
+    )
+    .bind(&first_url)
+    .bind(first_render_id)
+    .fetch_one(&pool)
+    .await
+    .expect("queue a cleanup request for a referenced render");
+    let mut cleanup_guard = None;
+    for _ in 0..150 {
+        cleanup_guard = sqlx::query_as::<_, (String, String)>(
+            "SELECT state,error_reason FROM toonflow.storage_cleanup_tasks WHERE id=$1",
+        )
+        .bind(cleanup_guard_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("poll reference-aware cleanup");
+        if cleanup_guard
+            .as_ref()
+            .is_some_and(|(state, _)| state == "completed")
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let cleanup_guard = cleanup_guard.expect("cleanup guard row");
+    assert_eq!(cleanup_guard.0, "completed");
+    assert!(cleanup_guard.1.contains("仍被业务记录引用"));
+    assert!(
+        toonflow_storage::asset_exists(&first_url)
+            .await
+            .expect("referenced render survives cleanup")
+    );
     let outsider_error = toonflow_episode_renders::project_video_archive(
         scoped_user("00000000-0000-0000-0000-000000000002"),
         State(state.clone()),
@@ -321,6 +732,8 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
         .as_i64()
         .expect("second episode render id");
     assert_eq!(second_result["version"], 2);
+    assert_ne!(first_url, second_url);
+    assert!(second_url.contains(&format!("task-{second_task_id}-lease-")));
 
     let failed_render_id: i64 = sqlx::query_scalar(
         "INSERT INTO toonflow.episode_renders(
@@ -422,6 +835,18 @@ async fn project_content_storyboard_and_video_export_form_a_complete_pipeline() 
     )
     .await
     .expect("delete project and archived objects");
+    for _ in 0..150 {
+        let mut any_exists = false;
+        for path in [&first_url, &second_url, &source_url] {
+            any_exists |= toonflow_storage::asset_exists(path)
+                .await
+                .expect("poll deleted project object");
+        }
+        if !any_exists {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     for path in [&first_url, &second_url, &source_url] {
         assert!(
             !toonflow_storage::asset_exists(path)

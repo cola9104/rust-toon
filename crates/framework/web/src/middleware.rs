@@ -1,4 +1,4 @@
-use axum::{Router, http::HeaderName};
+use axum::{Router, body::Body, http::HeaderName};
 use std::env;
 use tower_http::{
     cors::{Any, CorsLayer},
@@ -36,7 +36,17 @@ pub fn apply_web_layers(router: Router, config: WebConfig) -> Router {
     let router = router
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, MakeRequestUuid))
-        .layer(TraceLayer::new_for_http());
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
+                // Never include the query string here: Toonflow's compatible
+                // WebSocket URL carries a JWT query parameter.
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path(),
+                )
+            }),
+        );
 
     if config.permissive_cors {
         router.layer(

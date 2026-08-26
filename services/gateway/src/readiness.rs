@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, env, time::Duration};
+use std::{
+    collections::BTreeMap,
+    env,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use axum::{
     Json, Router,
@@ -21,6 +29,28 @@ pub struct ReadinessState {
     object_storage_configured: bool,
     minio_required: bool,
     ffmpeg_required: bool,
+    drain: DrainHandle,
+}
+
+#[derive(Clone)]
+pub struct DrainHandle {
+    accepting_traffic: Arc<AtomicBool>,
+}
+
+impl DrainHandle {
+    fn new() -> Self {
+        Self {
+            accepting_traffic: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn begin_draining(&self) {
+        self.accepting_traffic.store(false, Ordering::Release);
+    }
+
+    fn is_accepting_traffic(&self) -> bool {
+        self.accepting_traffic.load(Ordering::Acquire)
+    }
 }
 
 impl ReadinessState {
@@ -36,7 +66,12 @@ impl ReadinessState {
             object_storage_configured: minio_configured,
             minio_required: env_bool("READINESS_REQUIRE_MINIO", production || minio_configured),
             ffmpeg_required: env_bool("READINESS_REQUIRE_FFMPEG", false),
+            drain: DrainHandle::new(),
         }
+    }
+
+    pub fn drain_handle(&self) -> DrainHandle {
+        self.drain.clone()
     }
 }
 
@@ -106,6 +141,7 @@ async fn live() -> Json<ProbeResponse> {
 }
 
 async fn ready(State(state): State<ReadinessState>) -> Response {
+    let traffic = check_traffic(&state);
     let database = check_database(&state);
     let redis = check_redis(&state);
     let minio = check_minio(&state);
@@ -117,6 +153,7 @@ async fn ready(State(state): State<ReadinessState>) -> Response {
     checks.insert("ffmpeg", ffmpeg);
     checks.insert("minio", minio);
     checks.insert("redis", redis);
+    checks.insert("traffic", traffic);
     let ready = !checks.values().any(Check::blocks_readiness);
     let response = ProbeResponse {
         service: SERVICE_NAME,
@@ -133,6 +170,14 @@ async fn ready(State(state): State<ReadinessState>) -> Response {
         Json(response),
     )
         .into_response()
+}
+
+fn check_traffic(state: &ReadinessState) -> Check {
+    if state.drain.is_accepting_traffic() {
+        Check::ok(true)
+    } else {
+        Check::failed(true, "gateway is draining")
+    }
 }
 
 async fn check_database(state: &ReadinessState) -> Check {
@@ -213,11 +258,22 @@ fn env_bool(name: &str, default: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::env_bool;
+    use super::{DrainHandle, env_bool};
 
     #[test]
     fn readiness_boolean_defaults_are_stable() {
         assert!(!env_bool("RUST_TOON_TEST_MISSING_READINESS_FLAG", false));
         assert!(env_bool("RUST_TOON_TEST_MISSING_READINESS_FLAG", true));
+    }
+
+    #[test]
+    fn drain_handle_is_shared_and_one_way() {
+        let handle = DrainHandle::new();
+        let observer = handle.clone();
+        assert!(observer.is_accepting_traffic());
+
+        handle.begin_draining();
+
+        assert!(!observer.is_accepting_traffic());
     }
 }

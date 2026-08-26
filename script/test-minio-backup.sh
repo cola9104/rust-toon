@@ -85,12 +85,12 @@ backup_path="$(
     bash script/database/backup-minio.sh
 )"
 
-# A timestamp is the public backup identifier. A second publication using the
-# same identifier must fail instead of nesting into or replacing the first.
-backup_timestamp="${backup_path##*/rust-toon-minio-}"
+# A backup set ID is the public backup identifier. A second publication using
+# the same identifier must fail instead of nesting into or replacing the first.
+backup_set_id="${backup_path##*/rust-toon-minio-}"
 fixed_date_bin="$test_dir/fixed-date-bin"
 mkdir -p "$fixed_date_bin"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s"\n' "$backup_timestamp" \
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s"\n' "$backup_set_id" \
   > "$fixed_date_bin/date"
 chmod 700 "$fixed_date_bin/date"
 if collision_output="$(
@@ -109,6 +109,33 @@ if [[ "$collision_output" != *"Refusing to overwrite existing MinIO backup"* ]];
   echo "same-timestamp backup failed for an unexpected reason: $collision_output" >&2
   exit 1
 fi
+
+# A competing publisher must report the set ID without an unset-variable error,
+# and must never remove a lock it does not own.
+lock_set_id="concurrent-set-test"
+competing_lock="$test_dir/backups/.rust-toon-minio-$lock_set_id.lock"
+mkdir "$competing_lock"
+if lock_output="$(
+  BACKUP_SET_ID="$lock_set_id" \
+  MINIO_ENDPOINT="http://127.0.0.1:${minio_port}" \
+  MINIO_ACCESS_KEY=rust_toon \
+  MINIO_SECRET_KEY=rust_toon_password \
+  MINIO_BUCKET=rust-toon \
+  MINIO_BACKUP_DIR="$test_dir/backups" \
+    bash script/database/backup-minio.sh 2>&1
+)"; then
+  echo "a concurrent MinIO backup unexpectedly acquired an existing lock" >&2
+  exit 1
+fi
+if [[ "$lock_output" != *"backup set $lock_set_id"* ]]; then
+  echo "lock collision did not report its backup set: $lock_output" >&2
+  exit 1
+fi
+if [[ ! -d "$competing_lock" ]]; then
+  echo "a failed MinIO backup removed a publish lock it did not own" >&2
+  exit 1
+fi
+rmdir -- "$competing_lock"
 
 # Manifest parsing is strict, and a cross-bucket restore requires a separate,
 # explicit opt-in in addition to --confirm.

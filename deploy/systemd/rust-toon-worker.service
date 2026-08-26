@@ -1,0 +1,24 @@
+[Unit]
+Description=Rust Toon Durable Job Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rust-toon
+Group=rust-toon
+WorkingDirectory=/opt/rust-toon
+EnvironmentFile=/etc/rust-toon/toon-worker.env
+ExecStart=/opt/rust-toon/target/release/rust-toon-worker
+Restart=always
+RestartSec=5
+TimeoutStopSec=75
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=-/opt/rust-toon/storage
+
+[Install]
+WantedBy=multi-user.target

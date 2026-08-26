@@ -1,0 +1,17 @@
+.git
+.github
+.vscode
+.idea
+target
+**/target
+**/node_modules
+**/dist
+**/.turbo
+Toonflow-app
+huobao-drama
+storage
+backups
+*.log
+.env
+.env.*
+!deploy/env/*.example

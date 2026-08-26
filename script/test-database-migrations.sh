@@ -23,4 +23,8 @@ export TEST_DATABASE_URL="postgres://rust_toon:rust_toon@127.0.0.1:${port}/rust_
 # crate so the verification always exercises the complete current chain.
 cargo clean -p rust-toon-framework-database
 cargo test -p rust-toon-framework-database --test migrations -- --ignored --nocapture
+cargo test -p rust-toon-toon-server gateway_repair_database_tests -- --ignored --nocapture
 cargo test -p rust-toon-toon-server agent_memory_database_tests -- --ignored --nocapture
+cargo test -p rust-toon-toon-server \
+  toonflow_video_export::tests::source_snapshot_blocks_video_delete_until_job_enqueue_commits \
+  -- --ignored --nocapture

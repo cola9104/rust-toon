@@ -1,3 +1,6 @@
+import { useAccessStore } from '@vben/stores';
+import { getActivePinia } from 'pinia';
+
 export type AssetCategory = 'costume' | 'material' | 'role' | 'scene' | 'tool';
 
 export const ASSET_CATEGORY_OPTIONS: Array<{
@@ -33,8 +36,17 @@ export function isAssetInCategory(type: string, category: AssetCategory) {
 }
 
 export function assetFileUrl(path?: string) {
-  if (!path || /^(?:data:|https?:\/\/)/i.test(path) || path.startsWith('/api/')) {
+  if (!path || /^(?:data:|https?:\/\/)/i.test(path)) {
     return path ?? '';
   }
-  return path.startsWith('/toonflow/') ? `/api${path}` : path;
+  const resolved = path.startsWith('/toonflow/') ? `/api${path}` : path;
+  if (!resolved.startsWith('/api/toonflow/assets/files/')) return resolved;
+  const pinia = getActivePinia();
+  const token = pinia ? useAccessStore(pinia).accessToken : undefined;
+  if (!token) return resolved;
+  const [withoutHash, hash] = resolved.split('#', 2);
+  const [pathname, query = ''] = withoutHash!.split('?', 2);
+  const params = new URLSearchParams(query);
+  params.set('token', token);
+  return `${pathname}?${params.toString()}${hash ? `#${hash}` : ''}`;
 }

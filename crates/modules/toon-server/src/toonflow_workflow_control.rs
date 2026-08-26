@@ -10,9 +10,15 @@ use serde_json::{Value, json};
 use crate::toonflow_workflow::{
     LatestNodeRunQuery, NodeRunIdRequest, StartWorkflowNodeResponse, StoryboardImageNodeInput,
     WorkflowNodeRunResponse, WorkflowRunIdRequest, active_node_runs, active_workflow_runs,
-    launch_node, recover_stale_node_runs, rollback_partial_storyboard_panel,
+    ensure_workflow_run_access, launch_node, recover_stale_node_runs,
+    rollback_partial_storyboard_panel,
 };
-use crate::{ToonState, shared::require, toonflow_video};
+use crate::{
+    ToonState,
+    shared::require,
+    toonflow_episode_renders::{ensure_project_access, ensure_script_in_project},
+    toonflow_video,
+};
 
 pub async fn cancel_run(
     user: CurrentUser,
@@ -28,6 +34,7 @@ pub async fn cancel_run(
     .await
     .map_err(|_| AppError::internal("failed to load workflow run"))?
     .ok_or_else(|| AppError::not_found("workflow run not found"))?;
+    ensure_workflow_run_access(&state.pool, &user, request.id).await?;
     if matches!(run.0.as_str(), "success" | "failed" | "cancelled") {
         return Err(AppError::bad_request("workflow run has already finished"));
     }
@@ -62,9 +69,11 @@ pub async fn cancel_run(
             if let Ok(input) = serde_json::from_value::<StoryboardImageNodeInput>(input.clone()) {
                 let _ = sqlx::query(
                     "UPDATE toonflow.storyboards SET state='已取消',reason='用户取消生成'
-                     WHERE id=ANY($1) AND state='生成中'",
+                     WHERE id=ANY($1) AND project_id=$2 AND script_id=$3 AND state='生成中'",
                 )
                 .bind(input.storyboard_ids)
+                .bind(run.1)
+                .bind(run.2)
                 .execute(&state.pool)
                 .await;
             }
@@ -74,9 +83,11 @@ pub async fn cancel_run(
         {
             let _ = sqlx::query(
                 "UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成'
-                 WHERE id=ANY($1) AND state='生成中'",
+                 WHERE id=ANY($1) AND project_id=$2 AND script_id=$3 AND state='生成中'",
             )
             .bind(input.video_ids)
+            .bind(run.1)
+            .bind(run.2)
             .execute(&state.pool)
             .await;
         }
@@ -121,6 +132,8 @@ pub async fn latest_node_run(
     Query(query): Query<LatestNodeRunQuery>,
 ) -> Result<Json<ApiResponse<Option<WorkflowNodeRunResponse>>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_access(&state.pool, &user, query.project_id).await?;
+    ensure_script_in_project(&state.pool, query.project_id, query.script_id).await?;
     recover_stale_node_runs(&state).await;
     let row = sqlx::query_as::<_, WorkflowNodeRunResponse>(
         "SELECT nr.id,nr.workflow_run_id,nr.agent_run_id,nr.node_id,nr.node_type,nr.attempt,nr.state,
@@ -149,13 +162,6 @@ pub async fn cancel_node(
     Json(request): Json<NodeRunIdRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:update")?;
-    if let Some(handle) = active_node_runs()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&request.id)
-    {
-        handle.abort();
-    }
     let row = sqlx::query_as::<_, (i64, String, Value, i64, i64)>(
         "SELECT nr.workflow_run_id,nr.node_type,nr.input,r.project_id,r.script_id
          FROM toonflow.workflow_node_runs nr
@@ -167,6 +173,14 @@ pub async fn cancel_node(
     .await
     .map_err(|_| AppError::internal("failed to load running workflow node"))?
     .ok_or_else(|| AppError::bad_request("workflow node run has already finished"))?;
+    ensure_workflow_run_access(&state.pool, &user, row.0).await?;
+    if let Some(handle) = active_node_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(&request.id)
+    {
+        handle.abort();
+    }
     if row.1 == "storyboard.plan" {
         rollback_partial_storyboard_panel(&state.pool, row.3, row.4, &row.2)
             .await
@@ -183,9 +197,11 @@ pub async fn cancel_node(
             .map_err(|_| AppError::internal("stored storyboard node input is invalid"))?;
         sqlx::query(
             "UPDATE toonflow.storyboards SET state='已取消',reason='用户取消生成'
-             WHERE id=ANY($1) AND state='生成中'",
+             WHERE id=ANY($1) AND project_id=$2 AND script_id=$3 AND state='生成中'",
         )
         .bind(&input.storyboard_ids)
+        .bind(row.3)
+        .bind(row.4)
         .execute(&mut *transaction)
         .await
         .map_err(|_| AppError::internal("failed to cancel storyboard generation"))?;
@@ -194,9 +210,11 @@ pub async fn cancel_node(
             .map_err(|_| AppError::internal("stored video node input is invalid"))?;
         sqlx::query(
             "UPDATE toonflow.videos SET state='已取消',error_reason='用户取消生成'
-             WHERE id=ANY($1) AND state='生成中'",
+             WHERE id=ANY($1) AND project_id=$2 AND script_id=$3 AND state='生成中'",
         )
         .bind(&input.video_ids)
+        .bind(row.3)
+        .bind(row.4)
         .execute(&mut *transaction)
         .await
         .map_err(|_| AppError::internal("failed to cancel video generation"))?;
@@ -245,6 +263,7 @@ pub async fn retry_node(
     .await
     .map_err(|_| AppError::internal("failed to load workflow retry source"))?
     .ok_or_else(|| AppError::not_found("workflow node run not found"))?;
+    let (project_id, script_id) = ensure_workflow_run_access(&state.pool, &user, source.0).await?;
     if !matches!(source.4.as_str(), "failed" | "cancelled") {
         return Err(AppError::bad_request(
             "only failed or cancelled workflow nodes can be retried",
@@ -256,9 +275,12 @@ pub async fn retry_node(
             .map_err(|_| AppError::internal("stored storyboard node input is invalid"))?;
         storyboard_input.storyboard_ids = sqlx::query_scalar(
             "SELECT id FROM toonflow.storyboards
-             WHERE id=ANY($1) AND state IN('生成失败','已取消') ORDER BY id",
+             WHERE id=ANY($1) AND project_id=$2 AND script_id=$3
+               AND state IN('生成失败','已取消') ORDER BY id",
         )
         .bind(&storyboard_input.storyboard_ids)
+        .bind(project_id)
+        .bind(script_id)
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to load retryable storyboards"))?;

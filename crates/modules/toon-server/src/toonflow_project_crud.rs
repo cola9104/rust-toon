@@ -2,8 +2,9 @@ use crate::{
     ToonState,
     shared::{affected, current_user_id, require},
     toonflow::{SaveProjectRequest, ToonflowProject},
+    toonflow_episode_renders::ensure_project_access,
     toonflow_project_helpers::{next_id, now_ms, validate_models, video_mode, video_ratio},
-    toonflow_storage::{delete_asset_file, record_cleanup_failure},
+    toonflow_storage::enqueue_cleanup_paths,
 };
 use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
@@ -16,11 +17,17 @@ pub async fn list_projects(
     State(state): State<ToonState>,
 ) -> Result<Json<ApiResponse<Vec<ToonflowProject>>>, AppError> {
     require(&user, "toon:project:read")?;
+    let user_id = current_user_id(&user)?;
+    let is_super_admin = user.role_codes.iter().any(|role| role == "super_admin");
     let rows = sqlx::query_as::<_, ToonflowProject>(
         r#"SELECT id, project_type, chat_model, image_model, image_quality, video_model, name, intro,
                   type as type_, art_style, director_manual, mode, video_ratio, create_time, update_time
-           FROM toonflow.projects ORDER BY create_time DESC"#,
+           FROM toonflow.projects
+           WHERE $1 OR user_id=$2
+           ORDER BY create_time DESC"#,
     )
+    .bind(is_super_admin)
+    .bind(user_id)
     .fetch_all(&state.pool)
     .await
     .map_err(|_| AppError::internal("failed to list toonflow projects"))?;
@@ -63,6 +70,7 @@ pub async fn update_project(
     let id = request
         .id
         .ok_or_else(|| AppError::bad_request("project id is required"))?;
+    ensure_project_access(&state.pool, &user, id).await?;
     validate_models(
         &state.pool,
         request.chat_model,
@@ -82,17 +90,147 @@ pub async fn delete_project(
     Json(request): Json<crate::toonflow::IdRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:delete")?;
-    let paths: Vec<Option<String>> = sqlx::query_scalar("SELECT file_path FROM toonflow.images WHERE assets_id IN (SELECT id FROM toonflow.assets WHERE project_id=$1) UNION ALL SELECT file_path FROM toonflow.storyboards WHERE project_id=$1 UNION ALL SELECT file_path FROM toonflow.videos WHERE project_id=$1 UNION ALL SELECT file_path FROM toonflow.episode_renders WHERE project_id=$1 UNION ALL SELECT cover_path FROM toonflow.episode_renders WHERE project_id=$1").bind(request.id).fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to collect project files"))?;
+    ensure_project_access(&state.pool, &user, request.id).await?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin project deletion"))?;
+
+    // Existing media transactions freeze video sources before inserting rows
+    // that reference their project. Keep deletion in the same child-to-parent
+    // order to avoid a video/project FK lock inversion.
+    sqlx::query("SELECT id FROM toonflow.videos WHERE project_id=$1 ORDER BY id FOR UPDATE")
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock project videos"))?;
+    sqlx::query("SELECT id FROM toonflow.scripts WHERE project_id=$1 ORDER BY id FOR UPDATE")
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock project scripts"))?;
+    let locked: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM toonflow.projects WHERE id=$1 FOR UPDATE")
+            .bind(request.id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to lock project"))?;
+    if locked.is_none() {
+        return Err(AppError::not_found("project not found"));
+    }
+    // Child rows may have committed during the initial scan. Holding the
+    // project now blocks new scripts; re-scan children to close that window.
+    sqlx::query("SELECT id FROM toonflow.videos WHERE project_id=$1 ORDER BY id FOR UPDATE")
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock project videos"))?;
+    sqlx::query("SELECT id FROM toonflow.scripts WHERE project_id=$1 ORDER BY id FOR UPDATE")
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock project scripts"))?;
+    sqlx::query(
+        "SELECT image.id FROM toonflow.images image
+         JOIN toonflow.assets asset ON asset.id=image.assets_id
+         WHERE asset.project_id=$1 FOR UPDATE OF image",
+    )
+    .bind(request.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to lock project images"))?;
+    for (table, id_column) in [
+        ("storyboards", "id"),
+        ("video_continuity_frames", "previous_video_id"),
+        ("episode_renders", "id"),
+    ] {
+        sqlx::query(&format!(
+            "SELECT {id_column} FROM toonflow.{table} WHERE project_id=$1 FOR UPDATE"
+        ))
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock project media"))?;
+    }
+    let has_active_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM toonflow.distributed_jobs job
+           JOIN toonflow.tasks task ON task.id=job.task_id
+           WHERE task.project_id=$1 AND job.state IN ('queued','retry','running')
+           UNION ALL
+           SELECT 1 FROM toonflow.workflow_runs
+           WHERE project_id=$1 AND state IN ('pending','running')
+           UNION ALL
+           SELECT 1 FROM toonflow.tasks
+           WHERE project_id=$1 AND state='running'
+           UNION ALL
+           SELECT 1 FROM toonflow.agent_runs
+           WHERE project_id=$1 AND state='running'
+           UNION ALL
+           SELECT 1 FROM toonflow.scripts
+           WHERE project_id=$1 AND extract_state=2
+           UNION ALL
+           SELECT 1 FROM toonflow.videos
+           WHERE project_id=$1 AND state='生成中'
+           UNION ALL
+           SELECT 1 FROM toonflow.storyboards
+           WHERE project_id=$1 AND state='生成中'
+           UNION ALL
+           SELECT 1 FROM toonflow.images image
+           JOIN toonflow.assets asset ON asset.id=image.assets_id
+           WHERE asset.project_id=$1 AND image.state='生成中'
+         )",
+    )
+    .bind(request.id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to inspect active project work"))?;
+    if has_active_work {
+        return Err(AppError::bad_request(
+            "项目仍有生成或合并任务运行，请等待完成或取消后再删除",
+        ));
+    }
+    let paths: Vec<String> = sqlx::query_scalar(
+        "SELECT image.file_path FROM toonflow.images image
+           JOIN toonflow.assets asset ON asset.id=image.assets_id
+           WHERE asset.project_id=$1 AND coalesce(image.file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.storyboards
+           WHERE project_id=$1 AND coalesce(file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.videos
+           WHERE project_id=$1 AND coalesce(file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.video_continuity_frames
+           WHERE project_id=$1 AND coalesce(file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.episode_renders
+           WHERE project_id=$1 AND coalesce(file_path,'')<>''
+         UNION ALL SELECT cover_path FROM toonflow.episode_renders
+           WHERE project_id=$1 AND coalesce(cover_path,'')<>''
+         UNION ALL SELECT job.result->>'stagingObjectPath'
+           FROM toonflow.distributed_jobs job
+           JOIN toonflow.tasks task ON task.id=job.task_id
+           WHERE task.project_id=$1 AND coalesce(job.result->>'stagingObjectPath','')<>''",
+    )
+    .bind(request.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to collect project files"))?;
+    enqueue_cleanup_paths(
+        &mut tx,
+        &paths,
+        "project",
+        Some(request.id),
+        "项目记录已删除，等待引用感知对象清理",
+    )
+    .await
+    .map_err(|_| AppError::internal("failed to enqueue project cleanup"))?;
     let result = sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
         .bind(request.id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete toonflow project"))?;
     affected(result.rows_affected(), "project")?;
-    for path in paths.into_iter().flatten() {
-        if let Err(error) = delete_asset_file(&path).await {
-            record_cleanup_failure(&state.pool, &path, "project", Some(request.id), &error).await;
-        }
-    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit project deletion"))?;
     Ok(Json(ApiResponse::with_message((), "删除项目成功")))
 }

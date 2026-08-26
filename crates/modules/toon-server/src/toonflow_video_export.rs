@@ -7,10 +7,37 @@ use axum::{Json, extract::State};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::{Path, PathBuf};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::{Path, PathBuf},
+    process::{Output, Stdio},
+    time::Duration,
+};
+use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
+
+pub const VIDEO_EXPORT_JOB_KIND: &str = "toon.video_export";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoExportJobPayload {
+    pub project_id: i64,
+    pub script_id: i64,
+    #[serde(default)]
+    pub video_ids: Vec<i64>,
+    #[serde(default)]
+    pub sources: Vec<VideoExportSource>,
+    pub created_by: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoExportSource {
+    pub video_id: i64,
+    pub file_path: String,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,6 +55,135 @@ struct ExportArtifact {
     metadata: Value,
 }
 
+struct ExportWorkDir(PathBuf);
+
+impl ExportWorkDir {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ExportWorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn env_u64(name: &str, default: u64, minimum: u64, maximum: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (*value >= minimum) && (*value <= maximum))
+        .unwrap_or(default)
+}
+
+fn source_size_limit() -> u64 {
+    env_u64(
+        "TOON_WORKER_MAX_SOURCE_BYTES",
+        2 * 1024 * 1024 * 1024,
+        1024 * 1024,
+        100 * 1024 * 1024 * 1024,
+    )
+}
+
+fn job_source_size_limit() -> u64 {
+    env_u64(
+        "TOON_WORKER_MAX_JOB_SOURCE_BYTES",
+        10 * 1024 * 1024 * 1024,
+        1024 * 1024,
+        500 * 1024 * 1024 * 1024,
+    )
+}
+
+/// Remove only old, attempt-scoped export directories left by abrupt process
+/// death. Active attempts use unique fencing-token paths and the default
+/// seven-day threshold is well above the maximum supported FFmpeg timeout.
+pub async fn cleanup_stale_export_workdirs() -> Result<u64, String> {
+    let root = std::env::temp_dir().join("rust-toon/toonflow");
+    let mut projects = match tokio::fs::read_dir(&root).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("扫描成片临时目录失败：{error}")),
+    };
+    let retention = Duration::from_secs(env_u64(
+        "TOON_WORKER_STALE_WORKDIR_SECONDS",
+        7 * 24 * 60 * 60,
+        3_600,
+        365 * 24 * 60 * 60,
+    ));
+    let now = std::time::SystemTime::now();
+    let mut removed = 0_u64;
+    while let Some(project) = projects
+        .next_entry()
+        .await
+        .map_err(|error| format!("读取成片项目临时目录失败：{error}"))?
+    {
+        let file_type = project
+            .file_type()
+            .await
+            .map_err(|error| format!("读取成片项目目录类型失败：{error}"))?;
+        if !file_type.is_dir() {
+            continue;
+        }
+        let exports = project.path().join("exports");
+        let mut attempts = match tokio::fs::read_dir(exports).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("扫描成片尝试目录失败：{error}")),
+        };
+        while let Some(attempt) = attempts
+            .next_entry()
+            .await
+            .map_err(|error| format!("读取成片尝试目录失败：{error}"))?
+        {
+            let name = attempt.file_name();
+            if !name.to_string_lossy().starts_with("work-")
+                || !attempt
+                    .file_type()
+                    .await
+                    .map_err(|error| format!("读取成片尝试目录类型失败：{error}"))?
+                    .is_dir()
+            {
+                continue;
+            }
+            let modified = attempt
+                .metadata()
+                .await
+                .and_then(|metadata| metadata.modified())
+                .map_err(|error| format!("读取成片尝试目录时间失败：{error}"))?;
+            if now.duration_since(modified).unwrap_or_default() < retention {
+                continue;
+            }
+            tokio::fs::remove_dir_all(attempt.path())
+                .await
+                .map_err(|error| format!("清理过期成片临时目录失败：{error}"))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+fn media_timeout() -> Duration {
+    Duration::from_secs(env_u64(
+        "TOON_WORKER_FFMPEG_TIMEOUT_SECONDS",
+        7_200,
+        30,
+        86_400,
+    ))
+}
+
+async fn command_output(
+    command: &mut tokio::process::Command,
+    timeout: Duration,
+    label: &str,
+) -> Result<Output, String> {
+    command.kill_on_drop(true);
+    tokio::time::timeout(timeout, command.output())
+        .await
+        .map_err(|_| format!("{label}超时，子进程已终止"))?
+        .map_err(|error| format!("启动{label}失败：{error}"))
+}
+
 fn object_path_from_file_path(file_path: &str) -> String {
     file_path
         .strip_prefix("/api/toonflow/assets/files/")
@@ -37,85 +193,82 @@ fn object_path_from_file_path(file_path: &str) -> String {
 }
 
 async fn ffmpeg_available() -> bool {
-    tokio::task::spawn_blocking(|| {
-        let ffmpeg = std::process::Command::new("ffmpeg")
-            .arg("-version")
-            .output()
-            .is_ok_and(|output| output.status.success());
-        let ffprobe = std::process::Command::new("ffprobe")
-            .arg("-version")
-            .output()
-            .is_ok_and(|output| output.status.success());
-        ffmpeg && ffprobe
-    })
-    .await
-    .unwrap_or(false)
+    let mut ffmpeg = tokio::process::Command::new("ffmpeg");
+    ffmpeg
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut ffprobe = tokio::process::Command::new("ffprobe");
+    ffprobe
+        .arg("-version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command_output(&mut ffmpeg, Duration::from_secs(10), "FFmpeg 检查")
+        .await
+        .is_ok_and(|output| output.status.success())
+        && command_output(&mut ffprobe, Duration::from_secs(10), "FFprobe 检查")
+            .await
+            .is_ok_and(|output| output.status.success())
 }
 
 async fn probe_dimensions(path: &Path) -> Result<(u32, u32), String> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=p=0:s=x",
-            ])
-            .arg(path)
-            .output()
-            .map_err(|error| format!("探测视频尺寸失败：{error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "探测视频尺寸失败：{}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        let value = String::from_utf8_lossy(&output.stdout);
-        let (width, height) = value
-            .trim()
-            .split_once('x')
-            .ok_or_else(|| "无法识别视频尺寸".to_string())?;
-        Ok((
-            width.parse().map_err(|_| "无法识别视频宽度".to_string())?,
-            height.parse().map_err(|_| "无法识别视频高度".to_string())?,
-        ))
-    })
-    .await
-    .map_err(|error| format!("探测视频尺寸任务异常：{error}"))?
+    let mut command = tokio::process::Command::new("ffprobe");
+    command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_entries",
+            "stream=width,height",
+            "-of",
+            "csv=p=0:s=x",
+        ])
+        .arg(path)
+        .stdin(Stdio::null());
+    let output = command_output(&mut command, Duration::from_secs(30), "视频尺寸探测").await?;
+    if !output.status.success() {
+        return Err(format!(
+            "探测视频尺寸失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let value = String::from_utf8_lossy(&output.stdout);
+    let (width, height) = value
+        .trim()
+        .split_once('x')
+        .ok_or_else(|| "无法识别视频尺寸".to_string())?;
+    Ok((
+        width.parse().map_err(|_| "无法识别视频宽度".to_string())?,
+        height.parse().map_err(|_| "无法识别视频高度".to_string())?,
+    ))
 }
 
 async fn probe_has_audio(path: &Path) -> Result<bool, String> {
-    let path = path.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let output = std::process::Command::new("ffprobe")
-            .args([
-                "-v",
-                "error",
-                "-select_streams",
-                "a:0",
-                "-show_entries",
-                "stream=index",
-                "-of",
-                "csv=p=0",
-            ])
-            .arg(path)
-            .output()
-            .map_err(|error| format!("探测视频音频失败：{error}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "探测视频音频失败：{}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        Ok(!output.stdout.is_empty())
-    })
-    .await
-    .map_err(|error| format!("探测视频音频任务异常：{error}"))?
+    let mut command = tokio::process::Command::new("ffprobe");
+    command
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .stdin(Stdio::null());
+    let output = command_output(&mut command, Duration::from_secs(30), "视频音频探测").await?;
+    if !output.status.success() {
+        return Err(format!(
+            "探测视频音频失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(!output.stdout.is_empty())
 }
 
 async fn normalize_video(
@@ -124,81 +277,216 @@ async fn normalize_video(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let source = source.to_owned();
-    let destination = destination.to_owned();
-    let has_audio = probe_has_audio(&source).await?;
-    tokio::task::spawn_blocking(move || {
-        let scale = format!(
-            "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p,setsar=1,setpts=PTS-STARTPTS"
-        );
-        let mut command = std::process::Command::new("ffmpeg");
-        command.args(["-y", "-fflags", "+genpts", "-i"]);
-        command.arg(&source);
-        if has_audio {
-            command.args([
-                "-map",
-                "0:v:0",
-                "-map",
-                "0:a:0",
-                "-vf",
-                &scale,
-                "-af",
-                "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB",
-            ]);
-        } else {
-            command.args([
-                "-f",
-                "lavfi",
-                "-i",
-                "anullsrc=channel_layout=stereo:sample_rate=48000",
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                "-vf",
-                &scale,
-                "-shortest",
-            ]);
+    let has_audio = probe_has_audio(source).await?;
+    let scale = format!(
+        "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p,setsar=1,setpts=PTS-STARTPTS"
+    );
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-fflags",
+            "+genpts",
+            "-i",
+        ])
+        .arg(source)
+        .stdin(Stdio::null());
+    if has_audio {
+        command.args([
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a:0",
+            "-vf",
+            &scale,
+            "-af",
+            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB",
+        ]);
+    } else {
+        command.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-vf",
+            &scale,
+            "-shortest",
+        ]);
+    }
+    command
+        .args([
+            "-r",
+            "30",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
+            "-c:a",
+            "aac",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-b:a",
+            "192k",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(destination);
+    let output = command_output(&mut command, media_timeout(), "视频标准化").await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "视频标准化失败：{}",
+            String::from_utf8_lossy(&output.stderr)
+                .lines()
+                .last()
+                .unwrap_or("FFmpeg 执行失败")
+        ))
+    }
+}
+
+fn ipv4_is_non_public(address: Ipv4Addr) -> bool {
+    let octets = address.octets();
+    address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_broadcast()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || octets[0] == 0
+        || octets[0] >= 224
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+        || (octets[0] == 198 && (octets[1] == 18 || octets[1] == 19))
+        || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+        || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113)
+}
+
+fn ipv6_is_non_public(address: Ipv6Addr) -> bool {
+    if let Some(mapped) = address.to_ipv4_mapped() {
+        return ipv4_is_non_public(mapped);
+    }
+    let segments = address.segments();
+    address.is_loopback()
+        || address.is_unspecified()
+        || address.is_multicast()
+        || (segments[0] & 0xfe00) == 0xfc00
+        || (segments[0] & 0xffc0) == 0xfe80
+        || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+}
+
+fn ip_is_non_public(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => ipv4_is_non_public(address),
+        IpAddr::V6(address) => ipv6_is_non_public(address),
+    }
+}
+
+async fn safe_video_client(url: &reqwest::Url) -> Result<reqwest::Client, String> {
+    let allow_http = std::env::var("TOON_WORKER_ALLOW_HTTP_SOURCES")
+        .ok()
+        .is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true"));
+    if url.scheme() != "https" && !(allow_http && url.scheme() == "http") {
+        return Err("外部源视频必须使用 HTTPS".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("外部源视频地址不能包含用户凭据".into());
+    }
+    let host = url
+        .host_str()
+        .ok_or_else(|| "外部源视频地址缺少主机名".to_string())?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| "外部源视频地址端口无效".to_string())?;
+    let addresses = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|error| format!("解析源视频主机失败：{error}"))?
+        .collect::<Vec<SocketAddr>>();
+    if addresses.is_empty()
+        || addresses
+            .iter()
+            .any(|address| ip_is_non_public(address.ip()))
+    {
+        return Err("外部源视频地址解析到非公网网络，已拒绝访问".into());
+    }
+    let pinned = addresses[0];
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(source_download_timeout())
+        .resolve(host, pinned)
+        .build()
+        .map_err(|error| format!("创建安全下载客户端失败：{error}"))
+}
+
+pub(crate) fn source_download_timeout() -> Duration {
+    Duration::from_secs(env_u64(
+        "TOON_WORKER_SOURCE_TIMEOUT_SECONDS",
+        1_800,
+        10,
+        86_400,
+    ))
+}
+
+pub(crate) async fn download_external_video(
+    source: &str,
+    destination: &Path,
+    max_bytes: u64,
+) -> Result<u64, String> {
+    let url = reqwest::Url::parse(source).map_err(|error| format!("视频地址无效：{error}"))?;
+    let response = safe_video_client(&url)
+        .await?
+        .get(url)
+        .send()
+        .await
+        .map_err(|error| format!("下载视频失败：{error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "下载视频失败：HTTP {}（不跟随重定向）",
+            response.status()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes)
+    {
+        return Err(format!("源视频超过大小限制（最大 {max_bytes} 字节）"));
+    }
+    let mut file = tokio::fs::File::create(destination)
+        .await
+        .map_err(|error| format!("创建视频临时文件失败：{error}"))?;
+    let mut total = 0_u64;
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("读取视频流失败：{error}"))?;
+        total = total
+            .checked_add(chunk.len() as u64)
+            .ok_or_else(|| "源视频大小溢出".to_string())?;
+        if total > max_bytes {
+            return Err(format!("源视频超过大小限制（最大 {max_bytes} 字节）"));
         }
-        command
-            .args([
-                "-r",
-                "30",
-                "-c:v",
-                "libx264",
-                "-preset",
-                "medium",
-                "-crf",
-                "23",
-                "-c:a",
-                "aac",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-b:a",
-                "192k",
-                "-movflags",
-                "+faststart",
-            ])
-            .arg(&destination);
-        let output = command
-            .output()
-            .map_err(|error| format!("启动视频标准化失败：{error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "视频标准化失败：{}",
-                String::from_utf8_lossy(&output.stderr)
-                    .lines()
-                    .last()
-                    .unwrap_or("FFmpeg 执行失败")
-            ))
-        }
-    })
-    .await
-    .map_err(|error| format!("视频标准化任务异常：{error}"))?
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("保存视频失败：{error}"))?;
+    }
+    file.flush()
+        .await
+        .map_err(|error| format!("刷新视频临时文件失败：{error}"))?;
+    Ok(total)
 }
 
 async fn materialize_video(
@@ -207,25 +495,13 @@ async fn materialize_video(
     index: usize,
 ) -> Result<PathBuf, String> {
     let destination = directory.join(format!("{index:04}.mp4"));
+    let max_bytes = source_size_limit();
     if source.starts_with("/toonflow/assets/files/")
         || source.starts_with("/api/toonflow/assets/files/")
     {
-        let bytes = crate::toonflow_storage::read_asset_bytes(source).await?;
-        tokio::fs::write(&destination, bytes)
-            .await
-            .map_err(|error| format!("无法读取 MinIO 视频：{error}"))?;
+        crate::toonflow_storage::copy_asset_to_file(source, &destination, max_bytes).await?;
     } else if source.starts_with("http://") || source.starts_with("https://") {
-        let bytes = reqwest::get(source)
-            .await
-            .map_err(|error| format!("下载视频失败：{error}"))?
-            .error_for_status()
-            .map_err(|error| format!("下载视频失败：{error}"))?
-            .bytes()
-            .await
-            .map_err(|error| format!("读取视频失败：{error}"))?;
-        tokio::fs::write(&destination, bytes)
-            .await
-            .map_err(|error| format!("保存视频失败：{error}"))?;
+        download_external_video(source, &destination, max_bytes).await?;
     } else {
         return Err(format!("不支持的视频地址：{source}"));
     }
@@ -234,62 +510,209 @@ async fn materialize_video(
         .map_err(|error| format!("解析视频路径失败：{error}"))
 }
 
-async fn run_export(
-    pool: sqlx::PgPool,
+async fn resolve_export_sources(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     project_id: i64,
     script_id: i64,
-    task_id: i64,
-    video_ids: Vec<i64>,
-) -> Result<ExportArtifact, String> {
-    let sources: Vec<(i64, String)> = if video_ids.is_empty() {
-        sqlx::query_as("SELECT v.id,v.file_path FROM toonflow.video_tracks t JOIN toonflow.videos v ON v.id=COALESCE((SELECT selected.id FROM toonflow.videos selected WHERE selected.id=t.video_id AND selected.state='生成成功' AND coalesce(selected.file_path,'')<>''),(SELECT latest.id FROM toonflow.videos latest WHERE latest.video_track_id=t.id AND latest.state='生成成功' AND coalesce(latest.file_path,'')<>'' ORDER BY latest.time DESC,latest.id DESC LIMIT 1)) WHERE t.project_id=$1 AND t.script_id=$2 ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
+    requested_video_ids: &[i64],
+) -> Result<Vec<VideoExportSource>, AppError> {
+    // Determine the cinematic order first, then acquire every video lock in a
+    // stable ID order. Project/script deletion uses that same child lock order,
+    // while the final vector below restores the track/storyboard order.
+    let ordered_video_ids: Vec<i64> = if requested_video_ids.is_empty() {
+        sqlx::query_scalar("SELECT v.id FROM toonflow.video_tracks t JOIN toonflow.videos v ON v.id=COALESCE((SELECT selected.id FROM toonflow.videos selected WHERE selected.id=t.video_id AND selected.video_track_id=t.id AND selected.project_id=t.project_id AND selected.script_id=t.script_id AND selected.state='生成成功' AND coalesce(selected.file_path,'')<>''),(SELECT latest.id FROM toonflow.videos latest WHERE latest.video_track_id=t.id AND latest.project_id=t.project_id AND latest.script_id=t.script_id AND latest.state='生成成功' AND coalesce(latest.file_path,'')<>'' ORDER BY latest.time DESC,latest.id DESC LIMIT 1)) WHERE t.project_id=$1 AND t.script_id=$2 ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
             .bind(project_id)
             .bind(script_id)
-            .fetch_all(&pool)
+            .fetch_all(&mut **tx)
             .await
-            .map_err(|error| error.to_string())?
+            .map_err(|error| {
+                tracing::error!(project_id, script_id, %error, "failed to snapshot export sources");
+                AppError::internal("failed to snapshot export sources")
+            })?
     } else {
-        let sources: Vec<(i64, String)> = sqlx::query_as("SELECT v.id,v.file_path FROM toonflow.videos v JOIN toonflow.video_tracks t ON t.id=v.video_track_id WHERE v.id=ANY($3) AND v.project_id=$1 AND v.script_id=$2 AND v.state='生成成功' AND coalesce(v.file_path,'')<>'' ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
+        let rows: Vec<i64> = sqlx::query_scalar("SELECT v.id FROM toonflow.videos v JOIN toonflow.video_tracks t ON t.id=v.video_track_id WHERE v.id=ANY($3) AND v.project_id=$1 AND v.script_id=$2 AND v.state='生成成功' AND coalesce(v.file_path,'')<>'' ORDER BY coalesce((SELECT min(coalesce(s.index,2147483647)) FROM toonflow.storyboards s WHERE s.track_id=t.id),2147483647),t.sort_order,t.id")
             .bind(project_id)
             .bind(script_id)
-            .bind(&video_ids)
-            .fetch_all(&pool)
+            .bind(requested_video_ids)
+            .fetch_all(&mut **tx)
             .await
-            .map_err(|error| error.to_string())?;
-        let requested_count = video_ids
+            .map_err(|error| {
+                tracing::error!(project_id, script_id, %error, "failed to snapshot selected export sources");
+                AppError::internal("failed to snapshot export sources")
+            })?;
+        let requested_count = requested_video_ids
             .iter()
             .copied()
             .collect::<std::collections::HashSet<_>>()
             .len();
-        if sources.len() != requested_count {
-            return Err("部分视频不存在、尚未生成成功或不属于当前剧集".into());
+        if rows.len() != requested_count {
+            return Err(AppError::bad_request(
+                "部分视频不存在、尚未生成成功或不属于当前剧集",
+            ));
         }
-        sources
+        rows
     };
-    if sources.is_empty() {
-        return Err("请先为每条轨道选择已生成的视频".into());
+    if ordered_video_ids.is_empty() {
+        return Err(AppError::bad_request("请先为每条轨道选择已生成的视频"));
     }
-    let _ =
-        sqlx::query("UPDATE toonflow.tasks SET progress_current=0,progress_total=$2 WHERE id=$1")
-            .bind(task_id)
-            .bind(sources.len() as i32)
-            .execute(&pool)
-            .await;
+    // Hold the successful source rows through the task/outbox commit. A media
+    // delete needs FOR UPDATE on the same rows and therefore cannot enqueue
+    // object cleanup between this snapshot and durable job visibility.
+    let locked_rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT video.id,video.file_path
+         FROM toonflow.videos video
+         JOIN toonflow.video_tracks track ON track.id=video.video_track_id
+         WHERE video.id=ANY($3) AND video.project_id=$1 AND video.script_id=$2
+           AND track.project_id=$1 AND track.script_id=$2
+           AND video.state='生成成功' AND coalesce(video.file_path,'')<>''
+         ORDER BY video.id
+         FOR SHARE OF video",
+    )
+    .bind(project_id)
+    .bind(script_id)
+    .bind(&ordered_video_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| {
+        tracing::error!(project_id, script_id, %error, "failed to lock export sources");
+        AppError::internal("failed to snapshot export sources")
+    })?;
+    if locked_rows.len() != ordered_video_ids.len() {
+        return Err(AppError::bad_request(
+            "部分视频在提交合并任务前已变化，请刷新后重试",
+        ));
+    }
+    let mut locked_by_id = locked_rows
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
+    let rows = ordered_video_ids
+        .into_iter()
+        .map(|video_id| {
+            locked_by_id
+                .remove(&video_id)
+                .map(|file_path| (video_id, file_path))
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| AppError::bad_request("视频合并顺序已变化，请刷新后重试"))?;
+    let expected_prefix = format!("toonflow/{project_id}/assets/");
+    if rows.iter().any(|(_, file_path)| {
+        crate::toonflow_storage::asset_object_key(file_path)
+            .is_none_or(|key| !key.starts_with(&expected_prefix))
+    }) {
+        return Err(AppError::bad_request(
+            "源视频尚未归档到当前项目存储，请重新生成或导入后再合成",
+        ));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|(video_id, file_path)| VideoExportSource {
+            video_id,
+            file_path,
+        })
+        .collect())
+}
+
+async fn update_export_progress(
+    pool: &sqlx::PgPool,
+    job_id: i64,
+    task_id: i64,
+    lease_token: Uuid,
+    current: i32,
+    total: i32,
+) {
+    let _ = sqlx::query(
+        "UPDATE toonflow.tasks tasks
+         SET progress_current=$4,progress_total=$5
+         WHERE tasks.id=$2 AND tasks.state='running'
+           AND EXISTS(
+             SELECT 1 FROM toonflow.distributed_jobs jobs
+             WHERE jobs.id=$1 AND jobs.task_id=$2 AND jobs.state='running'
+               AND jobs.lease_token=$3 AND jobs.lease_until > now()
+           )",
+    )
+    .bind(job_id)
+    .bind(task_id)
+    .bind(lease_token)
+    .bind(current)
+    .bind(total)
+    .execute(pool)
+    .await;
+}
+
+async fn register_staging_export(
+    pool: &sqlx::PgPool,
+    job_id: i64,
+    task_id: i64,
+    lease_token: Uuid,
+    file_path: &str,
+) -> Result<(), String> {
+    let updated = sqlx::query(
+        "UPDATE toonflow.distributed_jobs
+         SET result=jsonb_build_object('stagingObjectPath',$4),updated_at=now()
+         WHERE id=$1 AND task_id=$2 AND state='running'
+           AND lease_token=$3 AND lease_until > now()",
+    )
+    .bind(job_id)
+    .bind(task_id)
+    .bind(lease_token)
+    .bind(file_path)
+    .execute(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    if updated.rows_affected() != 1 {
+        return Err("任务租约已失效，拒绝上传过期 Worker 的结果".into());
+    }
+    Ok(())
+}
+
+async fn run_export(
+    pool: sqlx::PgPool,
+    project_id: i64,
+    script_id: i64,
+    job_id: i64,
+    task_id: i64,
+    lease_token: Uuid,
+    sources: Vec<VideoExportSource>,
+) -> Result<ExportArtifact, String> {
+    if sources.is_empty() {
+        return Err("任务缺少冻结的有序源视频快照，拒绝执行不可重复的导出".into());
+    }
+    let total = i32::try_from(sources.len()).map_err(|_| "源视频数量过多".to_string())?;
+    update_export_progress(&pool, job_id, task_id, lease_token, 0, total).await;
     let work_dir = std::env::temp_dir().join(format!(
-        "rust-toon/toonflow/{project_id}/exports/work-{task_id}"
+        "rust-toon/toonflow/{project_id}/exports/work-{task_id}-{lease_token}"
     ));
     tokio::fs::create_dir_all(&work_dir)
         .await
         .map_err(|error| error.to_string())?;
+    let work_dir = ExportWorkDir(work_dir);
     let mut files = Vec::new();
-    for (index, (_, source)) in sources.iter().enumerate() {
-        let file = materialize_video(source, &work_dir, index).await?;
+    let mut source_bytes = 0_u64;
+    let max_job_source_bytes = job_source_size_limit();
+    for (index, source) in sources.iter().enumerate() {
+        let file = materialize_video(&source.file_path, work_dir.path(), index).await?;
+        let file_bytes = tokio::fs::metadata(&file)
+            .await
+            .map_err(|error| format!("读取源视频大小失败：{error}"))?
+            .len();
+        source_bytes = source_bytes
+            .checked_add(file_bytes)
+            .ok_or_else(|| "成片源视频总大小溢出".to_string())?;
+        if source_bytes > max_job_source_bytes {
+            return Err(format!(
+                "成片源视频总大小超过任务限制（最大 {max_job_source_bytes} 字节）"
+            ));
+        }
         files.push(file);
-        let _ = sqlx::query("UPDATE toonflow.tasks SET progress_current=$2 WHERE id=$1")
-            .bind(task_id)
-            .bind((index + 1) as i32)
-            .execute(&pool)
-            .await;
+        update_export_progress(
+            &pool,
+            job_id,
+            task_id,
+            lease_token,
+            i32::try_from(index + 1).unwrap_or(total),
+            total,
+        )
+        .await;
     }
     let (first_width, first_height) = probe_dimensions(&files[0]).await?;
     let (target_width, target_height) = if first_width >= first_height {
@@ -297,7 +720,7 @@ async fn run_export(
     } else {
         (1080, 1920)
     };
-    let normalized_dir = work_dir.join("normalized");
+    let normalized_dir = work_dir.path().join("normalized");
     tokio::fs::create_dir_all(&normalized_dir)
         .await
         .map_err(|error| error.to_string())?;
@@ -308,7 +731,7 @@ async fn run_export(
         normalized_files.push(normalized);
     }
 
-    let list_path = work_dir.join("concat.txt");
+    let list_path = work_dir.path().join("concat.txt");
     let list = normalized_files
         .iter()
         .map(|path| format!("file '{}'", path.to_string_lossy().replace('\'', "'\\''")))
@@ -317,39 +740,47 @@ async fn run_export(
     tokio::fs::write(&list_path, list)
         .await
         .map_err(|error| error.to_string())?;
-    let output_path = work_dir.join(format!("{script_id}_{task_id}.mp4"));
-    let ffmpeg_output_path = output_path.clone();
+    let output_path = work_dir
+        .path()
+        .join(format!("{script_id}_{task_id}_{lease_token}.mp4"));
     if let Some(parent) = output_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|error| error.to_string())?;
     }
-    let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("ffmpeg")
-            .args(["-y", "-f", "concat", "-safe", "0", "-i"])
-            .arg(&list_path)
-            .args([
-                "-fflags",
-                "+genpts",
-                "-c:v",
-                "libx264",
-                "-c:a",
-                "aac",
-                "-ar",
-                "48000",
-                "-ac",
-                "2",
-                "-movflags",
-                "+faststart",
-            ])
-            .arg(&ffmpeg_output_path)
-            .output()
-    })
-    .await
-    .map_err(|error| format!("FFmpeg 任务异常：{error}"))?
-    .map_err(|error| format!("启动 FFmpeg 失败：{error}"))?;
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+        ])
+        .arg(&list_path)
+        .args([
+            "-fflags",
+            "+genpts",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            "-ar",
+            "48000",
+            "-ac",
+            "2",
+            "-movflags",
+            "+faststart",
+        ])
+        .arg(&output_path)
+        .stdin(Stdio::null());
+    let output = command_output(&mut command, media_timeout(), "成片导出").await?;
     if !output.status.success() {
-        let _ = tokio::fs::remove_dir_all(&work_dir).await;
         return Err(format!(
             "成片导出失败：{}",
             String::from_utf8_lossy(&output.stderr)
@@ -358,16 +789,22 @@ async fn run_export(
                 .unwrap_or("FFmpeg 执行失败")
         ));
     }
-    let bytes = tokio::fs::read(&output_path)
-        .await
-        .map_err(|error| format!("读取导出文件失败：{error}"))?;
-    let stored =
-        crate::toonflow_storage::persist_asset_bytes(project_id, "exports", "mp4", bytes).await?;
-    let _ = tokio::fs::remove_dir_all(&work_dir).await;
+    let object_name = format!("task-{task_id}-lease-{lease_token}");
+    let staging_path =
+        crate::toonflow_storage::asset_file_path_named(project_id, "exports", &object_name, "mp4")?;
+    register_staging_export(&pool, job_id, task_id, lease_token, &staging_path).await?;
+    let stored = crate::toonflow_storage::persist_asset_file_named(
+        project_id,
+        "exports",
+        &object_name,
+        "mp4",
+        &output_path,
+    )
+    .await?;
     Ok(ExportArtifact {
         object_path: object_path_from_file_path(&stored),
         file_path: stored,
-        source_video_ids: sources.into_iter().map(|(id, _)| id).collect(),
+        source_video_ids: sources.into_iter().map(|source| source.video_id).collect(),
         metadata: json!({
             "width": target_width,
             "height": target_height,
@@ -381,109 +818,181 @@ async fn run_export(
 
 async fn finalize_export(
     pool: &sqlx::PgPool,
-    project_id: i64,
-    script_id: i64,
+    job_id: i64,
+    lease_token: Uuid,
     task_id: i64,
-    created_by: Uuid,
+    payload: &VideoExportJobPayload,
     artifact: &ExportArtifact,
-) -> Result<(i64, i32), String> {
+) -> Result<Value, String> {
+    let created_by = Uuid::parse_str(&payload.created_by)
+        .map_err(|error| format!("无效的任务创建者：{error}"))?;
     let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+    sqlx::query_scalar::<_, i64>(
+        "SELECT id FROM toonflow.distributed_jobs
+         WHERE id=$1 AND task_id=$2 AND state='running'
+           AND lease_token=$3 AND lease_until > now()
+         FOR UPDATE",
+    )
+    .bind(job_id)
+    .bind(task_id)
+    .bind(lease_token)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "任务租约已失效，拒绝提交过期 Worker 的结果".to_string())?;
     sqlx::query_scalar::<_, i64>(
         "SELECT id FROM toonflow.scripts WHERE id=$1 AND project_id=$2 FOR UPDATE",
     )
-    .bind(script_id)
-    .bind(project_id)
+    .bind(payload.script_id)
+    .bind(payload.project_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "导出完成前项目或剧集已被删除".to_string())?;
 
-    if let Some(existing) = sqlx::query_as::<_, (i64, i32)>(
-        "SELECT id,version FROM toonflow.episode_renders WHERE export_task_id=$1",
-    )
-    .bind(task_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(|error| error.to_string())?
+    let (render_id, version, file_path, replayed) = if let Some(existing) =
+        sqlx::query_as::<_, (i64, i32, String)>(
+            "SELECT id,version,file_path FROM toonflow.episode_renders WHERE export_task_id=$1",
+        )
+        .bind(task_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?
     {
-        tx.commit().await.map_err(|error| error.to_string())?;
-        return Ok(existing);
-    }
-
-    let version: i32 = sqlx::query_scalar(
-        "SELECT COALESCE(max(version),0)+1
-         FROM toonflow.episode_renders
-         WHERE project_id=$1 AND script_id=$2",
-    )
-    .bind(project_id)
-    .bind(script_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|error| error.to_string())?;
-    sqlx::query(
-        "UPDATE toonflow.episode_renders
-         SET is_current=false,updated_at=now()
-         WHERE project_id=$1 AND script_id=$2 AND is_current",
-    )
-    .bind(project_id)
-    .bind(script_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|error| error.to_string())?;
-    let render_id: i64 = sqlx::query_scalar(
-        "INSERT INTO toonflow.episode_renders
-         (project_id,script_id,version,object_path,file_path,cover_path,status,
-          source_video_ids,metadata,is_current,created_by,export_task_id)
-         VALUES($1,$2,$3,$4,$5,NULL,'ready',$6,$7,true,$8,$9)
-         RETURNING id",
-    )
-    .bind(project_id)
-    .bind(script_id)
-    .bind(version)
-    .bind(&artifact.object_path)
-    .bind(&artifact.file_path)
-    .bind(&artifact.source_video_ids)
-    .bind(&artifact.metadata)
-    .bind(created_by)
-    .bind(task_id)
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(|error| error.to_string())?;
-    let related_objects = json!({
-        "scriptId": script_id,
+        (existing.0, existing.1, existing.2, true)
+    } else {
+        let version: i32 = sqlx::query_scalar(
+            "SELECT COALESCE(max(version),0)+1
+             FROM toonflow.episode_renders
+             WHERE project_id=$1 AND script_id=$2",
+        )
+        .bind(payload.project_id)
+        .bind(payload.script_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        sqlx::query(
+            "UPDATE toonflow.episode_renders
+             SET is_current=false,updated_at=now()
+             WHERE project_id=$1 AND script_id=$2 AND is_current",
+        )
+        .bind(payload.project_id)
+        .bind(payload.script_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        let render_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.episode_renders
+             (project_id,script_id,version,object_path,file_path,cover_path,status,
+              source_video_ids,metadata,is_current,created_by,export_task_id)
+             VALUES($1,$2,$3,$4,$5,NULL,'ready',$6,$7,true,$8,$9)
+             RETURNING id",
+        )
+        .bind(payload.project_id)
+        .bind(payload.script_id)
+        .bind(version)
+        .bind(&artifact.object_path)
+        .bind(&artifact.file_path)
+        .bind(&artifact.source_video_ids)
+        .bind(&artifact.metadata)
+        .bind(created_by)
+        .bind(task_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|error| error.to_string())?;
+        (render_id, version, artifact.file_path.clone(), false)
+    };
+    let result = json!({
+        "scriptId": payload.script_id,
         "videoIds": artifact.source_video_ids,
-        "url": artifact.file_path,
+        "url": file_path,
         "episodeRenderId": render_id,
         "version": version,
-    })
-    .to_string();
+        "replayed": replayed,
+    });
     let task_update = sqlx::query(
         "UPDATE toonflow.tasks
          SET state='success',related_objects=$2,reason=NULL
-         WHERE id=$1 AND state='running'",
+         WHERE id=$1 AND state IN ('running','success')",
     )
     .bind(task_id)
-    .bind(related_objects)
+    .bind(result.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|error| error.to_string())?;
     if task_update.rows_affected() != 1 {
         return Err("导出任务不存在或已结束，拒绝写入伪成功结果".into());
     }
+    let job_update = sqlx::query(
+        "UPDATE toonflow.distributed_jobs
+         SET state='succeeded',result=$4,completed_at=now(),updated_at=now(),
+             lease_owner=NULL,lease_token=NULL,lease_until=NULL,heartbeat_at=NULL
+         WHERE id=$1 AND task_id=$2 AND state='running' AND lease_token=$3",
+    )
+    .bind(job_id)
+    .bind(task_id)
+    .bind(lease_token)
+    .bind(&result)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| error.to_string())?;
+    if job_update.rows_affected() != 1 {
+        return Err("任务租约已失效，拒绝提交过期 Worker 的结果".into());
+    }
     tx.commit().await.map_err(|error| error.to_string())?;
-    Ok((render_id, version))
+    Ok(result)
 }
 
-async fn fail_export(pool: &sqlx::PgPool, task_id: i64, reason: String) {
-    if let Err(error) =
-        sqlx::query("UPDATE toonflow.tasks SET state='failed',reason=$2 WHERE id=$1")
-            .bind(task_id)
-            .bind(&reason)
-            .execute(pool)
-            .await
+/// Execute one durable export after a worker has acquired the matching lease.
+/// The lease token is checked in the same transaction that publishes the
+/// episode render, providing a fencing guarantee for expired workers.
+pub async fn execute_distributed_export(
+    pool: &sqlx::PgPool,
+    job_id: i64,
+    task_id: i64,
+    lease_token: Uuid,
+    payload: Value,
+) -> Result<Value, String> {
+    let payload: VideoExportJobPayload =
+        serde_json::from_value(payload).map_err(|error| format!("无效的成片任务参数：{error}"))?;
+    if let Some((object_path, file_path, source_video_ids, metadata)) =
+        sqlx::query_as::<_, (String, String, Vec<i64>, Value)>(
+            "SELECT object_path,file_path,source_video_ids,metadata
+         FROM toonflow.episode_renders WHERE export_task_id=$1",
+        )
+        .bind(task_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| error.to_string())?
     {
-        tracing::error!(task_id, reason, error = %error, "failed to mark video export failed");
+        let artifact = ExportArtifact {
+            object_path,
+            file_path,
+            source_video_ids,
+            metadata,
+        };
+        return finalize_export(pool, job_id, lease_token, task_id, &payload, &artifact).await;
     }
+
+    if !ffmpeg_available().await {
+        return Err("Worker 未安装可用的 FFmpeg/FFprobe".into());
+    }
+    let artifact = run_export(
+        pool.clone(),
+        payload.project_id,
+        payload.script_id,
+        job_id,
+        task_id,
+        lease_token,
+        payload.sources.clone(),
+    )
+    .await?;
+    // Do not delete the object here when finalization reports an error: a
+    // commit acknowledgement can be lost after PostgreSQL has already made the
+    // episode render visible. Definite failed attempts retain their staging
+    // path in the durable job row; JobStore::fail/reap_expired moves that path
+    // to the reference-aware cleanup queue under the same lease fence.
+    finalize_export(pool, job_id, lease_token, task_id, &payload, &artifact).await
 }
 
 pub async fn export(
@@ -494,17 +1003,25 @@ pub async fn export(
     require(&user, "toon:scene:update")?;
     let created_by = ensure_project_access(&state.pool, &user, request.project_id).await?;
     ensure_script_in_project(&state.pool, request.project_id, request.script_id).await?;
-    if !ffmpeg_available().await {
-        return Err(AppError::bad_request(
-            "服务器未安装可用的 FFmpeg/FFprobe，安装后即可使用成片导出",
-        ));
-    }
-    let task_id = chrono::Utc::now().timestamp_millis();
-    let video_ids = request.video_ids;
-    let task_video_ids = video_ids.clone();
+    let mut tx = state.pool.begin().await.map_err(|error| {
+        tracing::error!(error = %error, "failed to start video export transaction");
+        AppError::internal("failed to create export task")
+    })?;
+    let sources = resolve_export_sources(
+        &mut tx,
+        request.project_id,
+        request.script_id,
+        &request.video_ids,
+    )
+    .await?;
+    let video_ids = sources
+        .iter()
+        .map(|source| source.video_id)
+        .collect::<Vec<_>>();
     let related_objects = json!({
         "scriptId": request.script_id,
-        "videoIds": &task_video_ids,
+        "videoIds": &video_ids,
+        "sources": &sources,
     })
     .to_string();
     let input = json!({
@@ -512,73 +1029,210 @@ pub async fn export(
         "scriptId": request.script_id,
         "videoIds": &video_ids,
     });
-    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,$2,'videoExport',$3,'ffmpeg','合并选中视频为最终成片','running',$1,$4,0,NULL)")
-        .bind(task_id)
+    let payload = VideoExportJobPayload {
+        project_id: request.project_id,
+        script_id: request.script_id,
+        video_ids: video_ids.clone(),
+        sources,
+        created_by: created_by.to_string(),
+    };
+    let payload = serde_json::to_value(payload)
+        .map_err(|_| AppError::internal("failed to serialize export job"))?;
+    let task_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.tasks(project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) VALUES($1,'videoExport',$2,'ffmpeg','合并选中视频为最终成片','running',(extract(epoch from clock_timestamp())*1000)::bigint,$3,0,$4) RETURNING id")
         .bind(request.project_id)
         .bind(related_objects)
         .bind(input)
-        .execute(&state.pool)
+        .bind(i32::try_from(video_ids.len()).unwrap_or(i32::MAX))
+        .fetch_one(&mut *tx)
         .await
         .map_err(|error| {
-            tracing::error!(task_id, error = %error, "failed to create video export task");
+            tracing::error!(error = %error, "failed to create video export task");
             AppError::internal("failed to create export task")
         })?;
-    let pool = state.pool.clone();
-    tokio::spawn(async move {
-        match run_export(
-            pool.clone(),
-            request.project_id,
-            request.script_id,
-            task_id,
-            video_ids,
-        )
-        .await
-        {
-            Ok(artifact) => {
-                match finalize_export(
-                    &pool,
-                    request.project_id,
-                    request.script_id,
-                    task_id,
-                    created_by,
-                    &artifact,
-                )
-                .await
-                {
-                    Ok((render_id, version)) => {
-                        tracing::info!(
-                            task_id,
-                            render_id,
-                            version,
-                            project_id = request.project_id,
-                            script_id = request.script_id,
-                            "video export archived"
-                        );
-                    }
-                    Err(error) => {
-                        let reason = format!("成片已生成但归档失败：{error}");
-                        if let Err(cleanup_error) =
-                            crate::toonflow_storage::delete_asset_file(&artifact.file_path).await
-                        {
-                            crate::toonflow_storage::record_cleanup_failure(
-                                &pool,
-                                &artifact.file_path,
-                                "episode_render_export",
-                                Some(task_id),
-                                &cleanup_error,
-                            )
-                            .await;
-                        }
-                        fail_export(&pool, task_id, reason).await;
-                    }
-                }
-            }
-            Err(reason) => {
-                fail_export(&pool, task_id, reason).await;
-            }
-        }
-    });
+    sqlx::query(
+        "INSERT INTO toonflow.distributed_jobs(message_id,task_id,kind,trace_id,payload)
+         VALUES($1,$2,$3,$4,$5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(task_id)
+    .bind(VIDEO_EXPORT_JOB_KIND)
+    .bind(format!("video-export-{task_id}"))
+    .bind(payload)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| {
+        tracing::error!(task_id, error = %error, "failed to enqueue video export job");
+        AppError::internal("failed to enqueue export task")
+    })?;
+    tx.commit().await.map_err(|error| {
+        tracing::error!(task_id, error = %error, "failed to commit video export job");
+        AppError::internal("failed to create export task")
+    })?;
     Ok(Json(ApiResponse::new(
         json!({"taskId":task_id,"state":"running"}),
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ip_is_non_public, resolve_export_sources};
+    use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+    use serde_json::json;
+    use std::{
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+        time::Duration,
+    };
+
+    #[test]
+    fn external_video_guard_rejects_internal_and_reserved_networks() {
+        for address in [
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+            "fd00::1".parse().expect("unique-local IPv6"),
+            "fe80::1".parse().expect("link-local IPv6"),
+        ] {
+            assert!(ip_is_non_public(address), "{address} must be rejected");
+        }
+        assert!(!ip_is_non_public(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(!ip_is_non_public(
+            "2606:4700:4700::1111".parse().expect("public IPv6")
+        ));
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn source_snapshot_blocks_video_delete_until_job_enqueue_commits() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let project_id = 9_700_001_i64;
+        let script_id = 9_700_002_i64;
+        let track_id = 9_700_003_i64;
+        let video_id = 9_700_004_i64;
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.projects(id,name,create_time,update_time)
+             VALUES($1,'export source lock test',0,0)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.scripts(id,name,project_id,create_time)
+             VALUES($1,'episode',$2,0)",
+        )
+        .bind(script_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.video_tracks(id,project_id,script_id,sort_order)
+             VALUES($1,$2,$3,0)",
+        )
+        .bind(track_id)
+        .bind(project_id)
+        .bind(script_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let file_path = format!(
+            "/toonflow/assets/files/toonflow/{project_id}/assets/videos/source-lock-test.mp4"
+        );
+        sqlx::query(
+            "INSERT INTO toonflow.videos(
+               id,file_path,state,script_id,project_id,video_track_id,time
+             ) VALUES($1,$2,'生成成功',$3,$4,$5,0)",
+        )
+        .bind(video_id)
+        .bind(&file_path)
+        .bind(script_id)
+        .bind(project_id)
+        .bind(track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE toonflow.video_tracks SET video_id=$2 WHERE id=$1")
+            .bind(track_id)
+            .bind(video_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut enqueue_tx = pool.begin().await.unwrap();
+        let sources = resolve_export_sources(&mut enqueue_tx, project_id, script_id, &[video_id])
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1);
+        let task_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.tasks(project_id,task_class,description,state)
+             VALUES($1,'videoExport','source lock regression','running')
+             RETURNING id",
+        )
+        .bind(project_id)
+        .fetch_one(&mut *enqueue_tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.distributed_jobs(task_id,kind,payload)
+             VALUES($1,'toon.video_export',$2)",
+        )
+        .bind(task_id)
+        .bind(json!({ "sources": sources }))
+        .execute(&mut *enqueue_tx)
+        .await
+        .unwrap();
+
+        let mut blocked_delete_tx = pool.begin().await.unwrap();
+        sqlx::query("SET LOCAL lock_timeout = '250ms'")
+            .execute(&mut *blocked_delete_tx)
+            .await
+            .unwrap();
+        let lock_error = sqlx::query_scalar::<_, String>(
+            "SELECT file_path FROM toonflow.videos WHERE id=$1 FOR UPDATE",
+        )
+        .bind(video_id)
+        .fetch_one(&mut *blocked_delete_tx)
+        .await
+        .expect_err("video deletion acquired FOR UPDATE before the export job was committed");
+        assert_eq!(
+            lock_error
+                .as_database_error()
+                .and_then(|error| error.code())
+                .as_deref(),
+            Some("55P03"),
+            "the delete probe must fail specifically because the source row is locked"
+        );
+        blocked_delete_tx.rollback().await.unwrap();
+
+        enqueue_tx.commit().await.unwrap();
+        let mut delete_tx = pool.begin().await.unwrap();
+        let locked: String = tokio::time::timeout(
+            Duration::from_secs(5),
+            sqlx::query_scalar("SELECT file_path FROM toonflow.videos WHERE id=$1 FOR UPDATE")
+                .bind(video_id)
+                .fetch_one(&mut *delete_tx),
+        )
+        .await
+        .expect("video deletion remained blocked after enqueue commit")
+        .unwrap();
+        assert_eq!(locked, file_path);
+        delete_tx.rollback().await.unwrap();
+
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }

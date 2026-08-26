@@ -5,7 +5,7 @@ use crate::DatabaseConfig;
 // SQLx embeds the migration directory at compile time.
 // 0001_initial.sql is the consolidated baseline. Add new migrations after it.
 // The migration directory is embedded at compile time; keep this file tracked
-// when adding migrations so the compile-time migrator is rebuilt (latest: 0002).
+// when adding migrations so the compile-time migrator is rebuilt (latest: 0005).
 // Keep this file tied to the migration directory so newly added migrations are
 // embedded when the gateway is rebuilt, and never edit a migration after it
 // has been released.

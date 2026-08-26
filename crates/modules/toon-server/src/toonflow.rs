@@ -13,10 +13,11 @@ pub use crate::toonflow_project_crud::list_projects;
 use crate::{
     ToonState,
     shared::{affected, require},
+    toonflow_episode_renders::{ensure_project_access, ensure_script_in_project},
     toonflow_materials::save_asset_cover_data_url,
     toonflow_pagination::{PageData, default_limit, default_page},
     toonflow_project_helpers::{default_should_generate, ensure_project, next_id, now_ms},
-    toonflow_storage::{delete_asset_file, record_cleanup_failure},
+    toonflow_storage::{delete_asset_file, enqueue_cleanup_paths},
 };
 
 #[derive(Debug, Serialize, FromRow)]
@@ -535,45 +536,164 @@ pub async fn delete_scripts(
     if request.ids.is_empty() {
         return Err(AppError::bad_request("script ids are required"));
     }
-    let paths: Vec<Option<String>> = sqlx::query_scalar(
-        "SELECT file_path FROM toonflow.storyboards WHERE script_id=ANY($1)
-         UNION ALL SELECT file_path FROM toonflow.videos WHERE script_id=ANY($1)
-         UNION ALL SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.image_id=i.id WHERE a.script_id=ANY($1)
-         UNION ALL SELECT file_path FROM toonflow.episode_renders WHERE script_id=ANY($1)
-         UNION ALL SELECT cover_path FROM toonflow.episode_renders WHERE script_id=ANY($1)",
-    )
-    .bind(&request.ids)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to collect script files"))?;
+    let mut script_ids = request.ids;
+    script_ids.sort_unstable();
+    script_ids.dedup();
+    let scripts: Vec<(i64, i64)> =
+        sqlx::query_as("SELECT id,project_id FROM toonflow.scripts WHERE id=ANY($1)")
+            .bind(&script_ids)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to authorize scripts"))?;
+    if scripts.len() != script_ids.len() {
+        return Err(AppError::not_found("script not found"));
+    }
+    let mut project_ids = scripts.iter().map(|script| script.1).collect::<Vec<_>>();
+    project_ids.sort_unstable();
+    project_ids.dedup();
+    for project_id in project_ids {
+        ensure_project_access(&state.pool, &user, project_id).await?;
+    }
     let mut tx = state
         .pool
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to begin script deletion"))?;
+    sqlx::query("SELECT id FROM toonflow.videos WHERE script_id=ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&script_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock script videos"))?;
+    let locked_scripts: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM toonflow.scripts WHERE id=ANY($1) ORDER BY id FOR UPDATE",
+    )
+    .bind(&script_ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to lock scripts"))?;
+    if locked_scripts.len() != script_ids.len() {
+        return Err(AppError::not_found("script not found"));
+    }
+    // Re-scan after the parent locks close the window in which a concurrent
+    // request could have inserted a new video between both statements.
+    sqlx::query("SELECT id FROM toonflow.videos WHERE script_id=ANY($1) ORDER BY id FOR UPDATE")
+        .bind(&script_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock script videos"))?;
+    sqlx::query("SELECT id FROM toonflow.storyboards WHERE script_id=ANY($1) FOR UPDATE")
+        .bind(&script_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock script storyboards"))?;
+    sqlx::query("SELECT id FROM toonflow.episode_renders WHERE script_id=ANY($1) FOR UPDATE")
+        .bind(&script_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to lock script renders"))?;
+    sqlx::query(
+        "SELECT frame.previous_video_id
+         FROM toonflow.video_continuity_frames frame
+         JOIN toonflow.videos video ON video.id=frame.previous_video_id
+         WHERE video.script_id=ANY($1) FOR UPDATE OF frame",
+    )
+    .bind(&script_ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to lock script continuity frames"))?;
+    let has_active_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM toonflow.distributed_jobs job
+           CROSS JOIN LATERAL unnest($1::bigint[]) requested(script_id)
+           WHERE job.state IN ('queued','retry','running')
+             AND job.payload->'scriptId'=to_jsonb(requested.script_id)
+           UNION ALL
+           SELECT 1 FROM toonflow.workflow_runs
+           WHERE script_id=ANY($1) AND state IN ('pending','running')
+           UNION ALL
+           SELECT 1 FROM toonflow.tasks task
+           CROSS JOIN LATERAL unnest($1::bigint[]) requested(script_id)
+           WHERE task.state='running'
+             AND (
+               task.input->>'scriptId'=requested.script_id::text
+               OR task.input->'scriptIds' @> jsonb_build_array(requested.script_id)
+             )
+           UNION ALL
+           SELECT 1 FROM toonflow.agent_runs
+           WHERE script_id=ANY($1) AND state='running'
+           UNION ALL
+           SELECT 1 FROM toonflow.scripts
+           WHERE id=ANY($1) AND extract_state=2
+           UNION ALL
+           SELECT 1 FROM toonflow.videos
+           WHERE script_id=ANY($1) AND state='生成中'
+           UNION ALL
+           SELECT 1 FROM toonflow.storyboards
+           WHERE script_id=ANY($1) AND state='生成中'
+         )",
+    )
+    .bind(&script_ids)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to inspect active script work"))?;
+    if has_active_work {
+        return Err(AppError::bad_request(
+            "剧集仍有生成或合并任务运行，请等待完成或取消后再删除",
+        ));
+    }
+    let paths: Vec<String> = sqlx::query_scalar(
+        "SELECT file_path FROM toonflow.storyboards
+           WHERE script_id=ANY($1) AND coalesce(file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.videos
+           WHERE script_id=ANY($1) AND coalesce(file_path,'')<>''
+         UNION ALL SELECT frame.file_path
+           FROM toonflow.video_continuity_frames frame
+           JOIN toonflow.videos video ON video.id=frame.previous_video_id
+           WHERE video.script_id=ANY($1) AND coalesce(frame.file_path,'')<>''
+         UNION ALL SELECT file_path FROM toonflow.episode_renders
+           WHERE script_id=ANY($1) AND coalesce(file_path,'')<>''
+         UNION ALL SELECT cover_path FROM toonflow.episode_renders
+           WHERE script_id=ANY($1) AND coalesce(cover_path,'')<>''
+         UNION ALL SELECT job.result->>'stagingObjectPath'
+           FROM toonflow.distributed_jobs job
+           CROSS JOIN LATERAL unnest($1::bigint[]) requested(script_id)
+           WHERE job.payload->'scriptId'=to_jsonb(requested.script_id)
+             AND coalesce(job.result->>'stagingObjectPath','')<>''",
+    )
+    .bind(&script_ids)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to collect script files"))?;
+    enqueue_cleanup_paths(
+        &mut tx,
+        &paths,
+        "script",
+        None,
+        "剧集记录已删除，等待引用感知对象清理",
+    )
+    .await
+    .map_err(|_| AppError::internal("failed to enqueue script cleanup"))?;
     sqlx::query("DELETE FROM toonflow.script_assets WHERE script_id = ANY($1)")
-        .bind(&request.ids)
+        .bind(&script_ids)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to clear script assets"))?;
     sqlx::query("UPDATE toonflow.assets SET script_id=NULL WHERE script_id = ANY($1)")
-        .bind(&request.ids)
+        .bind(&script_ids)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to detach script assets"))?;
-    sqlx::query("DELETE FROM toonflow.scripts WHERE id = ANY($1)")
-        .bind(&request.ids)
+    let deleted = sqlx::query("DELETE FROM toonflow.scripts WHERE id = ANY($1)")
+        .bind(&script_ids)
         .execute(&mut *tx)
         .await
         .map_err(|_| AppError::internal("failed to delete scripts"))?;
+    if deleted.rows_affected() != script_ids.len() as u64 {
+        return Err(AppError::not_found("script not found"));
+    }
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit script deletion"))?;
-    for path in paths.into_iter().flatten() {
-        if let Err(error) = delete_asset_file(&path).await {
-            record_cleanup_failure(&state.pool, &path, "script", None, &error).await;
-        }
-    }
     Ok(Json(ApiResponse::with_message((), "删除剧本成功")))
 }
 
@@ -989,6 +1109,8 @@ pub async fn get_flow_data(
     Json(request): Json<FlowRequest>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:read")?;
+    ensure_project_access(&state.pool, &user, request.project_id).await?;
+    ensure_script_in_project(&state.pool, request.project_id, request.episodes_id).await?;
     let flow: Option<(Value,)> = sqlx::query_as(
         "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'",
     )
@@ -1031,6 +1153,8 @@ pub async fn save_flow_data(
     Json(request): Json<SaveFlowRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:update")?;
+    ensure_project_access(&state.pool, &user, request.project_id).await?;
+    ensure_script_in_project(&state.pool, request.project_id, request.episodes_id).await?;
     let time = now_ms();
     let workflow = crate::toonflow_workflow::workflow_from_data(&request.data)?;
     crate::toonflow_workflow::persist_definition(

@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 2);
+    assert_eq!(applied, 5);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"
@@ -22,6 +22,202 @@ async fn applies_all_migrations_to_empty_postgres() {
     .execute(&pool)
     .await
     .expect("episode render migration is idempotent");
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0003_distributed_jobs.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("distributed job migration is idempotent");
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0004_distributed_job_delivery_guards.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("distributed job delivery guard migration is idempotent");
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0005_video_id_sequence.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("video id sequence migration is idempotent");
+
+    let task_id_default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default
+         FROM information_schema.columns
+         WHERE table_schema='toonflow' AND table_name='tasks' AND column_name='id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect distributed task id default");
+    assert!(
+        task_id_default
+            .as_deref()
+            .is_some_and(|value| value.contains("task_id_seq")),
+        "toonflow task ids must come from the database sequence"
+    );
+
+    let video_id_default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default
+         FROM information_schema.columns
+         WHERE table_schema='toonflow' AND table_name='videos' AND column_name='id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect video id default");
+    assert!(
+        video_id_default
+            .as_deref()
+            .is_some_and(|value| value.contains("video_id_seq")),
+        "toonflow video ids must come from the database sequence"
+    );
+
+    let continuity_fk: Option<(String, String)> = sqlx::query_as(
+        "SELECT pg_get_constraintdef(oid),confdeltype::text
+         FROM pg_constraint
+         WHERE conrelid='toonflow.video_continuity_frames'::regclass
+           AND conname='video_continuity_frames_video_project_fk'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .expect("inspect continuity frame foreign key");
+    let (continuity_definition, continuity_delete_action) =
+        continuity_fk.expect("continuity frame video/project foreign key must exist");
+    assert!(
+        continuity_definition.contains("FOREIGN KEY (previous_video_id, project_id)")
+            && continuity_definition.contains("REFERENCES toonflow.videos(id, project_id)"),
+        "continuity frame ownership must match its source video"
+    );
+    assert_eq!(
+        continuity_delete_action, "c",
+        "continuity frames must cascade when their source video is deleted"
+    );
+
+    for column in [
+        "message_id",
+        "task_id",
+        "kind",
+        "trace_id",
+        "payload",
+        "state",
+        "attempt",
+        "max_attempts",
+        "published_at",
+        "lease_owner",
+        "lease_token",
+        "lease_until",
+        "heartbeat_at",
+        "publish_owner",
+        "publish_token",
+        "publish_until",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='toonflow'
+                 AND table_name='distributed_jobs'
+                 AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect distributed job column");
+        assert!(exists, "expected distributed job column {column}");
+    }
+
+    let durable_dispatch_index: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname='toonflow' AND tablename='distributed_jobs'
+             AND indexname='idx_distributed_jobs_dispatch'
+             AND indexdef ILIKE '%published_at IS NULL%'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect distributed outbox index");
+    assert!(durable_dispatch_index);
+
+    for column in [
+        "lease_owner",
+        "lease_token",
+        "lease_until",
+        "next_attempt_at",
+        "max_attempts",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='toonflow'
+                 AND table_name='storage_cleanup_tasks'
+                 AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect storage cleanup lease column");
+        assert!(exists, "expected storage cleanup lease column {column}");
+    }
+
+    let cleanup_task_id_default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default
+         FROM information_schema.columns
+         WHERE table_schema='toonflow'
+           AND table_name='storage_cleanup_tasks'
+           AND column_name='id'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect storage cleanup task id default");
+    assert!(
+        cleanup_task_id_default
+            .as_deref()
+            .is_some_and(|value| value.contains("storage_cleanup_task_id_seq")),
+        "storage cleanup task ids must come from the database sequence"
+    );
+
+    for constraint in [
+        "storage_cleanup_tasks_attempts_valid",
+        "storage_cleanup_tasks_state_valid",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM pg_constraint
+               WHERE conrelid='toonflow.storage_cleanup_tasks'::regclass AND conname=$1
+             )",
+        )
+        .bind(constraint)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect storage cleanup constraint");
+        assert!(exists, "expected storage cleanup constraint {constraint}");
+    }
+
+    for constraint in [
+        "distributed_jobs_task_unique",
+        "distributed_jobs_message_unique",
+        "distributed_jobs_running_has_lease",
+        "distributed_jobs_message_id_not_nil",
+        "distributed_jobs_kind_wire_valid",
+        "distributed_jobs_trace_wire_valid",
+        "distributed_jobs_publish_claim_complete",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM pg_constraint
+               WHERE conrelid='toonflow.distributed_jobs'::regclass AND conname=$1
+             )",
+        )
+        .bind(constraint)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect distributed job constraint");
+        assert!(exists, "expected distributed job constraint {constraint}");
+    }
 
     let render_column_types: Vec<(String, String)> = sqlx::query_as(
         "SELECT column_name,udt_name
@@ -242,6 +438,8 @@ async fn applies_all_migrations_to_empty_postgres() {
         "toonflow.projects",
         "toonflow.project_assets",
         "toonflow.episode_renders",
+        "toonflow.distributed_jobs",
+        "toonflow.worker_instances",
         "toonflow.workflow_definitions",
         "toonflow.workflow_runs",
         "toonflow.workflow_node_runs",
@@ -270,6 +468,8 @@ async fn applies_all_migrations_to_empty_postgres() {
         assert!(exists, "expected table {table}");
     }
     for sequence in [
+        "toonflow.storage_cleanup_task_id_seq",
+        "toonflow.task_id_seq",
         "system_dict_data_seq",
         "system_login_log_seq",
         "system_mail_log_seq",

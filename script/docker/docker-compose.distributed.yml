@@ -1,0 +1,228 @@
+name: rust-toon-distributed
+
+x-backend-image: &backend-image
+  image: ${RUST_TOON_BACKEND_IMAGE:-rust-toon/backend:local}
+  build:
+    context: ../..
+    dockerfile: deploy/docker/Dockerfile.backend
+
+x-backend-environment: &backend-environment
+  # Keep this as a complete URI so reserved characters in the database
+  # password can be percent-encoded instead of breaking URL parsing.
+  DATABASE_URL: ${DATABASE_URL:?set an URL-encoded DATABASE_URL}
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-rust_toon}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+  MINIO_BUCKET: ${MINIO_BUCKET:-rust-toon}
+  MINIO_CONNECT_TIMEOUT_SECONDS: ${MINIO_CONNECT_TIMEOUT_SECONDS:-10}
+  MINIO_REQUEST_TIMEOUT_SECONDS: ${MINIO_REQUEST_TIMEOUT_SECONDS:-30}
+  MINIO_STREAM_TIMEOUT_SECONDS: ${MINIO_STREAM_TIMEOUT_SECONDS:-1800}
+  TOON_WORKER_SOURCE_TIMEOUT_SECONDS: ${TOON_WORKER_SOURCE_TIMEOUT_SECONDS:-1800}
+  TOON_PROVIDER_VIDEO_CONCURRENCY: ${TOON_PROVIDER_VIDEO_CONCURRENCY:-2}
+  TOON_PROVIDER_VIDEO_MAX_BYTES: ${TOON_PROVIDER_VIDEO_MAX_BYTES:-2147483648}
+  TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES: ${TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES:-4294967296}
+  TOON_WORKFLOW_STALE_SECONDS: ${TOON_WORKFLOW_STALE_SECONDS:-7200}
+  RUST_ENV: production
+  RUST_LOG: ${RUST_LOG:-info}
+
+x-gateway-dependencies: &gateway-dependencies
+  postgres:
+    condition: service_healthy
+  redis:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+
+x-worker-dependencies: &worker-dependencies
+  # The gateway owns SQLx migrations; its readiness prevents a clean-database
+  # worker from failing before the durable job tables exist.
+  gateway:
+    condition: service_healthy
+  postgres:
+    condition: service_healthy
+  nats:
+    condition: service_healthy
+  minio:
+    condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: rust_toon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: rust_toon
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    ports:
+      - "${MAINTENANCE_BIND_ADDRESS:-127.0.0.1}:${POSTGRES_MAINTENANCE_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rust_toon -d rust_toon"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    networks: [backend]
+
+  redis:
+    image: redis:8
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    networks: [backend]
+
+  nats:
+    image: nats:2
+    command:
+      - --jetstream
+      - --store_dir=/data
+      - --http_port=8222
+    volumes:
+      - nats-data:/data
+    ports:
+      - "${MAINTENANCE_BIND_ADDRESS:-127.0.0.1}:${NATS_MONITOR_PORT:-8222}:8222"
+    healthcheck:
+      test: ["CMD", "/nats-server", "--signal", "reopen=1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    networks: [backend]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-rust_toon}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?set MINIO_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MAINTENANCE_BIND_ADDRESS:-127.0.0.1}:${MINIO_MAINTENANCE_PORT:-9000}:9000"
+      - "${MAINTENANCE_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-9001}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    networks: [backend]
+
+  gateway:
+    <<: *backend-image
+    command: ["/usr/local/bin/rust-toon-gateway"]
+    environment:
+      <<: *backend-environment
+      DATABASE_MIN_CONNECTIONS: ${GATEWAY_DATABASE_MIN_CONNECTIONS:-1}
+      DATABASE_MAX_CONNECTIONS: ${GATEWAY_DATABASE_MAX_CONNECTIONS:-12}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to at least 32 bytes}
+      GATEWAY_HOST: 0.0.0.0
+      GATEWAY_PORT: 8080
+      GATEWAY_DRAIN_DELAY_SECONDS: ${GATEWAY_DRAIN_DELAY_SECONDS:-10}
+      READINESS_REQUIRE_REDIS: "true"
+      READINESS_REQUIRE_MINIO: "true"
+      READINESS_REQUIRE_FFMPEG: "false"
+    expose: ["8080"]
+    depends_on: *gateway-dependencies
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+    stop_grace_period: 45s
+    # Agent/Workflow coordination still has process-local active-run maps.
+    # Keep one gateway until those paths also move to the durable job plane.
+    deploy:
+      replicas: 1
+    networks: [backend]
+
+  toon-worker:
+    <<: *backend-image
+    command: ["/usr/local/bin/rust-toon-worker"]
+    environment:
+      <<: *backend-environment
+      DATABASE_MIN_CONNECTIONS: ${WORKER_DATABASE_MIN_CONNECTIONS:-1}
+      DATABASE_MAX_CONNECTIONS: ${WORKER_DATABASE_MAX_CONNECTIONS:-8}
+      # Override with a credentialed/TLS managed cluster URL in production.
+      NATS_URL: ${NATS_URL:-nats://nats:4222}
+      NATS_CREDENTIALS_FILE: ${NATS_CREDENTIALS_FILE:-}
+      NATS_TLS_REQUIRED: ${NATS_TLS_REQUIRED:-false}
+      NATS_TLS_CA_FILE: ${NATS_TLS_CA_FILE:-}
+      NATS_TLS_CLIENT_CERT_FILE: ${NATS_TLS_CLIENT_CERT_FILE:-}
+      NATS_TLS_CLIENT_KEY_FILE: ${NATS_TLS_CLIENT_KEY_FILE:-}
+      TOON_WORKER_HOST: 0.0.0.0
+      TOON_WORKER_PORT: 8081
+      TOON_WORKER_CONCURRENCY: ${TOON_WORKER_CONCURRENCY:-2}
+      TOON_WORKER_LEASE_SECONDS: ${TOON_WORKER_LEASE_SECONDS:-60}
+      TOON_WORKER_HEARTBEAT_SECONDS: ${TOON_WORKER_HEARTBEAT_SECONDS:-15}
+      TOON_WORKER_DISPATCH_INTERVAL_MS: ${TOON_WORKER_DISPATCH_INTERVAL_MS:-500}
+      TOON_WORKER_PUBLISH_CLAIM_SECONDS: ${TOON_WORKER_PUBLISH_CLAIM_SECONDS:-15}
+      TOON_WORKER_REPUBLISH_AFTER_SECONDS: ${TOON_WORKER_REPUBLISH_AFTER_SECONDS:-300}
+      TOON_WORKER_REAPER_INTERVAL_SECONDS: ${TOON_WORKER_REAPER_INTERVAL_SECONDS:-5}
+      TOON_WORKER_CLEANUP_INTERVAL_SECONDS: ${TOON_WORKER_CLEANUP_INTERVAL_SECONDS:-5}
+      TOON_WORKER_CLEANUP_TIMEOUT_SECONDS: ${TOON_WORKER_CLEANUP_TIMEOUT_SECONDS:-30}
+      TOON_WORKER_STAGING_CLEANUP_DELAY_SECONDS: ${TOON_WORKER_STAGING_CLEANUP_DELAY_SECONDS:-1800}
+      TOON_WORKER_DRAIN_TIMEOUT_SECONDS: ${TOON_WORKER_DRAIN_TIMEOUT_SECONDS:-45}
+      TOON_WORKER_MAX_SOURCE_BYTES: ${TOON_WORKER_MAX_SOURCE_BYTES:-2147483648}
+      TOON_WORKER_MAX_JOB_SOURCE_BYTES: ${TOON_WORKER_MAX_JOB_SOURCE_BYTES:-10737418240}
+      TOON_WORKER_SOURCE_TIMEOUT_SECONDS: ${TOON_WORKER_SOURCE_TIMEOUT_SECONDS:-1800}
+      TOON_WORKER_FFMPEG_TIMEOUT_SECONDS: ${TOON_WORKER_FFMPEG_TIMEOUT_SECONDS:-7200}
+      TOON_WORKER_STALE_WORKDIR_SECONDS: ${TOON_WORKER_STALE_WORKDIR_SECONDS:-604800}
+      TOON_WORKER_ALLOW_HTTP_SOURCES: ${TOON_WORKER_ALLOW_HTTP_SOURCES:-false}
+      NATS_JOB_REPLICAS: ${NATS_JOB_REPLICAS:-1}
+      NATS_JOB_MAX_BYTES: ${NATS_JOB_MAX_BYTES:-10737418240}
+      NATS_JOB_ACK_WAIT_SECONDS: ${NATS_JOB_ACK_WAIT_SECONDS:-120}
+      NATS_JOB_MAX_DELIVER: ${NATS_JOB_MAX_DELIVER:-20}
+      NATS_JOB_MAX_ACK_PENDING: ${NATS_JOB_MAX_ACK_PENDING:-32}
+    expose: ["8081"]
+    depends_on: *worker-dependencies
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: 75s
+    networks: [backend]
+
+  edge:
+    image: nginx:1.28-alpine
+    ports:
+      - "${EDGE_BIND_ADDRESS:-127.0.0.1}:${EDGE_PORT:-8080}:8080"
+    volumes:
+      - ../../deploy/nginx/distributed.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/edge-health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+    networks: [backend]
+
+volumes:
+  postgres-data:
+  redis-data:
+  nats-data:
+  minio-data:
+
+networks:
+  backend:
+    driver: bridge

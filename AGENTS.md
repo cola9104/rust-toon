@@ -4,11 +4,13 @@ This file is the handoff guide for AI coding agents working in this repository. 
 
 ## Project Shape
 
-- Backend: Rust workspace, gateway entrypoint at `services/gateway`.
+- Backend: Rust workspace, HTTP gateway entrypoint at `services/gateway` and durable media worker at `services/toon-worker`.
 - Frontend: Vben Admin app at `apps/web`, main app package `@vben/web-antd`.
 - Database migrations: `sql/postgresql`, executed automatically by the Rust gateway on startup. `0001_initial.sql` is the consolidated schema and baseline data.
 - Bootstrap reference: `sql/bootstrap/current.sql` is a reference-only `pg_dump` snapshot and is never loaded by the application. The migration chain is sufficient to initialize a new server without `current.sql`.
 - Local infrastructure: PostgreSQL, Redis, NATS, and MinIO via `script/docker/docker-compose.yml`.
+
+The durable worker is horizontally scalable. Keep the current Gateway at one production replica: Toon Agent/Workflow live-run registries are still process-local even though video export and cleanup jobs are distributed. Do not advertise or configure Gateway horizontal scaling until those realtime runtimes are migrated to durable workers.
 
 Do not mount `sql/postgresql` into PostgreSQL init scripts. The gateway owns database initialization through SQLx, and PostgreSQL should start as an empty database.
 
@@ -44,7 +46,20 @@ export RUST_LOG='info'
 cargo run -p rust-toon-gateway
 ```
 
-In a second terminal, start the frontend:
+After the gateway has applied migrations, start the durable worker in a second terminal:
+
+```bash
+export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
+export NATS_URL='nats://127.0.0.1:4222'
+export MINIO_ENDPOINT='http://127.0.0.1:9000'
+export MINIO_ACCESS_KEY='rust_toon'
+export MINIO_SECRET_KEY='rust_toon_password'
+cargo run -p rust-toon-worker
+```
+
+The gateway owns migrations; on a clean database, do not start the worker until gateway `/readyz` succeeds. The worker owns FFmpeg execution, durable task dispatch, expired-lease recovery, and object cleanup. It exposes `/livez` and `/readyz` on port `8081` by default.
+
+In a third terminal, start the frontend:
 
 ```bash
 cd apps/web
@@ -58,6 +73,7 @@ Open:
 - Frontend: `http://127.0.0.1:5666`
 - Backend health: `http://127.0.0.1:8080/health`
 - Backend liveness/readiness: `http://127.0.0.1:8080/livez`, `http://127.0.0.1:8080/readyz`
+- Worker liveness/readiness: `http://127.0.0.1:8081/livez`, `http://127.0.0.1:8081/readyz`
 - OpenAPI: `http://127.0.0.1:8080/openapi.json`
 - MinIO console: `http://127.0.0.1:9001`
 
@@ -78,6 +94,7 @@ cargo test --workspace
 bash script/test-database-migrations.sh
 bash script/test-gateway-e2e.sh
 bash script/test-production-e2e.sh
+bash script/test-distributed-jobs-e2e.sh
 bash script/test-minio-backup.sh
 pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
@@ -98,6 +115,7 @@ Install prerequisites:
 - Node.js `22.18+`.
 - pnpm `11+` through Corepack.
 - Nginx or another reverse proxy for production frontend/API routing.
+- FFmpeg and FFprobe on media worker nodes (the gateway does not execute video merges).
 
 Clone and enter the repository:
 
@@ -134,10 +152,10 @@ BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
 ```
 
-Build the backend:
+Build the gateway and worker:
 
 ```bash
-cargo build --release -p rust-toon-gateway
+cargo build --release -p rust-toon-gateway -p rust-toon-worker
 ```
 
 Run once manually to verify migrations and initial admin creation:
@@ -150,6 +168,10 @@ set +a
 ```
 
 After the first successful login, remove `BOOTSTRAP_ADMIN_PASSWORD` from `/etc/rust-toon/gateway.env` and restart the service.
+
+Create `/etc/rust-toon/toon-worker.env` from `deploy/env/toon-worker.env.example`, using the same PostgreSQL, NATS, and MinIO endpoints as the gateway. Start `rust-toon-worker` only after the gateway has completed migrations. Multiple worker replicas share the same JetStream durable consumer and PostgreSQL leases; use a unique `TOON_WORKER_INSTANCE_ID` per static systemd instance or leave it unset for an automatically generated ID.
+
+Scale media capacity by adding worker replicas, not Gateway replicas. The current production topology is Gateway `1` + Toon Worker `N`; this preserves existing Toonflow HTTP/WebSocket behavior while long-running media work remains durable across worker failures.
 
 ## systemd Service
 
@@ -178,9 +200,12 @@ Enable and start:
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable --now rust-toon-gateway
+sudo systemctl enable --now rust-toon-worker
 sudo systemctl status rust-toon-gateway
+sudo systemctl status rust-toon-worker
 curl -fsS http://127.0.0.1:8080/health
 curl -fsS http://127.0.0.1:8080/readyz
+curl -fsS http://127.0.0.1:8081/readyz
 ```
 
 ## Frontend Production
@@ -225,11 +250,10 @@ location /api/ {
 Back up PostgreSQL and MinIO as one recovery set. The repository provides:
 
 ```bash
-bash script/database/backup-postgres.sh
-bash script/database/backup-minio.sh
+sudo bash script/database/backup-consistent-set.sh
 ```
 
-The matching restore scripts require an explicit `--confirm`. Example systemd units and timers are under `deploy/systemd`; both use `/etc/rust-toon/backup.env`.
+The coordinator gracefully stops the configured Gateway/Worker systemd units, runs both component backups with the same `BACKUP_SET_ID`, publishes a set manifest, and restarts only units that were active. The matching restore scripts require an explicit `--confirm`. Example systemd units and the single consistent timer are under `deploy/systemd` and use `/etc/rust-toon/backup.env`.
 
 ## Common Problems
 
@@ -239,4 +263,5 @@ The matching restore scripts require an explicit `--confirm`. Example systemd un
 - Frontend API 404: check `VITE_BASE_URL`, `VITE_GLOB_API_URL`, and Nginx `/api/` proxy prefix handling.
 - SSE responses arrive all at once: disable proxy buffering and increase read timeout.
 - `/readyz` returns 503: inspect the per-dependency checks and verify PostgreSQL plus required Redis/MinIO/FFmpeg endpoints.
-- Port already in use: check `ss -ltnp | rg ':(8080|5666|5432|6379)'`.
+- Queued video exports never start: verify at least one worker is ready and NATS has JetStream enabled; check `toonflow.distributed_jobs` for `last_error` and lease state.
+- Port already in use: check `ss -ltnp | rg ':(8080|8081|5666|4222|5432|6379)'`.

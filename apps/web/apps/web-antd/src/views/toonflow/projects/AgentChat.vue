@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useAccessStore } from '@vben/stores';
 
+import { assetFileUrl } from '../assets/asset-types';
+
 interface ContentBlock {
   type: string;
   id: string;
@@ -302,7 +304,9 @@ function blockItems(data: any): any[] {
 }
 
 function blockUrl(item: any) {
-  return typeof item === 'string' ? item : item?.url || item?.src || item?.fileUrl || '';
+  return assetFileUrl(
+    typeof item === 'string' ? item : item?.url || item?.src || item?.fileUrl || '',
+  );
 }
 
 function suggestionText(item: any) {

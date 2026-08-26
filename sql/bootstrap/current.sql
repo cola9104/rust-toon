@@ -2,10 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict Wi5MVKebqYwSJIR6f3wdvYIdtfiB14bMdXaiPp1zuus0znEnFPbuSvLtrlSD15A
+\restrict atOz0OTVSlFY1pkIMFlMr3y5kGbkMSUgcGq6KO25CX0EGXVXB6at5dV65eaHR8S
 
 -- Dumped from database version 18.4 (Debian 18.4-1.pgdg13+1)
--- Dumped by pg_dump version 18.4 (Debian 18.4-1)
+-- Dumped by pg_dump version 18.4 (Debian 18.4-1.pgdg13+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -33,6 +33,7 @@ ALTER TABLE IF EXISTS ONLY toonflow.videos DROP CONSTRAINT IF EXISTS videos_retr
 ALTER TABLE IF EXISTS ONLY toonflow.videos DROP CONSTRAINT IF EXISTS videos_project_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.video_tracks DROP CONSTRAINT IF EXISTS video_tracks_script_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.video_tracks DROP CONSTRAINT IF EXISTS video_tracks_project_id_fkey;
+ALTER TABLE IF EXISTS ONLY toonflow.video_continuity_frames DROP CONSTRAINT IF EXISTS video_continuity_frames_video_project_fk;
 ALTER TABLE IF EXISTS ONLY toonflow.tasks DROP CONSTRAINT IF EXISTS tasks_retry_of_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.tasks DROP CONSTRAINT IF EXISTS tasks_project_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.storyboards DROP CONSTRAINT IF EXISTS storyboards_track_id_fkey;
@@ -56,6 +57,7 @@ ALTER TABLE IF EXISTS ONLY toonflow.event_chapters DROP CONSTRAINT IF EXISTS eve
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_script_project_fk;
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_project_fk;
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_export_task_fk;
+ALTER TABLE IF EXISTS ONLY toonflow.distributed_jobs DROP CONSTRAINT IF EXISTS distributed_jobs_task_fk;
 ALTER TABLE IF EXISTS ONLY toonflow.character_appearances DROP CONSTRAINT IF EXISTS character_appearances_script_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.character_appearances DROP CONSTRAINT IF EXISTS character_appearances_role_asset_id_fkey;
 ALTER TABLE IF EXISTS ONLY toonflow.character_appearances DROP CONSTRAINT IF EXISTS character_appearances_project_id_fkey;
@@ -91,6 +93,7 @@ ALTER TABLE IF EXISTS ONLY ai.chat_messages DROP CONSTRAINT IF EXISTS chat_messa
 ALTER TABLE IF EXISTS ONLY ai.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_conversation_id_fkey;
 ALTER TABLE IF EXISTS ONLY ai.chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_model_id_fkey;
 DROP TRIGGER IF EXISTS project_assets_enforce_ownership ON toonflow.project_assets;
+DROP INDEX IF EXISTS toonflow.uq_videos_id_project_id;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_scripts_project_name;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_scripts_id_project_id;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_prompts_source_key;
@@ -98,6 +101,7 @@ DROP INDEX IF EXISTS toonflow.uq_toonflow_episode_renders_current;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_assets_character_appearance;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_agent_project_data;
 DROP INDEX IF EXISTS toonflow.uq_toonflow_active_workflow_definition;
+DROP INDEX IF EXISTS toonflow.idx_worker_instances_service_heartbeat;
 DROP INDEX IF EXISTS toonflow.idx_video_continuity_frames_project;
 DROP INDEX IF EXISTS toonflow.idx_toonflow_workflow_runs_state;
 DROP INDEX IF EXISTS toonflow.idx_toonflow_workflow_runs_project_script;
@@ -129,8 +133,14 @@ DROP INDEX IF EXISTS toonflow.idx_toonflow_agent_runs_retry_of;
 DROP INDEX IF EXISTS toonflow.idx_toonflow_agent_run_events_cursor;
 DROP INDEX IF EXISTS toonflow.idx_toonflow_agent_model_config;
 DROP INDEX IF EXISTS toonflow.idx_toonflow_agent_memories_session;
+DROP INDEX IF EXISTS toonflow.idx_storage_cleanup_tasks_retry_due;
 DROP INDEX IF EXISTS toonflow.idx_storage_cleanup_tasks_pending;
+DROP INDEX IF EXISTS toonflow.idx_storage_cleanup_tasks_claim;
 DROP INDEX IF EXISTS toonflow.idx_skill_attributions_agent;
+DROP INDEX IF EXISTS toonflow.idx_distributed_jobs_task_state;
+DROP INDEX IF EXISTS toonflow.idx_distributed_jobs_expired_lease;
+DROP INDEX IF EXISTS toonflow.idx_distributed_jobs_dispatch_recovery;
+DROP INDEX IF EXISTS toonflow.idx_distributed_jobs_dispatch;
 DROP INDEX IF EXISTS toon.idx_scenes_episode;
 DROP INDEX IF EXISTS toon.idx_publications_project;
 DROP INDEX IF EXISTS toon.idx_episodes_project;
@@ -187,6 +197,7 @@ ALTER TABLE IF EXISTS ONLY toonflow.workflow_node_runs DROP CONSTRAINT IF EXISTS
 ALTER TABLE IF EXISTS ONLY toonflow.workflow_node_runs DROP CONSTRAINT IF EXISTS workflow_node_runs_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.workflow_definitions DROP CONSTRAINT IF EXISTS workflow_definitions_project_script_version_key;
 ALTER TABLE IF EXISTS ONLY toonflow.workflow_definitions DROP CONSTRAINT IF EXISTS workflow_definitions_pkey;
+ALTER TABLE IF EXISTS ONLY toonflow.worker_instances DROP CONSTRAINT IF EXISTS worker_instances_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.videos DROP CONSTRAINT IF EXISTS videos_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.video_tracks DROP CONSTRAINT IF EXISTS video_tracks_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.video_continuity_frames DROP CONSTRAINT IF EXISTS video_continuity_frames_pkey;
@@ -209,6 +220,9 @@ ALTER TABLE IF EXISTS ONLY toonflow.event_chapters DROP CONSTRAINT IF EXISTS eve
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_project_script_version_unique;
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.episode_renders DROP CONSTRAINT IF EXISTS episode_renders_export_task_unique;
+ALTER TABLE IF EXISTS ONLY toonflow.distributed_jobs DROP CONSTRAINT IF EXISTS distributed_jobs_task_unique;
+ALTER TABLE IF EXISTS ONLY toonflow.distributed_jobs DROP CONSTRAINT IF EXISTS distributed_jobs_pkey;
+ALTER TABLE IF EXISTS ONLY toonflow.distributed_jobs DROP CONSTRAINT IF EXISTS distributed_jobs_message_unique;
 ALTER TABLE IF EXISTS ONLY toonflow.creative_manuals DROP CONSTRAINT IF EXISTS creative_manuals_pkey;
 ALTER TABLE IF EXISTS ONLY toonflow.creative_manuals DROP CONSTRAINT IF EXISTS creative_manuals_kind_path_key;
 ALTER TABLE IF EXISTS ONLY toonflow.character_appearances DROP CONSTRAINT IF EXISTS character_appearances_script_role_age_name_key;
@@ -297,14 +311,21 @@ ALTER TABLE IF EXISTS ONLY ai.images DROP CONSTRAINT IF EXISTS images_pkey;
 ALTER TABLE IF EXISTS ONLY ai.chat_roles DROP CONSTRAINT IF EXISTS chat_roles_pkey;
 ALTER TABLE IF EXISTS ONLY ai.chat_messages DROP CONSTRAINT IF EXISTS chat_messages_pkey;
 ALTER TABLE IF EXISTS ONLY ai.chat_conversations DROP CONSTRAINT IF EXISTS chat_conversations_pkey;
+ALTER TABLE IF EXISTS toonflow.videos ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS toonflow.tasks ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS toonflow.storage_cleanup_tasks ALTER COLUMN id DROP DEFAULT;
 DROP TABLE IF EXISTS toonflow.workflow_runs;
 DROP TABLE IF EXISTS toonflow.workflow_node_runs;
 DROP TABLE IF EXISTS toonflow.workflow_definitions;
-DROP TABLE IF EXISTS toonflow.videos;
+DROP TABLE IF EXISTS toonflow.worker_instances;
 DROP TABLE IF EXISTS toonflow.video_tracks;
+DROP SEQUENCE IF EXISTS toonflow.video_id_seq;
+DROP TABLE IF EXISTS toonflow.videos;
 DROP TABLE IF EXISTS toonflow.video_continuity_frames;
+DROP SEQUENCE IF EXISTS toonflow.task_id_seq;
 DROP TABLE IF EXISTS toonflow.tasks;
 DROP TABLE IF EXISTS toonflow.storyboards;
+DROP SEQUENCE IF EXISTS toonflow.storage_cleanup_task_id_seq;
 DROP TABLE IF EXISTS toonflow.storage_cleanup_tasks;
 DROP TABLE IF EXISTS toonflow.skill_list;
 DROP TABLE IF EXISTS toonflow.skill_attributions;
@@ -320,6 +341,7 @@ DROP TABLE IF EXISTS toonflow.image_flows;
 DROP TABLE IF EXISTS toonflow.events;
 DROP TABLE IF EXISTS toonflow.event_chapters;
 DROP TABLE IF EXISTS toonflow.episode_renders;
+DROP TABLE IF EXISTS toonflow.distributed_jobs;
 DROP TABLE IF EXISTS toonflow.creative_manuals;
 DROP TABLE IF EXISTS toonflow.character_appearances;
 DROP TABLE IF EXISTS toonflow.assets_storyboards;
@@ -2634,6 +2656,61 @@ ALTER TABLE toonflow.creative_manuals ALTER COLUMN id ADD GENERATED BY DEFAULT A
 
 
 --
+-- Name: distributed_jobs; Type: TABLE; Schema: toonflow; Owner: -
+--
+
+CREATE TABLE toonflow.distributed_jobs (
+    id bigint NOT NULL,
+    message_id uuid DEFAULT gen_random_uuid() NOT NULL,
+    task_id bigint NOT NULL,
+    kind text NOT NULL,
+    trace_id text DEFAULT 'background'::text NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    state text DEFAULT 'queued'::text NOT NULL,
+    priority integer DEFAULT 0 NOT NULL,
+    attempt integer DEFAULT 0 NOT NULL,
+    max_attempts integer DEFAULT 5 NOT NULL,
+    available_at timestamp with time zone DEFAULT now() NOT NULL,
+    published_at timestamp with time zone,
+    lease_owner text,
+    lease_token uuid,
+    lease_until timestamp with time zone,
+    heartbeat_at timestamp with time zone,
+    result jsonb,
+    last_error text,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    publish_owner text,
+    publish_token uuid,
+    publish_until timestamp with time zone,
+    CONSTRAINT distributed_jobs_attempt_valid CHECK (((attempt >= 0) AND (max_attempts > 0) AND (attempt <= max_attempts))),
+    CONSTRAINT distributed_jobs_kind_not_blank CHECK ((btrim(kind) <> ''::text)),
+    CONSTRAINT distributed_jobs_kind_wire_valid CHECK ((((octet_length(kind) >= 1) AND (octet_length(kind) <= 255)) AND (kind ~ '^[A-Za-z0-9_-]+([.][A-Za-z0-9_-]+)*$'::text))),
+    CONSTRAINT distributed_jobs_message_id_not_nil CHECK ((message_id <> '00000000-0000-0000-0000-000000000000'::uuid)),
+    CONSTRAINT distributed_jobs_payload_is_object CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT distributed_jobs_publish_claim_complete CHECK ((((publish_owner IS NULL) AND (publish_token IS NULL) AND (publish_until IS NULL)) OR ((publish_owner IS NOT NULL) AND (publish_token IS NOT NULL) AND (publish_until IS NOT NULL)))),
+    CONSTRAINT distributed_jobs_running_has_lease CHECK (((state <> 'running'::text) OR ((lease_owner IS NOT NULL) AND (lease_token IS NOT NULL) AND (lease_until IS NOT NULL)))),
+    CONSTRAINT distributed_jobs_state_valid CHECK ((state = ANY (ARRAY['queued'::text, 'running'::text, 'retry'::text, 'succeeded'::text, 'failed'::text, 'canceled'::text]))),
+    CONSTRAINT distributed_jobs_trace_wire_valid CHECK (((btrim(trace_id) <> ''::text) AND (octet_length(trace_id) <= 256)))
+);
+
+
+--
+-- Name: distributed_jobs_id_seq; Type: SEQUENCE; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE toonflow.distributed_jobs ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
+    SEQUENCE NAME toonflow.distributed_jobs_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1
+);
+
+
+--
 -- Name: episode_renders; Type: TABLE; Schema: toonflow; Owner: -
 --
 
@@ -2899,8 +2976,34 @@ CREATE TABLE toonflow.storage_cleanup_tasks (
     attempts integer DEFAULT 1 NOT NULL,
     state character varying(16) DEFAULT 'pending'::character varying NOT NULL,
     create_time bigint NOT NULL,
-    update_time bigint NOT NULL
+    update_time bigint NOT NULL,
+    lease_owner text,
+    lease_token uuid,
+    lease_until timestamp with time zone,
+    next_attempt_at timestamp with time zone DEFAULT now() NOT NULL,
+    max_attempts integer DEFAULT 20 NOT NULL,
+    CONSTRAINT storage_cleanup_tasks_attempts_valid CHECK (((attempts >= 0) AND (max_attempts > 0))),
+    CONSTRAINT storage_cleanup_tasks_state_valid CHECK (((state)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying, 'completed'::character varying, 'failed'::character varying])::text[])))
 );
+
+
+--
+-- Name: storage_cleanup_task_id_seq; Type: SEQUENCE; Schema: toonflow; Owner: -
+--
+
+CREATE SEQUENCE toonflow.storage_cleanup_task_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: storage_cleanup_task_id_seq; Type: SEQUENCE OWNED BY; Schema: toonflow; Owner: -
+--
+
+ALTER SEQUENCE toonflow.storage_cleanup_task_id_seq OWNED BY toonflow.storage_cleanup_tasks.id;
 
 
 --
@@ -2948,6 +3051,25 @@ CREATE TABLE toonflow.tasks (
 
 
 --
+-- Name: task_id_seq; Type: SEQUENCE; Schema: toonflow; Owner: -
+--
+
+CREATE SEQUENCE toonflow.task_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: task_id_seq; Type: SEQUENCE OWNED BY; Schema: toonflow; Owner: -
+--
+
+ALTER SEQUENCE toonflow.task_id_seq OWNED BY toonflow.tasks.id;
+
+
+--
 -- Name: video_continuity_frames; Type: TABLE; Schema: toonflow; Owner: -
 --
 
@@ -2957,6 +3079,42 @@ CREATE TABLE toonflow.video_continuity_frames (
     file_path text NOT NULL,
     create_time bigint NOT NULL
 );
+
+
+--
+-- Name: videos; Type: TABLE; Schema: toonflow; Owner: -
+--
+
+CREATE TABLE toonflow.videos (
+    id bigint NOT NULL,
+    file_path text,
+    error_reason text,
+    "time" bigint,
+    state text,
+    script_id bigint,
+    project_id bigint NOT NULL,
+    video_track_id bigint,
+    retry_of_id bigint
+);
+
+
+--
+-- Name: video_id_seq; Type: SEQUENCE; Schema: toonflow; Owner: -
+--
+
+CREATE SEQUENCE toonflow.video_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: video_id_seq; Type: SEQUENCE OWNED BY; Schema: toonflow; Owner: -
+--
+
+ALTER SEQUENCE toonflow.video_id_seq OWNED BY toonflow.videos.id;
 
 
 --
@@ -2979,19 +3137,21 @@ CREATE TABLE toonflow.video_tracks (
 
 
 --
--- Name: videos; Type: TABLE; Schema: toonflow; Owner: -
+-- Name: worker_instances; Type: TABLE; Schema: toonflow; Owner: -
 --
 
-CREATE TABLE toonflow.videos (
-    id bigint NOT NULL,
-    file_path text,
-    error_reason text,
-    "time" bigint,
-    state text,
-    script_id bigint,
-    project_id bigint NOT NULL,
-    video_track_id bigint,
-    retry_of_id bigint
+CREATE TABLE toonflow.worker_instances (
+    instance_id text NOT NULL,
+    service text NOT NULL,
+    status text DEFAULT 'starting'::text NOT NULL,
+    concurrency integer DEFAULT 1 NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    heartbeat_at timestamp with time zone DEFAULT now() NOT NULL,
+    metadata jsonb DEFAULT '{}'::jsonb NOT NULL,
+    CONSTRAINT worker_instances_concurrency_positive CHECK ((concurrency > 0)),
+    CONSTRAINT worker_instances_metadata_is_object CHECK ((jsonb_typeof(metadata) = 'object'::text)),
+    CONSTRAINT worker_instances_service_not_blank CHECK ((btrim(service) <> ''::text)),
+    CONSTRAINT worker_instances_status_valid CHECK ((status = ANY (ARRAY['starting'::text, 'ready'::text, 'draining'::text, 'stopped'::text])))
 );
 
 
@@ -3104,6 +3264,27 @@ ALTER TABLE toonflow.workflow_runs ALTER COLUMN id ADD GENERATED BY DEFAULT AS I
     NO MAXVALUE
     CACHE 1
 );
+
+
+--
+-- Name: storage_cleanup_tasks id; Type: DEFAULT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.storage_cleanup_tasks ALTER COLUMN id SET DEFAULT nextval('toonflow.storage_cleanup_task_id_seq'::regclass);
+
+
+--
+-- Name: tasks id; Type: DEFAULT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.tasks ALTER COLUMN id SET DEFAULT nextval('toonflow.task_id_seq'::regclass);
+
+
+--
+-- Name: videos id; Type: DEFAULT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.videos ALTER COLUMN id SET DEFAULT nextval('toonflow.video_id_seq'::regclass);
 
 
 --
@@ -3438,8 +3619,11 @@ COPY media.assets (id, object_key, content_type, size_bytes, created_at, filenam
 --
 
 COPY public._sqlx_migrations (version, description, installed_on, success, checksum, execution_time) FROM stdin;
-1	initial	2026-08-26 12:26:45.278116+00	t	\\x1758e9f46d8796543e316557eb50160b13cb01fcda7842d9bc8a66188b1bbf3dc5576bf81d8b4f32b82df33701fa0e04	199163101
-2	episode renders	2026-08-26 12:26:45.480533+00	t	\\xd93c42454eeb83f540ef6506bc841c10509942d2619aefac10984f4e62f143b1d12eb5ab71f3e55d931699107b8e0c86	5976760
+1	initial	2026-08-26 14:46:05.179812+00	t	\\x1758e9f46d8796543e316557eb50160b13cb01fcda7842d9bc8a66188b1bbf3dc5576bf81d8b4f32b82df33701fa0e04	207399774
+2	episode renders	2026-08-26 14:46:05.390471+00	t	\\xd93c42454eeb83f540ef6506bc841c10509942d2619aefac10984f4e62f143b1d12eb5ab71f3e55d931699107b8e0c86	5975472
+3	distributed jobs	2026-08-26 14:46:05.398572+00	t	\\x325f852682f391db7a1ff6ae854ce92b1edd81bcfaa1051c447576a4906765ae74b153b83ff09f6c75dfaa2ea7ba0b0c	5870422
+4	distributed job delivery guards	2026-08-26 14:46:05.406551+00	t	\\xa1df809d990275d36e63cd07e742fa3cdc7a66d956096b3cbddb78afe9067591e0854348fed1f1418b3d074e05c057e6	5826351
+5	video id sequence	2026-08-26 14:46:05.41437+00	t	\\x4e53010b4576bfceafc027b363412665bc9c93110310a03bd5e56504b23f82c5aa0a531bede98af9c0e50a329b883833	4116704
 \.
 
 
@@ -3568,16 +3752,16 @@ COPY public.infra_job_log (id, job_id, handler_name, handler_param, execute_inde
 --
 
 COPY public.system_dept (id, name, parent_id, sort, phone, email, status, create_time, update_time, deleted, creator, updater, tenant_id, leader_user_id) FROM stdin;
-100	Rust Toon	0	0	15888888888	admin@rust-toon.local	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	1
-101	深圳总公司	100	1	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	1
-102	长沙分公司	100	2	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-103	研发部门	101	1	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	1
-104	市场部门	101	2	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-105	测试部门	101	3	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-106	财务部门	101	4	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-107	运维部门	101	5	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-108	市场部门	102	1	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
-109	财务部门	102	2	\N	\N	0	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0	\N
+100	Rust Toon	0	0	15888888888	admin@rust-toon.local	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	1
+101	深圳总公司	100	1	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	1
+102	长沙分公司	100	2	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+103	研发部门	101	1	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	1
+104	市场部门	101	2	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+105	测试部门	101	3	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+106	财务部门	101	4	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+107	运维部门	101	5	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+108	市场部门	102	1	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
+109	财务部门	102	2	\N	\N	0	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0	\N
 \.
 
 
@@ -4476,187 +4660,187 @@ COPY public.system_dict_data (id, sort, label, value, dict_type, status, color_t
 --
 
 COPY public.system_dict_type (id, name, type, status, remark, create_time, update_time, deleted, creator, updater, deleted_time) FROM stdin;
-1	用户性别	system_user_sex	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	1	\N
-6	参数类型	infra_config_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin		\N
-7	通知类型	system_notice_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin		\N
-9	操作类型	infra_operate_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	1	\N
-10	系统状态	common_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin		\N
-11	Boolean 是否类型	infra_boolean_string	0	boolean 转是否	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-104	登陆结果	system_login_result	0	登陆结果	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-106	代码生成模板类型	infra_codegen_template_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0		1	\N
-107	定时任务状态	infra_job_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-108	定时任务日志状态	infra_job_log_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-109	用户类型	user_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-110	API 异常数据的处理状态	infra_api_error_log_process_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-111	短信渠道编码	system_sms_channel_code	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-112	短信模板的类型	system_sms_template_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-113	短信发送状态	system_sms_send_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-114	短信接收状态	system_sms_receive_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-116	登陆日志的类型	system_login_type	0	登陆日志的类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-130	支付渠道编码类型	pay_channel_code	0	支付渠道的编码	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-131	支付回调状态	pay_notify_status	0	支付回调状态（包括退款回调）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-132	支付订单状态	pay_order_status	0	支付订单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-134	退款订单状态	pay_refund_status	0	退款订单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-144	代码生成的场景枚举	infra_codegen_scene	0	代码生成的场景枚举	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-145	角色类型	system_role_type	0	角色类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-146	文件存储器	infra_file_storage	0	文件存储器	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-147	OAuth 2.0 授权类型	system_oauth2_grant_type	0	OAuth 2.0 授权类型（模式）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-149	商品 SPU 状态	product_spu_status	0	商品 SPU 状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-150	优惠类型	promotion_discount_type	0	优惠类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-151	优惠劵模板的有限期类型	promotion_coupon_template_validity_type	0	优惠劵模板的有限期类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-152	营销的商品范围	promotion_product_scope	0	营销的商品范围	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-153	优惠劵的状态	promotion_coupon_status	0	优惠劵的状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-154	优惠劵的领取方式	promotion_coupon_take_type	0	优惠劵的领取方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-155	促销活动的状态	promotion_activity_status	0	促销活动的状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-156	营销的条件类型	promotion_condition_type	0	营销的条件类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-157	交易售后状态	trade_after_sale_status	0	交易售后状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-158	交易售后的类型	trade_after_sale_type	0	交易售后的类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-159	交易售后的方式	trade_after_sale_way	0	交易售后的方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-160	终端	terminal	0	终端	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-161	交易订单的类型	trade_order_type	0	交易订单的类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-162	交易订单的状态	trade_order_status	0	交易订单的状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-163	交易订单项的售后状态	trade_order_item_after_sale_status	0	交易订单项的售后状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-164	公众号自动回复的请求关键字匹配模式	mp_auto_reply_request_match	0	公众号自动回复的请求关键字匹配模式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-165	公众号的消息类型	mp_message_type	0	公众号的消息类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-166	邮件发送状态	system_mail_send_status	0	邮件发送状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-167	站内信模版的类型	system_notify_template_type	0	站内信模版的类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-168	代码生成的前端类型	infra_codegen_front_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-170	快递计费方式	trade_delivery_express_charge_mode	0	用于商城交易模块配送管理	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-171	积分业务类型	member_point_biz_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-173	支付通知类型	pay_notify_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-174	会员经验业务类型	member_experience_biz_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-175	交易配送类型	trade_delivery_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-176	分佣模式	brokerage_enabled_condition	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-177	分销关系绑定模式	brokerage_bind_mode	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-178	佣金提现类型	brokerage_withdraw_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-179	佣金记录业务类型	brokerage_record_biz_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-180	佣金记录状态	brokerage_record_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-181	佣金提现状态	brokerage_withdraw_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-182	佣金提现银行	brokerage_bank_name	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-183	砍价记录的状态	promotion_bargain_record_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-184	拼团记录的状态	promotion_combination_record_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-185	回款-回款方式	crm_receivable_return_type	0	回款-回款方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-186	CRM 客户行业	crm_customer_industry	0	CRM 客户所属行业	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-187	客户等级	crm_customer_level	0	CRM 客户等级	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-188	客户来源	crm_customer_source	0	CRM 客户来源	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-600	Banner 位置	promotion_banner_position	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-601	社交类型	system_social_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-604	产品状态	crm_product_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-605	CRM 数据权限的级别	crm_permission_level	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-606	CRM 审批状态	crm_audit_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-607	CRM 产品单位	crm_product_unit	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-608	CRM 跟进方式	crm_follow_up_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-610	转账订单状态	pay_transfer_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-611	ERP 库存明细的业务类型	erp_stock_record_biz_type	0	ERP 库存明细的业务类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-612	ERP 审批状态	erp_audit_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-616	时间间隔	date_interval	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-619	CRM 商机结束状态类型	crm_business_end_status_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-620	AI 模型平台	ai_platform	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-621	AI 绘画状态	ai_image_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-622	AI 音乐状态	ai_music_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-623	AI 音乐生成模式	ai_generate_mode	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-624	写作语气	ai_write_tone	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-625	写作语言	ai_write_language	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-626	写作长度	ai_write_length	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-627	写作格式	ai_write_format	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-628	AI 写作类型	ai_write_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-640	AI 模型类型	ai_model_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1001	IoT 产品设备类型	iot_product_device_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1002	IoT 产品状态	iot_product_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1004	IoT 联网方式	iot_net_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1006	IoT 设备状态	iot_device_state	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1007	IoT 物模型功能类型	iot_thing_model_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1011	IoT 物模型单位	iot_thing_model_unit	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1013	IoT 数据流转目的的类型枚举	iot_data_sink_type_enum	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1014	IoT 场景流转的触发类型枚举	iot_rule_scene_trigger_type_enum	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1015	IoT 设备消息类型枚举	iot_device_message_type_enum	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1016	IoT 规则场景的触发类型枚举	iot_rule_scene_action_type_enum	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-1017	MES 物料消耗记录状态	mes_wm_item_consume_status	0	MES 物料消耗记录状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2001	IoT 告警级别	iot_alert_level	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2002	IoT 告警	iot_alert_receive_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2003	IoT 固件设备范围	iot_ota_task_device_scope	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2004	IoT 固件升级任务状态	iot_ota_task_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2005	IoT 固件升级记录状态	iot_ota_task_record_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2007	AI MCP 客户端名字	ai_mcp_client_name	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2008	IoT 协议类型	iot_protocol_type	0	IoT 设备接入协议类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2009	IoT 序列化类型	iot_serialize_type	0	IoT 设备消息序列化类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2010	IoT Modbus 工作模式	iot_modbus_mode	0	Modbus 设备数据采集模式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2011	IoT Modbus 帧格式	iot_modbus_frame_format	0	Modbus 数据帧协议格式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2012	MES 客户类型	mes_client_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2013	MES 供应商级别	mes_vendor_level	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2014	MES 假期类型	mes_cal_holiday_type	0	MES 日历排班 - 假期类型（HOLIDAY=假期，WORKDAY=工作日）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2015	MES 工具状态	mes_tm_tool_status	0	MES 工具管理 - 工具状态（1=在库，2=领用中，3=维修中，4=报废）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2016	MES 保养维护类型	mes_tm_mainten_type	0	MES 工具管理 - 保养维护类型（1=定期维护，2=按使用次数维护）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2017	MES 设备状态	mes_dv_machinery_status	0	MES 设备管理 - 设备状态（1=运行中，2=停机，3=故障）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2018	MES 检测项类型	mes_indicator_type	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2019	MES 缺陷等级	mes_defect_level	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2020	MES 轮班方式	mes_cal_shift_type	0	MES 日历排班 - 轮班方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2021	MES 倒班方式	mes_cal_shift_method	0	MES 日历排班 - 倒班方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2022	MES 班组类型	mes_cal_calendar_type	0	MES 日历排班 - 班组类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2023	MES 排班计划状态	mes_cal_plan_status	0	MES 日历排班 - 排班计划状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2026	MES 检测种类	mes_qc_type	0	IQC/IPQC/OQC/RQC	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2027	MES 生产工单状态	mes_pro_work_order_status	0	MES 生产管理 - 工单状态（0=草稿，1=已确认，2=已完成，3=已取消）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2028	MES 工单来源类型	mes_pro_work_order_source_type	0	MES 生产管理 - 工单来源类型（1=客户订单，2=库存备货）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2029	MES 工单类型	mes_pro_work_order_type	0	MES 生产管理 - 工单类型（1=自行生产，2=代工，3=采购）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2036	MES 工序关系类型	mes_pro_link_type	0	工艺路线中工序之间的关系类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2037	MES 时间单位	mes_time_unit_type	0	生产时间的计量单位	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2038	MES 生产任务状态	mes_pro_task_status	0	MES 生产管理 - 任务状态（0=草稿，1=进行中，2=暂停，3=已完成，4=已取消）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2039	MES 点检保养项目类型	mes_dv_subject_type	0	MES 设备管理 - 点检保养项目类型（1=设备点检，2=设备保养）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2040	MES 保养记录状态	mes_mainten_record_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	admin	\N
-2041	MES 保养结果	mes_mainten_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	admin	\N
-2042	MES 点检保养周期类型	mes_dv_cycle_type	0	MES 设备管理 - 点检保养周期类型（1=天，2=周，3=月，4=年）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2043	MES 点检保养方案状态	mes_dv_check_plan_status	0	MES 设备管理 - 点检保养方案状态（0=草稿，1=已启用）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2044	MES 点检记录状态	mes_dv_check_record_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	admin	\N
-2045	MES 点检结果	mes_dv_check_result	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	admin	admin	\N
-2046	MES 维修工单状态	mes_dv_repair_status	0	MES 设备管理 - 维修工单状态（10=待维修，20=维修中，30=已完成，40=已验收）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2047	MES 维修结果	mes_dv_repair_result	0	MES 设备管理 - 维修结果（1=修复成功，2=报废）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2049	MES 检测结果	mes_qc_check_result	0	来料检验的最终结果判定	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2050	MES 来源单据类型	mes_qc_source_doc_type	0	IQC 来料检验的来源单据类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2051	MES 安灯处置状态	mes_pro_andon_status	0	MES 生产管理 - 安灯处置状态（0=未处置，1=已处置）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2052	MES 安灯级别	mes_pro_andon_level	0	MES 生产管理 - 安灯级别（1=一级，2=二级，3=三级）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2053	MES 生产报工状态	mes_pro_feedback_status	0	MES 生产管理 - 报工状态（0=草稿，1=审批中，2=待检验，3=已完成，4=已取消）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2054	MES 生产报工类型	mes_pro_feedback_type	0	MES 生产管理 - 报工类型（1=自行报工，2=统一报工）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2055	MES 生产报工途径	mes_pro_feedback_channel	0	MES 生产管理 - 报工途径（PC/APP/PDA）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2056	MES 质检值类型	mes_qc_result_type	0	检验结果明细的值类型：浮点/整数/文本/字典/文件	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2057	MES 退货检验类型	mes_rqc_type	0	MES 退货检验类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2062	MES IPQC 检验类型	mes_ipqc_type	0	IPQC 过程检验的检验类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2066	MES 到货通知单状态	mes_wm_arrival_notice_status	0	MES 到货通知单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2067	MES 采购入库单状态	mes_wm_item_receipt_status	0	MES 采购入库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2068	MES 单据状态	mes_order_status	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2069	MES 领料出库单状态	mes_wm_product_issue_status	0	MES 领料出库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2073	MES 生产退料单状态	mes_wm_return_issue_status	0	MES 生产退料单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2074	MES 生产退料类型	mes_wm_return_issue_type	0	MES 生产退料类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2075	MES 质量状态	mes_wm_quality_status	0	MES 质量状态（待检/合格/不合格）	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2100	MES 产品入库单状态	mes_wm_product_receipt_status	0	MES 产品入库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2102	MES 销售出库单状态	mes_wm_product_sales_status	0	MES 销售出库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2105	MES 杂项入库类型	mes_wm_misc_receipt_type	0	杂项入库类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2106	MES 杂项入库状态	mes_wm_misc_receipt_status	0	杂项入库状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2109	MES 杂项出库类型	mes_wm_misc_issue_type	0	MES 杂项出库类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2110	MES 外协入库单状态	mes_wm_outsource_receipt_status	0	MES 外协入库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2112	MES 外协发料单状态	mes_wm_outsource_issue_status	0	MES 外协发料单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2113	MES 编码规则分段类型	mes_md_auto_code_part_type	0	MES 编码规则分段类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2115	MES 编码规则补齐方式	mes_md_auto_code_padded_method	0	MES 编码规则补齐方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2116	MES 编码规则循环方式	mes_md_auto_code_cycle_method	0	MES 编码规则循环方式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2117	MES 条码格式	mes_wm_barcode_format	0	MES 条码格式	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2118	MES 条码业务类型	mes_wm_barcode_biz_type	0	MES 条码业务类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2121	MES 装箱单状态	mes_wm_package_status	0	MES 装箱单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2122	MES 调拨单状态	mes_wm_transfer_status	0	MES 调拨单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2123	MES 调拨类型	mes_wm_transfer_type	0	MES 调拨类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2124	MES 盘点类型	mes_wm_stock_taking_type	0	MES 盘点类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2125	MES 盘点方案参数类型	mes_wm_stock_taking_plan_param_type	0	MES 盘点方案参数类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2126	MES 盘点任务状态	mes_wm_stock_taking_task_status	0	MES 盘点任务状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2127	MES 盘点任务行状态	mes_wm_stock_taking_task_line_status	0	MES 盘点任务行状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2129	MES 物料产品标识	mes_md_item_or_product	0	物料分类：物料(ITEM) / 产品(PRODUCT)	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2130	MES 供应商退货单状态	mes_wm_return_vendor_status	0	采购退货单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			\N
-2131	MES 发货通知单状态	mes_wm_sales_notice_status	0	MES 发货通知单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2132	MES 杂项出库单状态	mes_wm_misc_issue_status	0	杂项出库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2133	MES 销售退货单状态	mes_wm_return_sales_status	0	MES 销售退货单状态枚举	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2134	MES 缺陷检测项类型	mes_defect_type	0	缺陷模块的检测项类型字典	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2135	MES 上下工状态类型	mes_pro_work_record_type	0	MES 上下工状态类型	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2138	MES 生产入库单状态	mes_wm_product_produce_status	0	MES 生产入库单状态	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	1	1	\N
-2139	菜单类型	system_menu_type	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	migration-0010	migration-0011	\N
-2140	MES 领料单状态	mes_wm_issue_status	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	migration-0010	migration-0011	\N
-2141	数据权限范围	system_data_scope	0	\N	2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0	migration-0010	migration-0011	\N
+1	用户性别	system_user_sex	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	1	\N
+6	参数类型	infra_config_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin		\N
+7	通知类型	system_notice_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin		\N
+9	操作类型	infra_operate_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	1	\N
+10	系统状态	common_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin		\N
+11	Boolean 是否类型	infra_boolean_string	0	boolean 转是否	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+104	登陆结果	system_login_result	0	登陆结果	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+106	代码生成模板类型	infra_codegen_template_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0		1	\N
+107	定时任务状态	infra_job_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+108	定时任务日志状态	infra_job_log_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+109	用户类型	user_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+110	API 异常数据的处理状态	infra_api_error_log_process_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+111	短信渠道编码	system_sms_channel_code	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+112	短信模板的类型	system_sms_template_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+113	短信发送状态	system_sms_send_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+114	短信接收状态	system_sms_receive_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+116	登陆日志的类型	system_login_type	0	登陆日志的类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+130	支付渠道编码类型	pay_channel_code	0	支付渠道的编码	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+131	支付回调状态	pay_notify_status	0	支付回调状态（包括退款回调）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+132	支付订单状态	pay_order_status	0	支付订单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+134	退款订单状态	pay_refund_status	0	退款订单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+144	代码生成的场景枚举	infra_codegen_scene	0	代码生成的场景枚举	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+145	角色类型	system_role_type	0	角色类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+146	文件存储器	infra_file_storage	0	文件存储器	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+147	OAuth 2.0 授权类型	system_oauth2_grant_type	0	OAuth 2.0 授权类型（模式）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+149	商品 SPU 状态	product_spu_status	0	商品 SPU 状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+150	优惠类型	promotion_discount_type	0	优惠类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+151	优惠劵模板的有限期类型	promotion_coupon_template_validity_type	0	优惠劵模板的有限期类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+152	营销的商品范围	promotion_product_scope	0	营销的商品范围	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+153	优惠劵的状态	promotion_coupon_status	0	优惠劵的状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+154	优惠劵的领取方式	promotion_coupon_take_type	0	优惠劵的领取方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+155	促销活动的状态	promotion_activity_status	0	促销活动的状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+156	营销的条件类型	promotion_condition_type	0	营销的条件类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+157	交易售后状态	trade_after_sale_status	0	交易售后状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+158	交易售后的类型	trade_after_sale_type	0	交易售后的类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+159	交易售后的方式	trade_after_sale_way	0	交易售后的方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+160	终端	terminal	0	终端	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+161	交易订单的类型	trade_order_type	0	交易订单的类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+162	交易订单的状态	trade_order_status	0	交易订单的状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+163	交易订单项的售后状态	trade_order_item_after_sale_status	0	交易订单项的售后状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+164	公众号自动回复的请求关键字匹配模式	mp_auto_reply_request_match	0	公众号自动回复的请求关键字匹配模式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+165	公众号的消息类型	mp_message_type	0	公众号的消息类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+166	邮件发送状态	system_mail_send_status	0	邮件发送状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+167	站内信模版的类型	system_notify_template_type	0	站内信模版的类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+168	代码生成的前端类型	infra_codegen_front_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+170	快递计费方式	trade_delivery_express_charge_mode	0	用于商城交易模块配送管理	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+171	积分业务类型	member_point_biz_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+173	支付通知类型	pay_notify_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+174	会员经验业务类型	member_experience_biz_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+175	交易配送类型	trade_delivery_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+176	分佣模式	brokerage_enabled_condition	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+177	分销关系绑定模式	brokerage_bind_mode	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+178	佣金提现类型	brokerage_withdraw_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+179	佣金记录业务类型	brokerage_record_biz_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+180	佣金记录状态	brokerage_record_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+181	佣金提现状态	brokerage_withdraw_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+182	佣金提现银行	brokerage_bank_name	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+183	砍价记录的状态	promotion_bargain_record_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+184	拼团记录的状态	promotion_combination_record_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+185	回款-回款方式	crm_receivable_return_type	0	回款-回款方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+186	CRM 客户行业	crm_customer_industry	0	CRM 客户所属行业	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+187	客户等级	crm_customer_level	0	CRM 客户等级	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+188	客户来源	crm_customer_source	0	CRM 客户来源	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+600	Banner 位置	promotion_banner_position	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+601	社交类型	system_social_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+604	产品状态	crm_product_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+605	CRM 数据权限的级别	crm_permission_level	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+606	CRM 审批状态	crm_audit_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+607	CRM 产品单位	crm_product_unit	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+608	CRM 跟进方式	crm_follow_up_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+610	转账订单状态	pay_transfer_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+611	ERP 库存明细的业务类型	erp_stock_record_biz_type	0	ERP 库存明细的业务类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+612	ERP 审批状态	erp_audit_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+616	时间间隔	date_interval	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+619	CRM 商机结束状态类型	crm_business_end_status_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+620	AI 模型平台	ai_platform	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+621	AI 绘画状态	ai_image_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+622	AI 音乐状态	ai_music_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+623	AI 音乐生成模式	ai_generate_mode	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+624	写作语气	ai_write_tone	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+625	写作语言	ai_write_language	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+626	写作长度	ai_write_length	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+627	写作格式	ai_write_format	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+628	AI 写作类型	ai_write_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+640	AI 模型类型	ai_model_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1001	IoT 产品设备类型	iot_product_device_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1002	IoT 产品状态	iot_product_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1004	IoT 联网方式	iot_net_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1006	IoT 设备状态	iot_device_state	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1007	IoT 物模型功能类型	iot_thing_model_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1011	IoT 物模型单位	iot_thing_model_unit	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1013	IoT 数据流转目的的类型枚举	iot_data_sink_type_enum	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1014	IoT 场景流转的触发类型枚举	iot_rule_scene_trigger_type_enum	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1015	IoT 设备消息类型枚举	iot_device_message_type_enum	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1016	IoT 规则场景的触发类型枚举	iot_rule_scene_action_type_enum	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+1017	MES 物料消耗记录状态	mes_wm_item_consume_status	0	MES 物料消耗记录状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2001	IoT 告警级别	iot_alert_level	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2002	IoT 告警	iot_alert_receive_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2003	IoT 固件设备范围	iot_ota_task_device_scope	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2004	IoT 固件升级任务状态	iot_ota_task_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2005	IoT 固件升级记录状态	iot_ota_task_record_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2007	AI MCP 客户端名字	ai_mcp_client_name	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2008	IoT 协议类型	iot_protocol_type	0	IoT 设备接入协议类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2009	IoT 序列化类型	iot_serialize_type	0	IoT 设备消息序列化类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2010	IoT Modbus 工作模式	iot_modbus_mode	0	Modbus 设备数据采集模式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2011	IoT Modbus 帧格式	iot_modbus_frame_format	0	Modbus 数据帧协议格式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2012	MES 客户类型	mes_client_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2013	MES 供应商级别	mes_vendor_level	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2014	MES 假期类型	mes_cal_holiday_type	0	MES 日历排班 - 假期类型（HOLIDAY=假期，WORKDAY=工作日）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2015	MES 工具状态	mes_tm_tool_status	0	MES 工具管理 - 工具状态（1=在库，2=领用中，3=维修中，4=报废）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2016	MES 保养维护类型	mes_tm_mainten_type	0	MES 工具管理 - 保养维护类型（1=定期维护，2=按使用次数维护）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2017	MES 设备状态	mes_dv_machinery_status	0	MES 设备管理 - 设备状态（1=运行中，2=停机，3=故障）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2018	MES 检测项类型	mes_indicator_type	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2019	MES 缺陷等级	mes_defect_level	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2020	MES 轮班方式	mes_cal_shift_type	0	MES 日历排班 - 轮班方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2021	MES 倒班方式	mes_cal_shift_method	0	MES 日历排班 - 倒班方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2022	MES 班组类型	mes_cal_calendar_type	0	MES 日历排班 - 班组类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2023	MES 排班计划状态	mes_cal_plan_status	0	MES 日历排班 - 排班计划状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2026	MES 检测种类	mes_qc_type	0	IQC/IPQC/OQC/RQC	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2027	MES 生产工单状态	mes_pro_work_order_status	0	MES 生产管理 - 工单状态（0=草稿，1=已确认，2=已完成，3=已取消）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2028	MES 工单来源类型	mes_pro_work_order_source_type	0	MES 生产管理 - 工单来源类型（1=客户订单，2=库存备货）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2029	MES 工单类型	mes_pro_work_order_type	0	MES 生产管理 - 工单类型（1=自行生产，2=代工，3=采购）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2036	MES 工序关系类型	mes_pro_link_type	0	工艺路线中工序之间的关系类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2037	MES 时间单位	mes_time_unit_type	0	生产时间的计量单位	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2038	MES 生产任务状态	mes_pro_task_status	0	MES 生产管理 - 任务状态（0=草稿，1=进行中，2=暂停，3=已完成，4=已取消）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2039	MES 点检保养项目类型	mes_dv_subject_type	0	MES 设备管理 - 点检保养项目类型（1=设备点检，2=设备保养）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2040	MES 保养记录状态	mes_mainten_record_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	admin	\N
+2041	MES 保养结果	mes_mainten_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	admin	\N
+2042	MES 点检保养周期类型	mes_dv_cycle_type	0	MES 设备管理 - 点检保养周期类型（1=天，2=周，3=月，4=年）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2043	MES 点检保养方案状态	mes_dv_check_plan_status	0	MES 设备管理 - 点检保养方案状态（0=草稿，1=已启用）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2044	MES 点检记录状态	mes_dv_check_record_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	admin	\N
+2045	MES 点检结果	mes_dv_check_result	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	admin	admin	\N
+2046	MES 维修工单状态	mes_dv_repair_status	0	MES 设备管理 - 维修工单状态（10=待维修，20=维修中，30=已完成，40=已验收）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2047	MES 维修结果	mes_dv_repair_result	0	MES 设备管理 - 维修结果（1=修复成功，2=报废）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2049	MES 检测结果	mes_qc_check_result	0	来料检验的最终结果判定	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2050	MES 来源单据类型	mes_qc_source_doc_type	0	IQC 来料检验的来源单据类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2051	MES 安灯处置状态	mes_pro_andon_status	0	MES 生产管理 - 安灯处置状态（0=未处置，1=已处置）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2052	MES 安灯级别	mes_pro_andon_level	0	MES 生产管理 - 安灯级别（1=一级，2=二级，3=三级）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2053	MES 生产报工状态	mes_pro_feedback_status	0	MES 生产管理 - 报工状态（0=草稿，1=审批中，2=待检验，3=已完成，4=已取消）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2054	MES 生产报工类型	mes_pro_feedback_type	0	MES 生产管理 - 报工类型（1=自行报工，2=统一报工）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2055	MES 生产报工途径	mes_pro_feedback_channel	0	MES 生产管理 - 报工途径（PC/APP/PDA）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2056	MES 质检值类型	mes_qc_result_type	0	检验结果明细的值类型：浮点/整数/文本/字典/文件	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2057	MES 退货检验类型	mes_rqc_type	0	MES 退货检验类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2062	MES IPQC 检验类型	mes_ipqc_type	0	IPQC 过程检验的检验类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2066	MES 到货通知单状态	mes_wm_arrival_notice_status	0	MES 到货通知单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2067	MES 采购入库单状态	mes_wm_item_receipt_status	0	MES 采购入库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2068	MES 单据状态	mes_order_status	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2069	MES 领料出库单状态	mes_wm_product_issue_status	0	MES 领料出库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2073	MES 生产退料单状态	mes_wm_return_issue_status	0	MES 生产退料单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2074	MES 生产退料类型	mes_wm_return_issue_type	0	MES 生产退料类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2075	MES 质量状态	mes_wm_quality_status	0	MES 质量状态（待检/合格/不合格）	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2100	MES 产品入库单状态	mes_wm_product_receipt_status	0	MES 产品入库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2102	MES 销售出库单状态	mes_wm_product_sales_status	0	MES 销售出库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2105	MES 杂项入库类型	mes_wm_misc_receipt_type	0	杂项入库类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2106	MES 杂项入库状态	mes_wm_misc_receipt_status	0	杂项入库状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2109	MES 杂项出库类型	mes_wm_misc_issue_type	0	MES 杂项出库类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2110	MES 外协入库单状态	mes_wm_outsource_receipt_status	0	MES 外协入库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2112	MES 外协发料单状态	mes_wm_outsource_issue_status	0	MES 外协发料单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2113	MES 编码规则分段类型	mes_md_auto_code_part_type	0	MES 编码规则分段类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2115	MES 编码规则补齐方式	mes_md_auto_code_padded_method	0	MES 编码规则补齐方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2116	MES 编码规则循环方式	mes_md_auto_code_cycle_method	0	MES 编码规则循环方式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2117	MES 条码格式	mes_wm_barcode_format	0	MES 条码格式	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2118	MES 条码业务类型	mes_wm_barcode_biz_type	0	MES 条码业务类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2121	MES 装箱单状态	mes_wm_package_status	0	MES 装箱单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2122	MES 调拨单状态	mes_wm_transfer_status	0	MES 调拨单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2123	MES 调拨类型	mes_wm_transfer_type	0	MES 调拨类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2124	MES 盘点类型	mes_wm_stock_taking_type	0	MES 盘点类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2125	MES 盘点方案参数类型	mes_wm_stock_taking_plan_param_type	0	MES 盘点方案参数类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2126	MES 盘点任务状态	mes_wm_stock_taking_task_status	0	MES 盘点任务状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2127	MES 盘点任务行状态	mes_wm_stock_taking_task_line_status	0	MES 盘点任务行状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2129	MES 物料产品标识	mes_md_item_or_product	0	物料分类：物料(ITEM) / 产品(PRODUCT)	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2130	MES 供应商退货单状态	mes_wm_return_vendor_status	0	采购退货单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			\N
+2131	MES 发货通知单状态	mes_wm_sales_notice_status	0	MES 发货通知单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2132	MES 杂项出库单状态	mes_wm_misc_issue_status	0	杂项出库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2133	MES 销售退货单状态	mes_wm_return_sales_status	0	MES 销售退货单状态枚举	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2134	MES 缺陷检测项类型	mes_defect_type	0	缺陷模块的检测项类型字典	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2135	MES 上下工状态类型	mes_pro_work_record_type	0	MES 上下工状态类型	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2138	MES 生产入库单状态	mes_wm_product_produce_status	0	MES 生产入库单状态	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	1	1	\N
+2139	菜单类型	system_menu_type	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	migration-0010	migration-0011	\N
+2140	MES 领料单状态	mes_wm_issue_status	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	migration-0010	migration-0011	\N
+2141	数据权限范围	system_data_scope	0	\N	2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0	migration-0010	migration-0011	\N
 \.
 
 
@@ -4979,19 +5163,19 @@ COPY public.system_menu (id, name, permission, type, sort, parent_id, path, icon
 1094	短信渠道		2	6	30241	/system/sms-channel	fa:stack-exchange	system/sms/channel/index	SystemSmsChannel	0	t	t	t		1	2021-04-01 11:07:15+00	2026-07-17 01:35:39.386526+00	0	\N
 1100	短信模板		2	7	30241	/system/sms-template	ep:connection	system/sms/template/index	SystemSmsTemplate	0	t	t	t		1	2021-04-01 17:35:17+00	2026-07-17 01:35:39.386526+00	0	\N
 1107	短信日志		2	8	30241	/system/sms-log	fa:edit	system/sms/log/index	SystemSmsLog	0	t	t	t		1	2021-04-11 08:37:05+00	2026-07-17 01:35:39.386526+00	0	\N
-30101	模型查询	ai:model:query	3	1	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30102	模型创建	ai:model:create	3	2	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30103	模型更新	ai:model:update	3	3	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30104	模型删除	ai:model:delete	3	4	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30111	知识库创建	ai:knowledge:create	3	1	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30112	知识库更新	ai:knowledge:update	3	2	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30113	知识库删除	ai:knowledge:delete	3	3	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30121	角色创建	ai:chat-role:create	3	1	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30122	角色更新	ai:chat-role:update	3	2	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30123	角色删除	ai:chat-role:delete	3	3	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30131	工具创建	ai:tool:create	3	1	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30132	工具更新	ai:tool:update	3	2	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
-30133	工具删除	ai:tool:delete	3	3	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 12:26:45.278116+00	1	\N
+30101	模型查询	ai:model:query	3	1	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30102	模型创建	ai:model:create	3	2	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30103	模型更新	ai:model:update	3	3	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30104	模型删除	ai:model:delete	3	4	30006					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30111	知识库创建	ai:knowledge:create	3	1	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30112	知识库更新	ai:knowledge:update	3	2	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30113	知识库删除	ai:knowledge:delete	3	3	30005					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30121	角色创建	ai:chat-role:create	3	1	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30122	角色更新	ai:chat-role:update	3	2	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30123	角色删除	ai:chat-role:delete	3	3	30007					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30131	工具创建	ai:tool:create	3	1	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30132	工具更新	ai:tool:update	3	2	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
+30133	工具删除	ai:tool:delete	3	3	30008					0	t	t	t	system	system	2026-07-21 07:57:05.546396+00	2026-08-26 14:46:05.179812+00	1	\N
 \.
 
 
@@ -5080,10 +5264,10 @@ COPY public.system_operate_log (id, trace_id, user_id, user_type, type, sub_type
 --
 
 COPY public.system_post (id, code, name, sort, status, remark, create_time, update_time, deleted, creator, updater, tenant_id) FROM stdin;
-1	chairman	董事长	1	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0
-2	se	项目经理	2	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0
-3	hr	人力资源	3	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0
-4	user	普通员工	4	0		2026-08-26 12:26:45.278116+00	2026-08-26 12:26:45.278116+00	0			0
+1	chairman	董事长	1	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0
+2	se	项目经理	2	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0
+3	hr	人力资源	3	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0
+4	user	普通员工	4	0		2026-08-26 14:46:05.179812+00	2026-08-26 14:46:05.179812+00	0			0
 \.
 
 
@@ -5211,8 +5395,8 @@ COPY public.system_tenant_package (id, name, status, remark, menu_ids, creator, 
 --
 
 COPY public.system_user_post (id, user_id, post_id, creator, create_time, updater, update_time, deleted, tenant_id) FROM stdin;
-1	1	1	migration-0009	2026-08-26 12:26:45.278116	migration-0009	2026-08-26 12:26:45.278116	0	1
-2	1	2	migration-0009	2026-08-26 12:26:45.278116	migration-0009	2026-08-26 12:26:45.278116	0	1
+1	1	1	migration-0009	2026-08-26 14:46:05.179812	migration-0009	2026-08-26 14:46:05.179812	0	1
+2	1	2	migration-0009	2026-08-26 14:46:05.179812	migration-0009	2026-08-26 14:46:05.179812	0	1
 \.
 
 
@@ -5456,6 +5640,14 @@ COPY toonflow.creative_manuals (id, kind, name, path, images, data, create_time,
 
 
 --
+-- Data for Name: distributed_jobs; Type: TABLE DATA; Schema: toonflow; Owner: -
+--
+
+COPY toonflow.distributed_jobs (id, message_id, task_id, kind, trace_id, payload, state, priority, attempt, max_attempts, available_at, published_at, lease_owner, lease_token, lease_until, heartbeat_at, result, last_error, completed_at, created_at, updated_at, publish_owner, publish_token, publish_until) FROM stdin;
+\.
+
+
+--
 -- Data for Name: episode_renders; Type: TABLE DATA; Schema: toonflow; Owner: -
 --
 
@@ -5625,7 +5817,7 @@ e23f717fa2c4e64264862da5	5b3aeeafe3dbcd0c29478ea5291484da	production_execution_g
 -- Data for Name: storage_cleanup_tasks; Type: TABLE DATA; Schema: toonflow; Owner: -
 --
 
-COPY toonflow.storage_cleanup_tasks (id, object_path, resource_type, resource_id, error_reason, attempts, state, create_time, update_time) FROM stdin;
+COPY toonflow.storage_cleanup_tasks (id, object_path, resource_type, resource_id, error_reason, attempts, state, create_time, update_time, lease_owner, lease_token, lease_until, next_attempt_at, max_attempts) FROM stdin;
 \.
 
 
@@ -5666,6 +5858,14 @@ COPY toonflow.video_tracks (id, video_id, project_id, script_id, state, reason, 
 --
 
 COPY toonflow.videos (id, file_path, error_reason, "time", state, script_id, project_id, video_track_id, retry_of_id) FROM stdin;
+\.
+
+
+--
+-- Data for Name: worker_instances; Type: TABLE DATA; Schema: toonflow; Owner: -
+--
+
+COPY toonflow.worker_instances (instance_id, service, status, concurrency, started_at, heartbeat_at, metadata) FROM stdin;
 \.
 
 
@@ -5960,6 +6160,13 @@ SELECT pg_catalog.setval('toonflow.creative_manuals_id_seq', 23, true);
 
 
 --
+-- Name: distributed_jobs_id_seq; Type: SEQUENCE SET; Schema: toonflow; Owner: -
+--
+
+SELECT pg_catalog.setval('toonflow.distributed_jobs_id_seq', 1, false);
+
+
+--
 -- Name: episode_renders_id_seq; Type: SEQUENCE SET; Schema: toonflow; Owner: -
 --
 
@@ -5978,6 +6185,27 @@ SELECT pg_catalog.setval('toonflow.event_chapters_id_seq', 1, false);
 --
 
 SELECT pg_catalog.setval('toonflow.prompts_id_seq', 720004, true);
+
+
+--
+-- Name: storage_cleanup_task_id_seq; Type: SEQUENCE SET; Schema: toonflow; Owner: -
+--
+
+SELECT pg_catalog.setval('toonflow.storage_cleanup_task_id_seq', 1, false);
+
+
+--
+-- Name: task_id_seq; Type: SEQUENCE SET; Schema: toonflow; Owner: -
+--
+
+SELECT pg_catalog.setval('toonflow.task_id_seq', 1, false);
+
+
+--
+-- Name: video_id_seq; Type: SEQUENCE SET; Schema: toonflow; Owner: -
+--
+
+SELECT pg_catalog.setval('toonflow.video_id_seq', 1, false);
 
 
 --
@@ -6706,6 +6934,30 @@ ALTER TABLE ONLY toonflow.creative_manuals
 
 
 --
+-- Name: distributed_jobs distributed_jobs_message_unique; Type: CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.distributed_jobs
+    ADD CONSTRAINT distributed_jobs_message_unique UNIQUE (message_id);
+
+
+--
+-- Name: distributed_jobs distributed_jobs_pkey; Type: CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.distributed_jobs
+    ADD CONSTRAINT distributed_jobs_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: distributed_jobs distributed_jobs_task_unique; Type: CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.distributed_jobs
+    ADD CONSTRAINT distributed_jobs_task_unique UNIQUE (task_id);
+
+
+--
 -- Name: episode_renders episode_renders_export_task_unique; Type: CONSTRAINT; Schema: toonflow; Owner: -
 --
 
@@ -6879,6 +7131,14 @@ ALTER TABLE ONLY toonflow.video_tracks
 
 ALTER TABLE ONLY toonflow.videos
     ADD CONSTRAINT videos_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: worker_instances worker_instances_pkey; Type: CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.worker_instances
+    ADD CONSTRAINT worker_instances_pkey PRIMARY KEY (instance_id);
 
 
 --
@@ -7279,6 +7539,34 @@ CREATE INDEX idx_scenes_episode ON toon.scenes USING btree (episode_id);
 
 
 --
+-- Name: idx_distributed_jobs_dispatch; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_distributed_jobs_dispatch ON toonflow.distributed_jobs USING btree (priority DESC, available_at, id) WHERE ((state = ANY (ARRAY['queued'::text, 'retry'::text])) AND (published_at IS NULL));
+
+
+--
+-- Name: idx_distributed_jobs_dispatch_recovery; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_distributed_jobs_dispatch_recovery ON toonflow.distributed_jobs USING btree (available_at, published_at, publish_until, id) WHERE (state = ANY (ARRAY['queued'::text, 'retry'::text]));
+
+
+--
+-- Name: idx_distributed_jobs_expired_lease; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_distributed_jobs_expired_lease ON toonflow.distributed_jobs USING btree (lease_until, id) WHERE (state = 'running'::text);
+
+
+--
+-- Name: idx_distributed_jobs_task_state; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_distributed_jobs_task_state ON toonflow.distributed_jobs USING btree (task_id, state);
+
+
+--
 -- Name: idx_skill_attributions_agent; Type: INDEX; Schema: toonflow; Owner: -
 --
 
@@ -7286,10 +7574,24 @@ CREATE INDEX idx_skill_attributions_agent ON toonflow.skill_attributions USING b
 
 
 --
+-- Name: idx_storage_cleanup_tasks_claim; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_storage_cleanup_tasks_claim ON toonflow.storage_cleanup_tasks USING btree (state, lease_until, update_time) WHERE ((state)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]));
+
+
+--
 -- Name: idx_storage_cleanup_tasks_pending; Type: INDEX; Schema: toonflow; Owner: -
 --
 
 CREATE INDEX idx_storage_cleanup_tasks_pending ON toonflow.storage_cleanup_tasks USING btree (state, update_time);
+
+
+--
+-- Name: idx_storage_cleanup_tasks_retry_due; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_storage_cleanup_tasks_retry_due ON toonflow.storage_cleanup_tasks USING btree (next_attempt_at, lease_until, id) WHERE ((state)::text = ANY ((ARRAY['pending'::character varying, 'running'::character varying])::text[]));
 
 
 --
@@ -7510,6 +7812,13 @@ CREATE INDEX idx_video_continuity_frames_project ON toonflow.video_continuity_fr
 
 
 --
+-- Name: idx_worker_instances_service_heartbeat; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE INDEX idx_worker_instances_service_heartbeat ON toonflow.worker_instances USING btree (service, heartbeat_at DESC);
+
+
+--
 -- Name: uq_toonflow_active_workflow_definition; Type: INDEX; Schema: toonflow; Owner: -
 --
 
@@ -7556,6 +7865,13 @@ CREATE UNIQUE INDEX uq_toonflow_scripts_id_project_id ON toonflow.scripts USING 
 --
 
 CREATE UNIQUE INDEX uq_toonflow_scripts_project_name ON toonflow.scripts USING btree (project_id, name);
+
+
+--
+-- Name: uq_videos_id_project_id; Type: INDEX; Schema: toonflow; Owner: -
+--
+
+CREATE UNIQUE INDEX uq_videos_id_project_id ON toonflow.videos USING btree (id, project_id);
 
 
 --
@@ -7838,6 +8154,14 @@ ALTER TABLE ONLY toonflow.character_appearances
 
 
 --
+-- Name: distributed_jobs distributed_jobs_task_fk; Type: FK CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.distributed_jobs
+    ADD CONSTRAINT distributed_jobs_task_fk FOREIGN KEY (task_id) REFERENCES toonflow.tasks(id) ON DELETE CASCADE;
+
+
+--
 -- Name: episode_renders episode_renders_export_task_fk; Type: FK CONSTRAINT; Schema: toonflow; Owner: -
 --
 
@@ -8022,6 +8346,14 @@ ALTER TABLE ONLY toonflow.tasks
 
 
 --
+-- Name: video_continuity_frames video_continuity_frames_video_project_fk; Type: FK CONSTRAINT; Schema: toonflow; Owner: -
+--
+
+ALTER TABLE ONLY toonflow.video_continuity_frames
+    ADD CONSTRAINT video_continuity_frames_video_project_fk FOREIGN KEY (previous_video_id, project_id) REFERENCES toonflow.videos(id, project_id) ON DELETE CASCADE;
+
+
+--
 -- Name: video_tracks video_tracks_project_id_fkey; Type: FK CONSTRAINT; Schema: toonflow; Owner: -
 --
 
@@ -8137,5 +8469,5 @@ ALTER TABLE ONLY toonflow.workflow_runs
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Wi5MVKebqYwSJIR6f3wdvYIdtfiB14bMdXaiPp1zuus0znEnFPbuSvLtrlSD15A
+\unrestrict atOz0OTVSlFY1pkIMFlMr3y5kGbkMSUgcGq6KO25CX0EGXVXB6at5dV65eaHR8S
 

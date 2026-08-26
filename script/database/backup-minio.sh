@@ -8,6 +8,7 @@ minio_secret_key="${MINIO_SECRET_KEY:-}"
 minio_bucket="${MINIO_BUCKET:-rust-toon}"
 backup_dir="${MINIO_BACKUP_DIR:-/var/backups/rust-toon/minio}"
 retention_days="${BACKUP_RETENTION_DAYS:-14}"
+backup_set_id="${BACKUP_SET_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
 usage() {
   echo "Usage: MINIO_ACCESS_KEY=... MINIO_SECRET_KEY=... $0 [--output-dir DIR] [--retention-days DAYS] [--bucket NAME]"
@@ -47,6 +48,10 @@ if [[ ! "$retention_days" =~ ^[0-9]+$ ]] || ((retention_days < 1)); then
   echo "BACKUP_RETENTION_DAYS must be a positive integer" >&2
   exit 1
 fi
+if [[ ! "$backup_set_id" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "BACKUP_SET_ID contains unsupported characters" >&2
+  exit 1
+fi
 case "$backup_dir" in
   ""|/|/var|/var/backups)
     echo "Refusing unsafe backup directory: $backup_dir" >&2
@@ -69,11 +74,12 @@ command -v sha256sum >/dev/null || { echo "sha256sum is required" >&2; exit 1; }
 mkdir -p "$backup_dir"
 chmod 700 "$backup_dir"
 
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-final_path="$backup_dir/rust-toon-minio-$timestamp"
-publish_lock="$backup_dir/.rust-toon-minio-$timestamp.lock"
+final_path="$backup_dir/rust-toon-minio-$backup_set_id"
+publish_lock="$backup_dir/.rust-toon-minio-$backup_set_id.lock"
+created_at="$(date -u +%Y%m%dT%H%M%SZ)"
 temporary_path=""
 mc_config_dir=""
+owns_publish_lock=false
 
 cleanup() {
   if [[ -n "$temporary_path" ]]; then
@@ -82,20 +88,23 @@ cleanup() {
   if [[ -n "$mc_config_dir" ]]; then
     rm -rf -- "$mc_config_dir"
   fi
-  rmdir -- "$publish_lock" >/dev/null 2>&1 || true
+  if [[ "$owns_publish_lock" == "true" ]]; then
+    rmdir -- "$publish_lock" >/dev/null 2>&1 || true
+  fi
 }
 trap cleanup EXIT
 
 if ! mkdir -- "$publish_lock" 2>/dev/null; then
-  echo "A MinIO backup is already being published for timestamp $timestamp" >&2
+  echo "A MinIO backup is already being published for backup set $backup_set_id" >&2
   exit 1
 fi
+owns_publish_lock=true
 if [[ -e "$final_path" || -L "$final_path" ]]; then
   echo "Refusing to overwrite existing MinIO backup: $final_path" >&2
   exit 1
 fi
 
-temporary_path="$(mktemp -d "$backup_dir/.rust-toon-minio-$timestamp.XXXXXX")"
+temporary_path="$(mktemp -d "$backup_dir/.rust-toon-minio-$backup_set_id.XXXXXX")"
 mc_config_dir="$(mktemp -d)"
 
 MC_CONFIG_DIR="$mc_config_dir" mc alias set rust-toon-source \
@@ -105,8 +114,8 @@ mkdir -p "$temporary_path/objects"
 MC_CONFIG_DIR="$mc_config_dir" mc mirror --quiet --preserve \
   "rust-toon-source/$minio_bucket" "$temporary_path/objects" >/dev/null
 
-jq -cn --arg bucket "$minio_bucket" --arg created_at "$timestamp" \
-  '{formatVersion: 1, bucket: $bucket, createdAt: $created_at}' \
+jq -cn --arg bucket "$minio_bucket" --arg created_at "$created_at" --arg set_id "$backup_set_id" \
+  '{formatVersion: 1, bucket: $bucket, createdAt: $created_at, setId: $set_id}' \
   > "$temporary_path/manifest.json"
 (
   cd "$temporary_path"

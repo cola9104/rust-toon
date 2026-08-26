@@ -1,15 +1,15 @@
-//! Message queue framework extension point.
+//! Durable job messaging primitives backed by NATS JetStream.
 //!
-//! This crate will own event naming, publisher/subscriber traits, retry
-//! policies, and NATS/Kafka adapters.
+//! PostgreSQL remains the source of truth for job state. This crate transports
+//! versioned job references with at-least-once delivery semantics; consumers
+//! must therefore make their terminal database transitions idempotent.
 
-use serde::Serialize;
+mod broker;
+mod config;
+mod envelope;
+mod error;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct DomainEvent<T>
-where
-    T: Serialize,
-{
-    pub topic: String,
-    pub payload: T,
-}
+pub use broker::{Broker, PublishReceipt};
+pub use config::NatsConfig;
+pub use envelope::{JOB_ENVELOPE_VERSION, JobEnvelope};
+pub use error::{MqError, Result};

@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1.7
+
+FROM rust:bookworm AS builder
+
+WORKDIR /workspace
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/workspace/target \
+    cargo build --locked --release \
+      -p rust-toon-gateway \
+      -p rust-toon-worker && \
+    install -D -m 0755 target/release/rust-toon-gateway \
+      /artifacts/rust-toon-gateway && \
+    install -D -m 0755 target/release/rust-toon-worker \
+      /artifacts/rust-toon-worker
+
+FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y ca-certificates curl ffmpeg && \
+    rm -rf /var/lib/apt/lists/* && \
+    useradd --system --uid 10001 --create-home --home-dir /var/lib/rust-toon rust-toon
+
+COPY --from=builder /artifacts/rust-toon-gateway /usr/local/bin/rust-toon-gateway
+COPY --from=builder /artifacts/rust-toon-worker /usr/local/bin/rust-toon-worker
+
+USER rust-toon
+WORKDIR /var/lib/rust-toon
+
+EXPOSE 8080 8081
