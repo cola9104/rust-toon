@@ -1,8 +1,10 @@
+import type AgentChat from '../AgentChat.vue';
 import type { ProductionWorkflowDefinition } from '../production-workflow';
+import type ProductionFlowCanvas from '../ProductionFlowCanvas.vue';
 
 import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
 
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { downloadFileFromBlob } from '@vben/utils';
@@ -66,7 +68,6 @@ import {
 } from '#/api/toonflow';
 
 import { assetFileUrl } from '../../assets/asset-types';
-import AgentChat from '../AgentChat.vue';
 import { defaultImageFlowEdges, upstreamNodeIds } from '../image-flow-graph';
 import { parseNovelText } from '../novel-import';
 import {
@@ -75,14 +76,14 @@ import {
   formatEventDisplay,
   renderMarkdown,
 } from '../production-content';
+import { requestProductionScriptSwitch } from '../production-script-switch';
 import { normalizeProductionWorkflow } from '../production-workflow';
 import { storyboardsForTrack as findStoryboardsForTrack } from '../storyboard-track-groups';
 import { defaultVideoGenerationMode, videoFrameItems } from '../video-generation-mode';
-import ProductionFlowCanvas from '../ProductionFlowCanvas.vue';
-import NovelPanel from './NovelPanel.vue';
-import ProductionPanel from './ProductionPanel.vue';
-import ScriptChatPanel from './ScriptChatPanel.vue';
-import ScriptLibraryPanel from './ScriptLibraryPanel.vue';
+import {
+  projectDetailPanelComponents,
+  projectDetailStages,
+} from './project-detail-panels';
 
 export function useProjectDetail() {
 const route = useRoute();
@@ -90,19 +91,8 @@ const router = useRouter();
 const projectId = computed(() => Number(route.params.id));
 
 const activeTab = ref('novel');
-const stages = [
-  { key: 'novel', label: '原文', hint: '导入与事件提取', icon: '文' },
-  { key: 'script-agent', label: '剧本创作', hint: '与编剧 Agent 协作', icon: '写' },
-  { key: 'script', label: '剧本与资产', hint: '管理剧本和角色', icon: '库' },
-  { key: 'production', label: '分镜制作', hint: '画布与视频工作台', icon: '制' },
-];
-const panelComponents: Record<string, ReturnType<typeof markRaw>> = {
-  novel: markRaw(NovelPanel),
-  production: markRaw(ProductionPanel),
-  script: markRaw(ScriptLibraryPanel),
-  'script-agent': markRaw(ScriptChatPanel),
-};
-const activePanelComponent = computed(() => panelComponents[activeTab.value] || panelComponents.novel);
+const stages = projectDetailStages;
+const activePanelComponent = computed(() => projectDetailPanelComponents[activeTab.value] || projectDetailPanelComponents.novel);
 const loading = ref(false);
 const project = ref<ToonflowApi.Project>();
 const imageQuality = computed(() =>
@@ -601,7 +591,7 @@ async function generateDerivedAsset(asset: ToonflowApi.Asset) {
 }
 
 const positionalVideoModes = new Set(['endFrameOptional', 'singleImage', 'startEndRequired', 'startFrameOptional']);
-const explicitFrameRoles = new Set(['first', 'last', 'first_frame', 'last_frame']);
+const explicitFrameRoles = new Set(['first', 'first_frame', 'last', 'last_frame']);
 
 function storyboardsForTrack(track: any) {
   return findStoryboardsForTrack(storyboards.value, track?.id);
@@ -726,22 +716,30 @@ async function resetProductionAgent() {
   window.setTimeout(() => productionAgentChatRef.value?.connect(), 200);
   message.success('当前剧本的分镜制作 Agent 已重新开始');
 }
-function changeProductionScript(value: unknown) {
+function changeProductionScript(
+  value: unknown,
+  onChanged?: (scriptChanged: boolean) => void,
+) {
   const scriptId = Number(value);
   if (!Number.isFinite(scriptId)) return;
-  const running = productionChatMessages.value.some((item: any) =>
-    item.status === 'pending' || item.status === 'streaming',
-  );
-  if (!running) {
-    selectedScriptId.value = scriptId;
-    return;
-  }
-  Modal.confirm({
-    title: 'Agent 正在执行',
-    content: '切换剧本不会停止当前 Agent，但当前画布将切换到另一份工作区。确认继续吗？',
-    okText: '确认切换',
-    cancelText: '留在当前剧本',
-    onOk: () => { selectedScriptId.value = scriptId; },
+  requestProductionScriptSwitch({
+    confirm: (commit) => {
+      Modal.confirm({
+        title: 'Agent 正在执行',
+        content:
+          '切换剧本不会停止当前 Agent，但当前画布将切换到另一份工作区。确认继续吗？',
+        okText: '确认切换',
+        cancelText: '留在当前剧本',
+        onOk: commit,
+      });
+    },
+    getCurrentScriptId: () => selectedScriptId.value,
+    messages: productionChatMessages.value,
+    onCommit: (targetScriptId, scriptChanged) => {
+      selectedScriptId.value = targetScriptId;
+      onChanged?.(scriptChanged);
+    },
+    targetScriptId: scriptId,
   });
 }
 async function clearProductionAgentMemory(memoryType: 'all' | 'message' | 'summary') {
@@ -1645,7 +1643,14 @@ async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
 async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const mode=videoModeForTrack(track);const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode,resolution:'1080p',audio:true,uploadData:videoUploadData(track,mode)});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
-async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}，完成后可到任务中心预览或下载`)}
+async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}，完成后会自动归档到项目“剧集成果”`)}
+
+function openProductionForScript(scriptId: number) {
+  changeProductionScript(scriptId, (scriptChanged) => {
+    activeTab.value = 'production';
+    if (!scriptChanged) void loadFlow();
+  });
+}
 
 const panelContext = reactive({
   projectId, project, imageQuality, videoMode, novels, novelColumns, importNovelFile,
@@ -1671,6 +1676,7 @@ const panelContext = reactive({
   saveProductionCanvasPositions, saveProductionWorkflow, saveTrackPrompt, chooseVideo,
   updateProductionFlowSection, resetProductionAgent, onProductionAgentActivity,
   clearProductionAgentMemory, previewProductionFlowSection, confirmTrackBinding,
+  openProductionForScript,
   openAssets: () => router.push({ path: '/toonflow/assets', query: { projectId: projectId.value } }),
   chooseScriptFiles: () => scriptUploadInput.value?.click(),
   setScriptUploadInput: (element: HTMLInputElement | null) => { scriptUploadInput.value = element ?? undefined; },

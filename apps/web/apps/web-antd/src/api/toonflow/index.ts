@@ -135,6 +135,39 @@ export namespace ToonflowApi {
   export interface Prompt { id: number; name: string; type: string; data: string; useData?: string; sourceKey?: string }
   export interface Skill { id: string; name: string; description: string; type: string; path: string; state: number; createTime: number; updateTime: number }
   export interface ProjectStatistics { roleCount: number; scriptCount: number; videoCount: number; storyboardCount: number }
+  export interface EpisodeRender {
+    id: number;
+    projectId: number;
+    scriptId: number;
+    url: string;
+    objectPath: string;
+    filePath: string;
+    posterUrl?: null | string;
+    state: string;
+    isCurrent: boolean;
+    version: number;
+    sourceVideoIds: number[];
+    metadata: unknown;
+    createdAt: number | string;
+    updatedAt: number | string;
+    createdBy: string;
+    exportTaskId?: null | number;
+  }
+  export interface VideoArchiveEpisode {
+    scriptId: number;
+    scriptName: string;
+    episodeNo?: null | number;
+    renders: EpisodeRender[];
+  }
+  export interface ProjectVideoArchive {
+    projectId: number;
+    episodes: VideoArchiveEpisode[];
+  }
+  export interface EpisodeRenderList {
+    projectId: number;
+    scriptId: number;
+    renders: EpisodeRender[];
+  }
   export interface CreativeManual { id: number; kind: 'director' | 'visual'; name: string; path: string; images: string[]; data: Array<{ label: string; value: string; data: string }>; createTime: number; updateTime: number }
   export interface AgentMemory { id: number; role: string; content: string; memoryType: 'message' | 'summary'; createTime: number }
   export interface AgentRun { id: number; agentType: string; isolationKey: string; projectId: number; scriptId?: number; input: string; output?: string; state: string; errorReason?: string; startTime: number; finishTime?: number; retryOfId?: number }
@@ -188,6 +221,25 @@ export function getProjects() {
 
 export function getProject(id: number) {
   return requestClient.get<ToonflowApi.Project>(`/toonflow/projects/${id}`);
+}
+
+export function getProjectVideoArchive(projectId: number) {
+  return requestClient.get<ToonflowApi.ProjectVideoArchive>(
+    `/toonflow/projects/${projectId}/video-archive`,
+  );
+}
+
+export function getEpisodeRenders(projectId: number, scriptId: number) {
+  return requestClient.get<ToonflowApi.EpisodeRenderList>(
+    `/toonflow/projects/${projectId}/episodes/${scriptId}/renders`,
+  );
+}
+
+export function setEpisodeRenderCurrent(id: number) {
+  return requestClient.request<ToonflowApi.EpisodeRender>(
+    `/toonflow/episode-renders/${id}/current`,
+    { data: {}, method: 'PATCH' },
+  );
 }
 
 export function createProject(data: ToonflowApi.SaveProject) {

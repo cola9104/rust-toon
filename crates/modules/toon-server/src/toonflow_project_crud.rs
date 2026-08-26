@@ -82,7 +82,7 @@ pub async fn delete_project(
     Json(request): Json<crate::toonflow::IdRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:project:delete")?;
-    let paths: Vec<Option<String>> = sqlx::query_scalar("SELECT file_path FROM toonflow.images WHERE assets_id IN (SELECT id FROM toonflow.assets WHERE project_id=$1) UNION ALL SELECT file_path FROM toonflow.storyboards WHERE project_id=$1 UNION ALL SELECT file_path FROM toonflow.videos WHERE project_id=$1").bind(request.id).fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to collect project files"))?;
+    let paths: Vec<Option<String>> = sqlx::query_scalar("SELECT file_path FROM toonflow.images WHERE assets_id IN (SELECT id FROM toonflow.assets WHERE project_id=$1) UNION ALL SELECT file_path FROM toonflow.storyboards WHERE project_id=$1 UNION ALL SELECT file_path FROM toonflow.videos WHERE project_id=$1 UNION ALL SELECT file_path FROM toonflow.episode_renders WHERE project_id=$1 UNION ALL SELECT cover_path FROM toonflow.episode_renders WHERE project_id=$1").bind(request.id).fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to collect project files"))?;
     let result = sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
         .bind(request.id)
         .execute(&state.pool)

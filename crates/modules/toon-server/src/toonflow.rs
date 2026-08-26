@@ -538,7 +538,9 @@ pub async fn delete_scripts(
     let paths: Vec<Option<String>> = sqlx::query_scalar(
         "SELECT file_path FROM toonflow.storyboards WHERE script_id=ANY($1)
          UNION ALL SELECT file_path FROM toonflow.videos WHERE script_id=ANY($1)
-         UNION ALL SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.image_id=i.id WHERE a.script_id=ANY($1)",
+         UNION ALL SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.image_id=i.id WHERE a.script_id=ANY($1)
+         UNION ALL SELECT file_path FROM toonflow.episode_renders WHERE script_id=ANY($1)
+         UNION ALL SELECT cover_path FROM toonflow.episode_renders WHERE script_id=ANY($1)",
     )
     .bind(&request.ids)
     .fetch_all(&state.pool)
@@ -1390,6 +1392,8 @@ pub struct EditStoryboardInfoRequest {
     pub associate_assets_ids: Option<Vec<i64>>,
 }
 
+type StoryboardEditRow = (i64, i64, Option<i64>, Option<String>, i32);
+
 pub async fn edit_storyboard_info(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -1401,7 +1405,7 @@ pub async fn edit_storyboard_info(
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
-    let current: Option<(i64, i64, Option<i64>, Option<String>, i32)> = sqlx::query_as(
+    let current: Option<StoryboardEditRow> = sqlx::query_as(
         "SELECT project_id,script_id,track_id,track,should_generate_image FROM toonflow.storyboards WHERE id=$1",
     )
     .bind(request.id)

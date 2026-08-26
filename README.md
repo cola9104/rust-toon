@@ -52,7 +52,7 @@ cargo run -p rust-toon-gateway
 和基准数据，因此部署时不需要
 `sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
 
-后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0040`），并在干净数据库
+后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0002`），并在干净数据库
 完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
 
 可选环境变量：
@@ -81,8 +81,11 @@ pnpm dev:antd
 ```bash
 cargo test --workspace
 bash script/test-database-migrations.sh
+bash script/test-gateway-e2e.sh
 bash script/test-ai-e2e.sh
 bash script/test-production-e2e.sh
+bash script/test-minio-backup.sh
+pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
 pnpm --dir apps/web --filter @vben/web-antd run build
 ```
@@ -104,6 +107,7 @@ bash script/test-real-ai-providers.sh
 - [技术架构](docs/technical-solution.md)
 - [配置与模型接入](docs/configuration.md)
 - [启动、部署与运维](docs/deployment.md)
+- [功能范围与验收口径](docs/parity-roadmap.md)
 
 ## 数据库备份
 
@@ -113,5 +117,13 @@ BACKUP_DIR="$PWD/backups/postgresql" \
 bash script/database/backup-postgres.sh
 ```
 
-备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#数据库备份与恢复)。
-- [功能范围与验收口径](docs/parity-roadmap.md)
+备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#45-备份与恢复)。
+
+项目图片、视频、音频和成片存放在 MinIO，必须和数据库一起备份：
+
+```bash
+MINIO_ACCESS_KEY='rust_toon' \
+MINIO_SECRET_KEY='replace-me' \
+MINIO_BACKUP_DIR="$PWD/backups/minio" \
+bash script/database/backup-minio.sh
+```

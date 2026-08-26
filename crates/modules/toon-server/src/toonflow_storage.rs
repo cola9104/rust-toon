@@ -119,6 +119,24 @@ async fn ensure_bucket() -> Result<(), String> {
     ))
 }
 
+pub(crate) async fn check_bucket_readiness() -> Result<(), String> {
+    let mut response = signed_request(Method::HEAD, None, Vec::new()).await?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    if response.status().as_u16() == 404 {
+        ensure_bucket().await?;
+        response = signed_request(Method::HEAD, None, Vec::new()).await?;
+        if response.status().is_success() {
+            return Ok(());
+        }
+    }
+    Err(format!(
+        "对象存储 bucket 不可访问：HTTP {}",
+        response.status()
+    ))
+}
+
 pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(url.to_string());
@@ -266,23 +284,6 @@ pub async fn image_data_url(file_path: &str) -> Result<String, String> {
         "data:{content_type};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
-}
-
-pub(crate) async fn normalize_image_reference(reference: &str) -> Result<String, String> {
-    let reference = reference.trim();
-    if reference.is_empty() {
-        return Err("参考图地址不能为空".to_string());
-    }
-    if reference.starts_with("data:")
-        || reference.starts_with("http://")
-        || reference.starts_with("https://")
-    {
-        return Ok(reference.to_string());
-    }
-    if is_asset_image_path(reference) {
-        return image_data_url(reference).await;
-    }
-    Err(format!("不支持的参考图地址：{reference}"))
 }
 
 pub(crate) fn is_asset_image_path(file_path: &str) -> bool {

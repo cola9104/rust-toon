@@ -57,6 +57,7 @@ Open:
 
 - Frontend: `http://127.0.0.1:5666`
 - Backend health: `http://127.0.0.1:8080/health`
+- Backend liveness/readiness: `http://127.0.0.1:8080/livez`, `http://127.0.0.1:8080/readyz`
 - OpenAPI: `http://127.0.0.1:8080/openapi.json`
 - MinIO console: `http://127.0.0.1:9001`
 
@@ -75,7 +76,10 @@ Use these checks after startup:
 curl -fsS http://127.0.0.1:8080/health
 cargo test --workspace
 bash script/test-database-migrations.sh
+bash script/test-gateway-e2e.sh
 bash script/test-production-e2e.sh
+bash script/test-minio-backup.sh
+pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
 ```
 
@@ -116,9 +120,16 @@ Create a backend environment file outside git, for example `/etc/rust-toon/gatew
 DATABASE_URL=postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon
 REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=replace-with-a-strong-random-secret-at-least-32-bytes
+MINIO_ENDPOINT=http://127.0.0.1:9000
+MINIO_ACCESS_KEY=rust_toon
+MINIO_SECRET_KEY=replace-with-a-strong-object-storage-secret
+MINIO_BUCKET=rust-toon
 GATEWAY_HOST=0.0.0.0
 GATEWAY_PORT=8080
 RUST_LOG=info
+RUST_ENV=production
+READINESS_REQUIRE_REDIS=true
+READINESS_REQUIRE_MINIO=true
 BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
 ```
@@ -169,6 +180,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rust-toon-gateway
 sudo systemctl status rust-toon-gateway
 curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/readyz
 ```
 
 ## Frontend Production
@@ -203,8 +215,21 @@ location /api/ {
     proxy_read_timeout 600s;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
 }
 ```
+
+## Backups
+
+Back up PostgreSQL and MinIO as one recovery set. The repository provides:
+
+```bash
+bash script/database/backup-postgres.sh
+bash script/database/backup-minio.sh
+```
+
+The matching restore scripts require an explicit `--confirm`. Example systemd units and timers are under `deploy/systemd`; both use `/etc/rust-toon/backup.env`.
 
 ## Common Problems
 
@@ -213,4 +238,5 @@ location /api/ {
 - No admin account: set `BOOTSTRAP_ADMIN_PASSWORD` for the first startup, then remove it after the account exists.
 - Frontend API 404: check `VITE_BASE_URL`, `VITE_GLOB_API_URL`, and Nginx `/api/` proxy prefix handling.
 - SSE responses arrive all at once: disable proxy buffering and increase read timeout.
+- `/readyz` returns 503: inspect the per-dependency checks and verify PostgreSQL plus required Redis/MinIO/FFmpeg endpoints.
 - Port already in use: check `ss -ltnp | rg ':(8080|5666|5432|6379)'`.

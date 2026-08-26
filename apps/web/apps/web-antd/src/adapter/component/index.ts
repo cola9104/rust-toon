@@ -68,7 +68,6 @@ import { isEmpty } from '@vben/utils';
 
 import { message, Modal, notification } from 'ant-design-vue';
 
-import { Tinymce as RichTextarea } from '#/components/tinymce';
 import { FileUpload, ImageUpload } from '#/components/upload';
 type AdapterUploadProps = UploadProps & {
   aspectRatio?: string;
@@ -82,6 +81,9 @@ type AdapterUploadProps = UploadProps & {
 
 const AutoComplete = defineAsyncComponent(
   () => import('ant-design-vue/es/auto-complete'),
+);
+const RichTextarea = defineAsyncComponent(() =>
+  import('#/components/tinymce').then((module) => module.Tinymce),
 );
 const Button = defineAsyncComponent(() => import('ant-design-vue/es/button'));
 const Checkbox = defineAsyncComponent(

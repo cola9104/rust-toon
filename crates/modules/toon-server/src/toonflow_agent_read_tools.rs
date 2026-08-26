@@ -90,8 +90,8 @@ pub(crate) async fn execute_sub_tool(
                     .as_ref()
                     .and_then(|d| d.get(key))
                     .and_then(|v| v.as_str().map(|s| s.to_string()));
-                if result.is_some() {
-                    return result.unwrap();
+                if let Some(result) = result {
+                    return result;
                 }
                 // Try known key mappings
                 let mapped = match key.to_lowercase().as_str() {

@@ -21,6 +21,18 @@ use tracing::warn;
 static ACTIVE_RUNS: LazyLock<Mutex<HashMap<i64, tokio::task::AbortHandle>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+type ProjectContextRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<i64>,
+    Option<i64>,
+    String,
+);
+type RetryRunRow = (String, String, i64, Option<i64>, String, bool, i32);
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -132,7 +144,7 @@ pub fn agent_key_for(agent_type: &str) -> Result<&'static str, String> {
 }
 
 async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
-    let project: Option<(String,String,String,String,String,Option<i64>,Option<i64>,String)> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model,mode FROM toonflow.projects WHERE id=$1")
+    let project: Option<ProjectContextRow> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model,mode FROM toonflow.projects WHERE id=$1")
         .bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to load agent project"))?;
     let (name, kind, intro, style, ratio, image_model, video_model, mode) =
         project.ok_or_else(|| AppError::not_found("project not found"))?;
@@ -363,13 +375,13 @@ fn parse_tool_calls(text: &str) -> Vec<(String, Value)> {
         let Some(end) = content.find("</tool_call>") else {
             break;
         };
-        if let Ok(value) = serde_json::from_str::<Value>(&content[..end]) {
-            if let Some(name) = value.get("name").and_then(Value::as_str) {
-                calls.push((
-                    name.to_string(),
-                    value.get("arguments").cloned().unwrap_or_else(|| json!({})),
-                ));
-            }
+        if let Ok(value) = serde_json::from_str::<Value>(&content[..end])
+            && let Some(name) = value.get("name").and_then(Value::as_str)
+        {
+            calls.push((
+                name.to_string(),
+                value.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            ));
         }
         rest = &content[end + 12..];
     }
@@ -1208,7 +1220,7 @@ pub async fn retry(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     recover_stale(&state).await;
-    let row:Option<(String,String,i64,Option<i64>,String,bool,i32)>=sqlx::query_as("SELECT agent_type,isolation_key,project_id,script_id,input,think,think_level FROM toonflow.agent_runs WHERE id=$1 AND state IN('failed','canceled','interrupted')").bind(source.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load retry run"))?;
+    let row:Option<RetryRunRow>=sqlx::query_as("SELECT agent_type,isolation_key,project_id,script_id,input,think,think_level FROM toonflow.agent_runs WHERE id=$1 AND state IN('failed','canceled','interrupted')").bind(source.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load retry run"))?;
     let (agent_type, isolation_key, project_id, script_id, content, think, think_level) =
         row.ok_or_else(|| AppError::bad_request("仅失败、中止或中断的运行可重试"))?;
     let request = ChatRequest {

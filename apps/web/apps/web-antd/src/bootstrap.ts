@@ -11,7 +11,6 @@ import '@vben/styles/antd';
 import { useTitle } from '@vueuse/core';
 
 import { $t, setupI18n } from '#/locales';
-import { setupFormCreate } from '#/plugins/form-create';
 
 import { initComponentAdapter } from './adapter/component';
 import { initSetupVbenForm } from './adapter/form';
@@ -52,15 +51,25 @@ async function bootstrap(namespace: string) {
   // 安装权限指令
   registerAccessDirective(app);
 
+  // form-create、Designer 及其富文本依赖只在表单构建路由使用。
+  // 在路由解析完成前安装，既保证组件首次渲染可用，也避免进入业务首页时下载整套设计器。
+  let formCreateSetup: Promise<void> | undefined;
+  router.beforeResolve(async (to) => {
+    const needsFormCreate =
+      to.name === 'InfraBuild' || /^\/infra\/build(?:\/|$)/.test(to.path);
+    if (!needsFormCreate) return;
+    formCreateSetup ??= import('#/plugins/form-create').then(
+      ({ setupFormCreate }) => setupFormCreate(app),
+    );
+    await formCreateSetup;
+  });
+
   // 初始化 tippy
   const { initTippy } = await import('@vben/common-ui/es/tippy');
   initTippy(app);
 
   // 配置路由及路由守卫
   app.use(router);
-
-  // formCreate
-  setupFormCreate(app);
 
   // 配置Motion插件
   const { MotionPlugin } = await import('@vben/plugins/motion');

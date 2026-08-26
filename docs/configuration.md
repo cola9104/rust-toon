@@ -82,6 +82,9 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | --- | --- | --- | --- |
 | `RUST_LOG` | `info` | tracing 日志过滤（EnvFilter） | `framework/common/src/telemetry.rs` |
 | `RUST_ENV` | `development` | 运行环境标识，展示在 infra 监控的服务器信息中 | `infra-server/src/monitor.rs` |
+| `READINESS_REQUIRE_REDIS` | 设置了 `REDIS_URL` 时为 `true` | Redis 不可用时让 `/readyz` 返回 503 | `gateway/src/readiness.rs` |
+| `READINESS_REQUIRE_MINIO` | 生产环境或设置了 `MINIO_ENDPOINT` 时为 `true` | 使用生产链路同款签名 S3 请求验证凭据和 bucket；不可访问时让 `/readyz` 返回 503 | `gateway/src/readiness.rs` |
+| `READINESS_REQUIRE_FFMPEG` | `false` | 仅在承担成片导出的节点上启用；缺少或无法执行 FFmpeg/FFprobe 时让 `/readyz` 返回 503 | `gateway/src/readiness.rs` |
 | `SECRET_ENCRYPTION_KEY` | 回退 `JWT_SECRET`，再回退内置常量 `rust-toon-local-secret` | AI 模型 api_key、文件配置等敏感字段落库时的对称加密密钥（`enc:v1:` 前缀格式） | `system-server/src/management/compat.rs`、`infra-server/src/lib.rs` |
 | `TEST_DATABASE_URL` | 无 | 仅测试使用：迁移测试与分镜数据库集成测试 | `toon-server/src/lib.rs` 测试、`script/test-database-migrations.sh` |
 | `TEST_POSTGRES_PORT` | `55432` | 迁移测试脚本起临时 PostgreSQL 容器所用端口 | `script/test-database-migrations.sh` |
@@ -89,6 +92,8 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `AI_REQUEST_RETRIES` | `2` | AI Provider 失败重试次数，实际最多 5 次；连接失败、超时、408/409/425/429 和 5xx 会指数退避重试，支持上游 `Retry-After` | `ai-server/src/provider.rs` |
 | `AI_VIDEO_POLL_INTERVAL_SECONDS` | `5` | 异步视频任务轮询间隔 | `toon-server/src/ai_client.rs` |
 | `AI_VIDEO_POLL_TIMEOUT_SECONDS` | `600` | 异步视频任务最长等待时间 | `toon-server/src/ai_client.rs` |
+
+网关提供三个探针：`/health` 保留旧版固定 200 及 `checked_at` 响应字段，`/livez` 只确认进程存活，`/readyz` 检查 PostgreSQL 以及按上述开关要求的 Redis、对象存储、FFmpeg 和 FFprobe。依赖探针均有超时，生产负载均衡应使用 `/readyz`，旧监控或进程管理器可继续使用 `/health`，新部署建议使用 `/livez`。
 
 模型能力矩阵写入 `ai.model_configs.config.capabilities`，支持 `videoModes`、`durationResolutionMap`、`thinkLevels` 和 `multiReference`。视频调用会在请求上游前校验模式以及时长/分辨率组合；未配置能力矩阵的旧模型保持兼容。
 

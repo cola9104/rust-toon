@@ -444,10 +444,6 @@ fn is_transient_model_error(error: &str) -> bool {
     .iter()
     .any(|marker| error.contains(marker))
 }
-pub async fn video(pool: &PgPool, configured: &str, payload: Value) -> Result<String, String> {
-    video_with_context(pool, configured, payload, None).await
-}
-
 /// Executes a video request without creating a generic `universalAi` task.
 ///
 /// Video generation already has a project-scoped row in `toonflow.videos`
@@ -460,34 +456,6 @@ pub async fn video_untracked(
 ) -> Result<String, String> {
     let model_id = validate_video_request(pool, configured, &payload).await?;
     video_unrecorded(pool, model_id, payload, None).await
-}
-
-pub async fn project_video(
-    pool: &PgPool,
-    configured: &str,
-    project_id: i64,
-    payload: Value,
-) -> Result<String, String> {
-    video_with_context(pool, configured, payload, Some(project_id)).await
-}
-
-async fn video_with_context(
-    pool: &PgPool,
-    configured: &str,
-    payload: Value,
-    project_id: Option<i64>,
-) -> Result<String, String> {
-    let model_id = validate_video_request(pool, configured, &payload).await?;
-    recorded_with_context(
-        pool,
-        project_id,
-        Some(1),
-        "video",
-        &model_id.to_string(),
-        "视频生成",
-        video_unrecorded(pool, model_id, payload, project_id),
-    )
-    .await
 }
 
 async fn validate_video_request(

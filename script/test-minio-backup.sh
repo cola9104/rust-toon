@@ -1,0 +1,222 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+minio_container="rust-toon-minio-backup-test"
+mc_container="rust-toon-mc-backup-test"
+minio_port="${TEST_MINIO_BACKUP_PORT:-59010}"
+minio_image="${MINIO_IMAGE:-minio/minio:RELEASE.2025-04-22T22-12-26Z}"
+mc_image="${MINIO_MC_IMAGE:-minio/mc:RELEASE.2025-04-16T18-13-26Z}"
+test_dir="$(mktemp -d)"
+
+cleanup() {
+  docker rm -f "$minio_container" "$mc_container" >/dev/null 2>&1 || true
+  rm -rf -- "$test_dir"
+}
+trap cleanup EXIT
+docker rm -f "$minio_container" "$mc_container" >/dev/null 2>&1 || true
+
+for command_name in cmp cp curl docker jq sha256sum; do
+  command -v "$command_name" >/dev/null || {
+    echo "$command_name is required for the MinIO backup test" >&2
+    exit 1
+  }
+done
+
+# Keep mc out of the host and CI runner: copy the official client binary into
+# this test's private temporary directory.
+docker pull "$mc_image" >/dev/null
+docker create --name "$mc_container" "$mc_image" --help >/dev/null
+docker cp "$mc_container:/usr/bin/mc" "$test_dir/mc" >/dev/null
+chmod 700 "$test_dir/mc"
+
+docker run -d --name "$minio_container" \
+  -e MINIO_ROOT_USER=rust_toon \
+  -e MINIO_ROOT_PASSWORD=rust_toon_password \
+  -p "$minio_port:9000" "$minio_image" \
+  server /data >/dev/null
+
+for _ in $(seq 1 45); do
+  curl -fsS "http://127.0.0.1:${minio_port}/minio/health/ready" >/dev/null 2>&1 && break
+  sleep 1
+done
+curl -fsS "http://127.0.0.1:${minio_port}/minio/health/ready" >/dev/null
+
+export PATH="$test_dir:$PATH"
+export MC_CONFIG_DIR="$test_dir/mc-client"
+mc alias set backup-test "http://127.0.0.1:${minio_port}" \
+  rust_toon rust_toon_password >/dev/null
+mc mb --ignore-existing backup-test/rust-toon >/dev/null
+printf '%s' 'merged-episode-render' | \
+  mc pipe backup-test/rust-toon/episodes/episode-1-v1.mp4 >/dev/null
+
+run_restore() {
+  MINIO_ENDPOINT="http://127.0.0.1:${minio_port}" \
+  MINIO_ACCESS_KEY=rust_toon \
+  MINIO_SECRET_KEY=rust_toon_password \
+  MINIO_BUCKET=rust-toon \
+    bash script/database/restore-minio.sh "$@"
+}
+
+expect_restore_failure() {
+  local case_name="$1"
+  shift
+  if run_restore "$@" >"$test_dir/${case_name}.log" 2>&1; then
+    echo "restore unexpectedly accepted invalid backup case: $case_name" >&2
+    exit 1
+  fi
+}
+
+refresh_checksums() {
+  local backup_dir="$1"
+  (
+    cd "$backup_dir"
+    find objects manifest.json -type f -print0 \
+      | LC_ALL=C sort -z \
+      | xargs -0 sha256sum -- > SHA256SUMS
+  )
+}
+
+backup_path="$(
+  MINIO_ENDPOINT="http://127.0.0.1:${minio_port}" \
+  MINIO_ACCESS_KEY=rust_toon \
+  MINIO_SECRET_KEY=rust_toon_password \
+  MINIO_BUCKET=rust-toon \
+  MINIO_BACKUP_DIR="$test_dir/backups" \
+    bash script/database/backup-minio.sh
+)"
+
+# A timestamp is the public backup identifier. A second publication using the
+# same identifier must fail instead of nesting into or replacing the first.
+backup_timestamp="${backup_path##*/rust-toon-minio-}"
+fixed_date_bin="$test_dir/fixed-date-bin"
+mkdir -p "$fixed_date_bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "%s"\n' "$backup_timestamp" \
+  > "$fixed_date_bin/date"
+chmod 700 "$fixed_date_bin/date"
+if collision_output="$(
+  PATH="$fixed_date_bin:$PATH" \
+  MINIO_ENDPOINT="http://127.0.0.1:${minio_port}" \
+  MINIO_ACCESS_KEY=rust_toon \
+  MINIO_SECRET_KEY=rust_toon_password \
+  MINIO_BUCKET=rust-toon \
+  MINIO_BACKUP_DIR="$test_dir/backups" \
+    bash script/database/backup-minio.sh 2>&1
+)"; then
+  echo "a same-timestamp MinIO backup unexpectedly overwrote its destination" >&2
+  exit 1
+fi
+if [[ "$collision_output" != *"Refusing to overwrite existing MinIO backup"* ]]; then
+  echo "same-timestamp backup failed for an unexpected reason: $collision_output" >&2
+  exit 1
+fi
+
+# Manifest parsing is strict, and a cross-bucket restore requires a separate,
+# explicit opt-in in addition to --confirm.
+invalid_version_type_backup="$test_dir/invalid-version-type-backup"
+cp -a -- "$backup_path" "$invalid_version_type_backup"
+printf '%s\n' '{"formatVersion":"1","bucket":"rust-toon"}' \
+  > "$invalid_version_type_backup/manifest.json"
+refresh_checksums "$invalid_version_type_backup"
+expect_restore_failure invalid-version-type \
+  --backup "$invalid_version_type_backup" --confirm
+
+unsupported_version_backup="$test_dir/unsupported-version-backup"
+cp -a -- "$backup_path" "$unsupported_version_backup"
+printf '%s\n' '{"formatVersion":2,"bucket":"rust-toon"}' \
+  > "$unsupported_version_backup/manifest.json"
+refresh_checksums "$unsupported_version_backup"
+expect_restore_failure unsupported-version \
+  --backup "$unsupported_version_backup" --confirm
+
+multiple_json_backup="$test_dir/multiple-json-backup"
+cp -a -- "$backup_path" "$multiple_json_backup"
+printf '%s\n%s\n' \
+  '{"formatVersion":1,"bucket":"rust-toon"}' \
+  '{"formatVersion":1,"bucket":"rust-toon"}' \
+  > "$multiple_json_backup/manifest.json"
+refresh_checksums "$multiple_json_backup"
+expect_restore_failure multiple-json \
+  --backup "$multiple_json_backup" --confirm
+
+invalid_bucket_backup="$test_dir/invalid-bucket-backup"
+cp -a -- "$backup_path" "$invalid_bucket_backup"
+printf '%s\n' '{"formatVersion":1,"bucket":"../escape"}' \
+  > "$invalid_bucket_backup/manifest.json"
+refresh_checksums "$invalid_bucket_backup"
+expect_restore_failure invalid-manifest-bucket \
+  --backup "$invalid_bucket_backup" --bucket restored-copy \
+  --allow-bucket-mismatch --confirm
+
+newline_bucket_backup="$test_dir/newline-bucket-backup"
+cp -a -- "$backup_path" "$newline_bucket_backup"
+printf '%s\n' '{"formatVersion":1,"bucket":"rust-toon\n"}' \
+  > "$newline_bucket_backup/manifest.json"
+refresh_checksums "$newline_bucket_backup"
+expect_restore_failure newline-manifest-bucket \
+  --backup "$newline_bucket_backup" --confirm
+
+expect_restore_failure bucket-mismatch \
+  --backup "$backup_path" --bucket restored-copy --confirm
+run_restore --backup "$backup_path" --bucket restored-copy \
+  --allow-bucket-mismatch --confirm >/dev/null
+copied_restore="$(mc cat backup-test/restored-copy/episodes/episode-1-v1.mp4)"
+if [[ "$copied_restore" != "merged-episode-render" ]]; then
+  echo "explicit cross-bucket restore did not match its source" >&2
+  exit 1
+fi
+
+# Never dereference paths supplied by SHA256SUMS. A valid checksum for an
+# absolute file outside the backup must still be rejected as an extra entry.
+outside_file="$test_dir/outside-backup.txt"
+printf '%s' 'must-not-be-part-of-the-backup' > "$outside_file"
+read -r outside_hash _ < <(sha256sum -- "$outside_file")
+unsafe_path_backup="$test_dir/unsafe-path-backup"
+cp -a -- "$backup_path" "$unsafe_path_backup"
+printf '%s  %s\n' "$outside_hash" "$outside_file" \
+  >> "$unsafe_path_backup/SHA256SUMS"
+expect_restore_failure unsafe-checksum-path \
+  --backup "$unsafe_path_backup" --confirm
+
+# The checksum file and the complete set of actual regular files must match in
+# both directions: no omitted entries, undeclared files, or absent files.
+missing_checksum_backup="$test_dir/missing-checksum-backup"
+cp -a -- "$backup_path" "$missing_checksum_backup"
+sed -i '\|  objects/episodes/episode-1-v1.mp4$|d' \
+  "$missing_checksum_backup/SHA256SUMS"
+expect_restore_failure missing-checksum-entry \
+  --backup "$missing_checksum_backup" --confirm
+
+undeclared_file_backup="$test_dir/undeclared-file-backup"
+cp -a -- "$backup_path" "$undeclared_file_backup"
+printf '%s' 'undeclared' > "$undeclared_file_backup/extra.txt"
+expect_restore_failure undeclared-file \
+  --backup "$undeclared_file_backup" --confirm
+
+absent_file_backup="$test_dir/absent-file-backup"
+cp -a -- "$backup_path" "$absent_file_backup"
+rm -f -- "$absent_file_backup/objects/episodes/episode-1-v1.mp4"
+expect_restore_failure absent-file \
+  --backup "$absent_file_backup" --confirm
+
+mc rm backup-test/rust-toon/episodes/episode-1-v1.mp4 >/dev/null
+run_restore --backup "$backup_path" --confirm >/dev/null
+
+restored="$(mc cat backup-test/rust-toon/episodes/episode-1-v1.mp4)"
+if [[ "$restored" != "merged-episode-render" ]]; then
+  echo "restored MinIO object did not match its source" >&2
+  exit 1
+fi
+
+# An empty object bucket still has a checksummed manifest and must remain restorable.
+mc rm backup-test/rust-toon/episodes/episode-1-v1.mp4 >/dev/null
+empty_backup_path="$(
+  MINIO_ENDPOINT="http://127.0.0.1:${minio_port}" \
+  MINIO_ACCESS_KEY=rust_toon \
+  MINIO_SECRET_KEY=rust_toon_password \
+  MINIO_BUCKET=rust-toon \
+  MINIO_BACKUP_DIR="$test_dir/empty-backups" \
+    bash script/database/backup-minio.sh
+)"
+run_restore --backup "$empty_backup_path" --confirm >/dev/null
+
+echo "MinIO backup/restore integrity, collision, bucket, and empty-bucket checks passed"

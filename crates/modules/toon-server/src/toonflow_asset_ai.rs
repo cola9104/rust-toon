@@ -251,10 +251,10 @@ pub async fn batch_polish(
             let permit = sem.clone().acquire_owned().await;
             let project_id = req.project_id;
             jobs.push(tokio::spawn(async move {
-                if permit.is_ok() {
-                    if let Err(reason) = run(&pool, project_id, item.clone(), &extra).await {
-                        mark_failed(&pool, item.assets_id, &reason).await;
-                    }
+                if permit.is_ok()
+                    && let Err(reason) = run(&pool, project_id, item.clone(), &extra).await
+                {
+                    mark_failed(&pool, item.assets_id, &reason).await;
                 }
             }));
         }
@@ -812,10 +812,10 @@ pub async fn delete_image(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit transaction"))?;
-    if let Some(path) = path {
-        if let Err(error) = delete_asset_file(&path).await {
-            record_cleanup_failure(&state.pool, &path, "image", Some(req.id), &error).await;
-        }
+    if let Some(path) = path
+        && let Err(error) = delete_asset_file(&path).await
+    {
+        record_cleanup_failure(&state.pool, &path, "image", Some(req.id), &error).await;
     }
     Ok(Json(ApiResponse::new(
         json!({"message":"资产图片删除成功"}),

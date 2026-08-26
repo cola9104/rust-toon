@@ -170,11 +170,11 @@ impl AnthropicProvider {
                             on_delta(json!({"content":text})).await?;
                         }
                         if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
-                            if let Some(call) = calls.last_mut() {
-                                if let Some(args) = call.pointer_mut("/function/arguments") {
-                                    let previous = args.as_str().unwrap_or("").to_string();
-                                    *args = json!(format!("{previous}{partial}"));
-                                }
+                            if let Some(call) = calls.last_mut()
+                                && let Some(args) = call.pointer_mut("/function/arguments")
+                            {
+                                let previous = args.as_str().unwrap_or("").to_string();
+                                *args = json!(format!("{previous}{partial}"));
                             }
                             on_delta(json!({"tool_calls":[{"index":calls.len().saturating_sub(1),"function":{"arguments":partial}}]})).await?;
                         }

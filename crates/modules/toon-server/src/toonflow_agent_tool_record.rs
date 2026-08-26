@@ -52,6 +52,7 @@ pub(crate) async fn fail(pool: &PgPool, call_id: i64, error: &AppError, time: i6
         .bind(call_id).bind(format!("{error:?}")).bind(time).execute(pool).await.ok();
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn remember_ui_execution(
     pool: &PgPool,
     call_id: i64,

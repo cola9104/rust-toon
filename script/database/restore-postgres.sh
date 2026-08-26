@@ -66,4 +66,4 @@ pg_restore \
   --exit-on-error \
   "$backup_path"
 
-echo "Restore completed. Restart the gateway and verify /health before enabling traffic."
+echo "Restore completed. Restart the gateway and verify /readyz before enabling traffic."

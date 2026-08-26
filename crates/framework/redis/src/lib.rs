@@ -66,6 +66,14 @@ impl RedisClient {
         format!("{}:{}:{}", self.key_prefix, namespace, id.as_ref())
     }
 
+    /// Verifies that Redis is reachable without mutating application data.
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        let mut connection = self.client.get_multiplexed_async_connection().await?;
+        let response: String = redis::cmd("PING").query_async(&mut connection).await?;
+        anyhow::ensure!(response == "PONG", "unexpected Redis PING response");
+        Ok(())
+    }
+
     pub async fn get_json<T>(&self, key: &str) -> anyhow::Result<Option<T>>
     where
         T: DeserializeOwned,

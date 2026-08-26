@@ -91,10 +91,11 @@ pub(crate) fn explicit_episode_limit(text: &str) -> Option<u32> {
                     .ok();
             }
         }
-        if index < chars.len() && chars[index] == '集' {
-            if let Some(limit) = last_number {
-                limits.push(limit);
-            }
+        if index < chars.len()
+            && chars[index] == '集'
+            && let Some(limit) = last_number
+        {
+            limits.push(limit);
         }
     }
     limits.into_iter().max()
@@ -159,7 +160,7 @@ pub(crate) fn validate_generated_script(content: &str) -> Result<(), String> {
 }
 
 fn valid_scene_heading(line: &str) -> bool {
-    let number = line.trim().split_whitespace().next().unwrap_or_default();
+    let number = line.split_whitespace().next().unwrap_or_default();
     let mut parts = number.split('-');
     matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None) if !a.is_empty() && !b.is_empty() && a.chars().all(|c| c.is_ascii_digit()) && b.chars().all(|c| c.is_ascii_digit()))
 }

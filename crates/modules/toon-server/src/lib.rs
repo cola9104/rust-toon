@@ -20,6 +20,7 @@ mod toonflow_asset_library;
 mod toonflow_asset_prompt;
 mod toonflow_audio;
 mod toonflow_character_identity;
+mod toonflow_episode_renders;
 mod toonflow_image_edit_prompt;
 mod toonflow_image_workflow;
 mod toonflow_manuals;
@@ -64,6 +65,12 @@ use rust_toon_toon_api::ToonCapability;
 pub struct ToonState {
     pool: PgPool,
     tokens: TokenService,
+}
+
+/// Verify the configured object-store credentials and bucket using the same
+/// signed S3 requests as Toonflow's production media pipeline.
+pub async fn check_object_storage_readiness() -> Result<(), String> {
+    toonflow_storage::check_bucket_readiness().await
 }
 
 #[cfg(test)]
@@ -471,6 +478,18 @@ pub fn routes(state: ToonState) -> Router {
             axum::routing::delete(toonflow_resources::delete_art_style),
         )
         .route("/toonflow/tasks", get(toonflow_resources::list_tasks))
+        .route(
+            "/toonflow/projects/{project_id}/video-archive",
+            get(toonflow_episode_renders::project_video_archive),
+        )
+        .route(
+            "/toonflow/projects/{project_id}/episodes/{script_id}/renders",
+            get(toonflow_episode_renders::list_episode_renders),
+        )
+        .route(
+            "/toonflow/episode-renders/{render_id}/current",
+            axum::routing::patch(toonflow_episode_renders::select_current_render),
+        )
         .route(
             "/toonflow/prompts",
             get(toonflow_resources::list_prompts).post(toonflow_resources::save_prompt),

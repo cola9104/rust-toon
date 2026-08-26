@@ -13,7 +13,7 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use rust_toon_framework_common::ApiResponse;
+use rust_toon_framework_common::{ApiResponse, is_health_probe_path};
 use tracing::warn;
 
 use crate::RedisClient;
@@ -72,7 +72,7 @@ pub async fn rate_limit(
 ) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    if path == "/health" {
+    if is_health_probe_path(&path) {
         return next.run(request).await;
     }
     let actor = client_key(&request);

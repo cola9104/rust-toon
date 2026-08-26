@@ -45,7 +45,8 @@ pnpm dev:antd
 ### 2.4 访问入口
 
 - 前端：`http://127.0.0.1:5666`
-- 后端健康检查：`http://127.0.0.1:8080/health`
+- 后端兼容存活检查：`http://127.0.0.1:8080/health`（固定 200，保留旧响应字段）
+- 存活/就绪探针：`http://127.0.0.1:8080/livez`、`http://127.0.0.1:8080/readyz`
 - OpenAPI 文档：`http://127.0.0.1:8080/openapi.json`
 - MinIO 控制台：`http://127.0.0.1:9001`（`rust_toon` / `rust_toon_password`）
 
@@ -57,6 +58,11 @@ pnpm dev:antd
 curl -fsS http://127.0.0.1:8080/health
 cargo test --workspace
 bash script/test-database-migrations.sh
+bash script/test-ai-e2e.sh
+bash script/test-gateway-e2e.sh
+bash script/test-production-e2e.sh
+bash script/test-minio-backup.sh
+pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
 ```
 
@@ -64,7 +70,7 @@ pnpm --dir apps/web --filter @vben/web-antd run typecheck
 
 ## 3. 数据库迁移管理
 
-- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0011`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
+- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0002`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
 - 变更流程（与根 `AGENTS.md` 一致）：
   1. 新增编号迁移文件，已发布/已应用的迁移不得修改。
   2. 迁移必须幂等，同时支持空库初始化与已有库升级。
@@ -93,9 +99,16 @@ docker compose -f script/docker/docker-compose.yml up -d
 DATABASE_URL=postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon
 REDIS_URL=redis://127.0.0.1:6379
 JWT_SECRET=replace-with-a-strong-random-secret-at-least-32-bytes
+MINIO_ENDPOINT=http://127.0.0.1:9000
+MINIO_ACCESS_KEY=rust_toon
+MINIO_SECRET_KEY=replace-with-a-strong-object-storage-secret
+MINIO_BUCKET=rust-toon
 GATEWAY_HOST=0.0.0.0
 GATEWAY_PORT=8080
 RUST_LOG=info
+RUST_ENV=production
+READINESS_REQUIRE_REDIS=true
+READINESS_REQUIRE_MINIO=true
 BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
 ```
@@ -121,6 +134,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rust-toon-gateway
 sudo systemctl status rust-toon-gateway
 curl -fsS http://127.0.0.1:8080/health
+curl -fsS http://127.0.0.1:8080/readyz
 ```
 
 ### 4.5 备份与恢复
@@ -130,8 +144,31 @@ curl -fsS http://127.0.0.1:8080/health
 - `script/database/backup-postgres.sh`：`pg_dump` 备份，要求 `DATABASE_URL`；`BACKUP_DIR`（默认 `/var/backups/rust-toon/postgresql`）、`BACKUP_RETENTION_DAYS`（默认 14）控制目录与保留天数，拒绝不安全的备份目录。
 - `script/database/restore-postgres.sh`：恢复，`--backup FILE --database-url URL --confirm`。
 - `deploy/systemd/rust-toon-postgres-backup.service` + `.timer`：每日 03:15 定时备份（环境文件 `/etc/rust-toon/backup.env`，样例 `deploy/env/backup.env.example`）。
+- `script/database/backup-minio.sh`：使用 MinIO Client `mc` 镜像对象桶，生成逐对象 SHA-256 清单；配置 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET` 和 `MINIO_BACKUP_DIR`，宿主机还需提供 `jq`。
+- `script/database/restore-minio.sh`：严格校验 manifest 版本、bucket、普通文件全集和 SHA-256 清单后恢复对象；跨 bucket 恢复必须额外传入 `--allow-bucket-mismatch`。默认保留目标端额外对象，只有显式传入 `--delete-extra --confirm` 才执行镜像删除。
+- `deploy/systemd/rust-toon-minio-backup.service` + `.timer`：每日 03:45 定时备份对象，和 PostgreSQL 备份错峰执行。
 
-除数据库外，别忘了备份上传目录（`INFRA_UPLOAD_DIR`）与 MinIO 数据卷。
+systemd 样例以 `rust-toon` 用户运行，启用前需安装 `mc`、创建可写目录并保护包含凭据的环境文件。以下示例为 Linux amd64；其他架构请从 MinIO 官方下载目录选择对应二进制：
+
+```bash
+sudo apt-get update && sudo apt-get install -y jq
+curl -fsSL https://dl.min.io/client/mc/release/linux-amd64/archive/mc.RELEASE.2025-04-16T18-13-26Z \
+  -o /tmp/rust-toon-mc
+sudo install -o root -g root -m 0755 /tmp/rust-toon-mc /usr/local/bin/mc
+sudo install -d -o rust-toon -g rust-toon -m 0700 \
+  /var/backups/rust-toon/postgresql /var/backups/rust-toon/minio
+sudo install -d -o root -g rust-toon -m 0750 /etc/rust-toon
+sudo install -o root -g rust-toon -m 0640 \
+  deploy/env/backup.env.example /etc/rust-toon/backup.env
+sudoedit /etc/rust-toon/backup.env
+sudo install -o root -g root -m 0644 deploy/systemd/rust-toon-*-backup.service \
+  deploy/systemd/rust-toon-*-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now rust-toon-postgres-backup.timer rust-toon-minio-backup.timer
+sudo systemctl start rust-toon-postgres-backup.service rust-toon-minio-backup.service
+```
+
+生产恢复必须同时选择时间相近的 PostgreSQL 与 MinIO 备份，先隔离流量，再恢复两者，最后通过 `/readyz`、成果视频抽查和对象引用审计后恢复流量。建议在对象存储端同时开启 versioning、异地复制或 object lock；文件级镜像不能替代这些能力。
 
 ## 5. 前端生产部署
 
@@ -155,12 +192,18 @@ location /api/ {
     proxy_read_timeout 600s;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
 }
 ```
 
-要点：`X-Forwarded-For` 影响后端限流的客户端识别；SSE/流式响应需要关闭代理缓冲并加大读超时；WebSocket 端点（`/api/socket/{agent}`）需要反代放行 Upgrade 头。生产跨域应在反代层控制，不要开启 `WEB_PERMISSIVE_CORS`。
+要点：`X-Forwarded-For` 影响后端限流的客户端识别；SSE/流式响应需要关闭代理缓冲并加大读超时；WebSocket 端点（`/api/socket/{agent}`）依赖 Upgrade 头。生产跨域应在反代层控制，不要开启 `WEB_PERMISSIVE_CORS`。
 
-## 6. 常见问题
+## 6. 持续集成
+
+根目录 `.github/workflows/ci.yml` 是仓库门禁，覆盖 Rust fmt/Clippy/workspace tests、空库迁移、本地 mock AI Provider E2E、前端 typecheck/unit/build、启动真实 PostgreSQL、Redis、MinIO 和 gateway 的 HTTP/WebSocket 黑盒 E2E、FFmpeg 最终成片归档 E2E，以及 MinIO 备份/恢复回环。仅供应商付费生成测试保持显式运行，不进入默认 CI。
+
+## 7. 常见问题
 
 - `DATABASE_URL is required`：未导出或未写入环境文件。
 - JWT 启动报错：`JWT_SECRET` 必须至少 32 字节。

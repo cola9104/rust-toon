@@ -14,7 +14,76 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 1);
+    assert_eq!(applied, 2);
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0002_episode_renders.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("episode render migration is idempotent");
+
+    let render_column_types: Vec<(String, String)> = sqlx::query_as(
+        "SELECT column_name,udt_name
+         FROM information_schema.columns
+         WHERE table_schema='toonflow' AND table_name='episode_renders'
+           AND column_name IN ('source_video_ids','metadata','created_by')
+         ORDER BY column_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect episode render column types");
+    assert_eq!(
+        render_column_types,
+        vec![
+            ("created_by".into(), "uuid".into()),
+            ("metadata".into(), "jsonb".into()),
+            ("source_video_ids".into(), "_int8".into()),
+        ]
+    );
+
+    for constraint in [
+        "episode_renders_script_project_fk",
+        "episode_renders_project_script_version_unique",
+        "episode_renders_export_task_unique",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM pg_constraint
+               WHERE conrelid='toonflow.episode_renders'::regclass AND conname=$1
+             )",
+        )
+        .bind(constraint)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect episode render constraint");
+        assert!(exists, "expected episode render constraint {constraint}");
+    }
+
+    let current_render_is_unique: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname='toonflow' AND tablename='episode_renders'
+             AND indexname='uq_toonflow_episode_renders_current'
+             AND indexdef ILIKE '%WHERE is_current%'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect current episode render uniqueness");
+    assert!(current_render_is_unique);
+
+    let task_related_objects_is_text: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM information_schema.columns
+           WHERE table_schema='toonflow' AND table_name='tasks'
+             AND column_name='related_objects' AND data_type='text'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect task result metadata type");
+    assert!(task_related_objects_is_text);
 
     for source_key in [
         "script_ai_regex",
@@ -172,6 +241,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         "ai.music",
         "toonflow.projects",
         "toonflow.project_assets",
+        "toonflow.episode_renders",
         "toonflow.workflow_definitions",
         "toonflow.workflow_runs",
         "toonflow.workflow_node_runs",

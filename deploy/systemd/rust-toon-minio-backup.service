@@ -1,0 +1,19 @@
+[Unit]
+Description=Rust Toon MinIO object backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=rust-toon
+Group=rust-toon
+EnvironmentFile=/etc/rust-toon/backup.env
+ExecStart=/opt/rust-toon/script/database/backup-minio.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/backups/rust-toon

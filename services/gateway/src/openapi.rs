@@ -44,7 +44,9 @@ pub async fn document() -> Json<Value> {
             "/system/roles/{id}/permissions": { "put": { "tags": ["system-role"], "summary": "Assign role permissions", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "OK" } } } },
             "/system/permissions": { "get": { "tags": ["system-permission"], "summary": "List permissions", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Permissions" } } } },
             "/system/audit-logs": { "get": { "tags": ["system-audit"], "summary": "List audit logs", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Audit logs" } } } },
-            "/health": { "get": { "tags": ["ops"], "summary": "Health check", "responses": { "200": { "description": "OK" } } } },
+            "/livez": { "get": { "tags": ["ops"], "summary": "Process liveness", "responses": { "200": { "description": "Process is alive" } } } },
+            "/readyz": { "get": { "tags": ["ops"], "summary": "Dependency readiness", "responses": { "200": { "description": "Required dependencies are ready" }, "503": { "description": "A required dependency is unavailable" } } } },
+            "/health": { "get": { "tags": ["ops"], "summary": "Backward-compatible process health", "responses": { "200": { "description": "Process is alive" } } } },
             "/infra/capabilities": { "get": { "tags": ["infra"], "summary": "Infra module capabilities", "responses": { "200": { "description": "OK" } } } },
             "/toon/capabilities": { "get": { "tags": ["toon"], "summary": "Toon module capabilities", "responses": { "200": { "description": "OK" } } } },
             "/toon/projects": {
@@ -72,6 +74,15 @@ pub async fn document() -> Json<Value> {
             "/toon/scenes/{id}": {
                 "put": { "tags": ["toon"], "summary": "Update scene", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "OK" } } },
                 "delete": { "tags": ["toon"], "summary": "Delete scene", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "OK" } } }
+            },
+            "/toonflow/projects/{project_id}/video-archive": {
+                "get": { "tags": ["toonflow-video-archive"], "summary": "List final video renders grouped by episode", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Project video archive" }, "404": { "description": "Project not found or inaccessible" } } }
+            },
+            "/toonflow/projects/{project_id}/episodes/{script_id}/renders": {
+                "get": { "tags": ["toonflow-video-archive"], "summary": "List final render versions for one episode", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Episode render versions" }, "404": { "description": "Project or episode not found" } } }
+            },
+            "/toonflow/episode-renders/{render_id}/current": {
+                "patch": { "tags": ["toonflow-video-archive"], "summary": "Select the current final render version", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Selected episode render" }, "400": { "description": "Render is not ready" }, "404": { "description": "Render not found or inaccessible" } } }
             },
             "/media/capabilities": { "get": { "tags": ["media"], "summary": "Media module capabilities", "responses": { "200": { "description": "OK" } } } },
             "/media/assets": {

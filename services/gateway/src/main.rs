@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use axum::{Json, Router, middleware::from_fn_with_state, routing::get};
 use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route, init_tracing, serve};
 use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
@@ -9,6 +11,7 @@ use tracing::warn;
 
 mod audit;
 mod openapi;
+mod readiness;
 
 const SERVICE_NAME: &str = "gateway";
 
@@ -25,6 +28,7 @@ async fn main() -> anyhow::Result<()> {
     let database = connect(&DatabaseConfig::from_env()?).await?;
     migrate(&database).await?;
     rust_toon_toon_server::repair_interrupted_state(&database).await?;
+    let redis_configured = std::env::var_os("REDIS_URL").is_some();
     let redis = connect_redis().await;
     let tokens = TokenService::new(SecurityConfig::from_env()?);
     let system_state = rust_toon_system_server::SystemState::with_cache(
@@ -56,6 +60,11 @@ async fn main() -> anyhow::Result<()> {
         .merge(rust_toon_ai_server::routes(ai_state))
         .merge(rust_toon_toon_server::routes(toon_state))
         .merge(rust_toon_media_server::routes(media_state))
+        .merge(readiness::routes(readiness::ReadinessState::new(
+            database.clone(),
+            redis.clone(),
+            redis_configured,
+        )))
         .merge(health_route(SERVICE_NAME))
         .fallback(not_found)
         .layer(from_fn_with_state(

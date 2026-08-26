@@ -544,32 +544,25 @@ async fn file_upload(
     State(state): State<InfraState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
-    let mut uploaded: Option<(String, String, Vec<u8>)> = None;
-    while let Some(field) = multipart
+    let field = multipart
         .next_field()
         .await
         .map_err(|_| AppError::bad_request("failed to read upload file"))?
-    {
-        let file_name = field
-            .file_name()
-            .map(sanitize_file_name)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| format!("upload-{}", Utc::now().timestamp_millis()));
-        let content_type = field
-            .content_type()
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "application/octet-stream".to_owned());
-        let bytes = field
-            .bytes()
-            .await
-            .map_err(|_| AppError::bad_request("failed to read upload file"))?
-            .to_vec();
-        uploaded = Some((file_name, content_type, bytes));
-        break;
-    }
-    let Some((name, content_type, bytes)) = uploaded else {
-        return Err(AppError::bad_request("file is required"));
-    };
+        .ok_or_else(|| AppError::bad_request("file is required"))?;
+    let name = field
+        .file_name()
+        .map(sanitize_file_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| format!("upload-{}", Utc::now().timestamp_millis()));
+    let content_type = field
+        .content_type()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let bytes = field
+        .bytes()
+        .await
+        .map_err(|_| AppError::bad_request("failed to read upload file"))?
+        .to_vec();
     let date = Utc::now().format("%Y%m%d").to_string();
     let object_name = format!("{}_{}", Utc::now().timestamp_millis(), name);
     let relative_path = format!("{date}/{object_name}");

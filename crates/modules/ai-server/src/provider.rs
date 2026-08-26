@@ -244,6 +244,7 @@ pub struct OpenAiCompatibleProvider;
 impl OpenAiCompatibleProvider {
     /// Stream an OpenAI-compatible tool call response while preserving the
     /// complete assistant message shape expected by the existing tool loop.
+    #[allow(clippy::too_many_arguments)]
     pub async fn chat_tools_stream<F, Fut>(
         &self,
         config: &ModelConfig,

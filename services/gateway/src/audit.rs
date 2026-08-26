@@ -6,6 +6,7 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use rust_toon_framework_common::is_health_probe_path;
 use rust_toon_framework_database::PgPool;
 
 #[derive(Clone)]
@@ -24,6 +25,9 @@ pub async fn record(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    if is_health_probe_path(request.uri().path()) {
+        return next.run(request).await;
+    }
     let started_at = chrono::Utc::now().naive_utc();
     let timer = Instant::now();
     let method = request.method().to_string();

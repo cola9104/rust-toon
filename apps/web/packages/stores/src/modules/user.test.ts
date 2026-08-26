@@ -19,12 +19,16 @@ describe('useUserStore', () => {
   it('clears userInfo and userRoles when setting null userInfo', () => {
     const store = useUserStore();
     store.setUserInfo({
-      roles: [{ roleName: 'User', value: 'user' }],
-    } as any);
+      avatar: '',
+      nickname: 'User',
+      userId: '1',
+      username: 'user',
+    });
+    store.setUserRoles(['user']);
     expect(store.userInfo).not.toBeNull();
     expect(store.userRoles.length).toBeGreaterThan(0);
 
-    store.setUserInfo(null as any);
+    store.setUserInfo(null);
     expect(store.userInfo).toBeNull();
     expect(store.userRoles).toEqual([]);
   });

@@ -7,6 +7,8 @@ use serde::{Deserialize, Deserializer, de::Error as _};
 use serde_json::{Value, json};
 use tokio::task::JoinSet;
 
+type StoryboardAssetMediaRow = (i64, i64, String, String, Option<String>, Option<String>);
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioAssetsRequest {
@@ -271,7 +273,7 @@ pub(crate) async fn load_generate_data(
     let boards=sqlx::query_as::<_,(i64,Option<i64>,Option<String>,String,Option<String>,i32,Option<i64>)>("SELECT id,track_id,file_path,prompt,video_desc,coalesce(index,0),flow_id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2 ORDER BY index,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboards"))?;
     let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32,String)>("SELECT id,prompt,state,duration,video_id,sort_order,coalesce(continuity_mode,'auto') FROM toonflow.video_tracks WHERE project_id=$1 AND script_id=$2 ORDER BY sort_order,id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
     let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id FROM toonflow.videos WHERE project_id=$1 AND script_id=$2").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
-    let asset_media: Vec<(i64, i64, String, String, Option<String>, Option<String>)> = sqlx::query_as("SELECT ast.storyboard_id,a.id,a.name,a.type,img.file_path,audio.file_path FROM toonflow.assets_storyboards ast JOIN toonflow.assets a ON a.id=ast.asset_id LEFT JOIN toonflow.images img ON img.id=a.image_id LEFT JOIN LATERAL (SELECT aa_img.file_path FROM toonflow.asset_audio_bindings b JOIN toonflow.assets aa ON aa.id=b.asset_audio_id LEFT JOIN toonflow.images aa_img ON aa_img.id=aa.image_id WHERE b.asset_role_id=a.id ORDER BY b.create_time DESC LIMIT 1) audio ON true WHERE a.project_id=$1 AND ast.storyboard_id IN (SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2) ORDER BY ast.storyboard_id,ast.sort_order").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboard asset media"))?;
+    let asset_media: Vec<StoryboardAssetMediaRow> = sqlx::query_as("SELECT ast.storyboard_id,a.id,a.name,a.type,img.file_path,audio.file_path FROM toonflow.assets_storyboards ast JOIN toonflow.assets a ON a.id=ast.asset_id LEFT JOIN toonflow.images img ON img.id=a.image_id LEFT JOIN LATERAL (SELECT aa_img.file_path FROM toonflow.asset_audio_bindings b JOIN toonflow.assets aa ON aa.id=b.asset_audio_id LEFT JOIN toonflow.images aa_img ON aa_img.id=aa.image_id WHERE b.asset_role_id=a.id ORDER BY b.create_time DESC LIMIT 1) audio ON true WHERE a.project_id=$1 AND ast.storyboard_id IN (SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2) ORDER BY ast.storyboard_id,ast.sort_order").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboard asset media"))?;
     let list = tracks.into_iter().map(|t| {
         let mut medias = Vec::new();
         for board in boards.iter().filter(|b| b.1 == Some(t.0)) {
@@ -755,7 +757,7 @@ pub(crate) async fn prepare_workflow_video_generation(
             references =
                 add_continuity_reference(pool, project_id, script_id, track_id, "auto", references)
                     .await
-                    .map_err(|error| AppError::internal(error))?;
+                    .map_err(AppError::internal)?;
         }
         let id = base_id + index as i64;
         sqlx::query("INSERT INTO toonflow.videos(id,state,script_id,project_id,video_track_id,time) VALUES($1,'生成中',$2,$3,$4,$5)")
@@ -1079,13 +1081,15 @@ pub struct RetryVideoRequest {
     continuity_mode: String,
 }
 
+type RetryVideoSource = (i64, i64, Option<i64>, Option<String>, Option<i32>);
+
 pub async fn retry_video(
     user: CurrentUser,
     State(state): State<ToonState>,
     Json(req): Json<RetryVideoRequest>,
 ) -> Result<Json<ApiResponse<i64>>, AppError> {
     require(&user, "toon:scene:update")?;
-    let source:Option<(i64,i64,Option<i64>,Option<String>,Option<i32>)>=sqlx::query_as("SELECT project_id,script_id,video_track_id,(SELECT prompt FROM toonflow.video_tracks WHERE id=video_track_id),(SELECT duration FROM toonflow.video_tracks WHERE id=video_track_id) FROM toonflow.videos WHERE id=$1 AND state IN('生成失败','已取消')").bind(req.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load retry video"))?;
+    let source: Option<RetryVideoSource> = sqlx::query_as("SELECT project_id,script_id,video_track_id,(SELECT prompt FROM toonflow.video_tracks WHERE id=video_track_id),(SELECT duration FROM toonflow.video_tracks WHERE id=video_track_id) FROM toonflow.videos WHERE id=$1 AND state IN('生成失败','已取消')").bind(req.id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load retry video"))?;
     let (project_id, script_id, track_id, prompt, duration) =
         source.ok_or_else(|| AppError::bad_request("只有失败或已取消的视频可以重试"))?;
     let track_id = track_id.ok_or_else(|| AppError::bad_request("视频未关联轨道"))?;

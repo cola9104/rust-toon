@@ -124,20 +124,21 @@ pub(crate) async fn execute_recorded(
     match execute_inner(state, request).await {
         Ok(value) => {
             toonflow_agent_tool_record::succeed(&state.pool, call_id, &value, now_ms()).await;
-            if request.emitter.is_none() && request.agent_type == "productionAgent" {
-                if let Some(script_id) = request.script_id {
-                    toonflow_agent_tool_record::remember_ui_execution(
-                        &state.pool,
-                        call_id,
-                        request.project_id,
-                        script_id,
-                        &request.tool_name,
-                        &request.arguments,
-                        &value,
-                        now_ms(),
-                    )
-                    .await;
-                }
+            if request.emitter.is_none()
+                && request.agent_type == "productionAgent"
+                && let Some(script_id) = request.script_id
+            {
+                toonflow_agent_tool_record::remember_ui_execution(
+                    &state.pool,
+                    call_id,
+                    request.project_id,
+                    script_id,
+                    &request.tool_name,
+                    &request.arguments,
+                    &value,
+                    now_ms(),
+                )
+                .await;
             }
             Ok((call_id, value))
         }
@@ -1156,8 +1157,8 @@ pub(crate) async fn execute_inner(
                 .map_err(|_| AppError::internal("failed to validate storyboard panel rows"))?;
                 let new_rows = rows
                     .iter()
-                    .cloned()
                     .filter(|row| !existing_ids.contains(&row.0))
+                    .cloned()
                     .collect::<Vec<_>>();
                 let validation_rows = if new_rows.is_empty() {
                     &rows
@@ -1371,12 +1372,12 @@ pub(crate) async fn execute_inner(
                     .await?;
                 }
             }
-            if let (Some((tag, key)), Some(script_id)) = (flow_tag, request.script_id) {
-                if let Some(content) = tagged(&output, tag) {
-                    let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load production workspace"))?.unwrap_or_else(||json!({}));
-                    data[key] = json!(content);
-                    sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,$2,'productionAgent',$3,$4,$4) ON CONFLICT(project_id,episodes_id,key) DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(script_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save production sub agent result"))?;
-                }
+            if let (Some((tag, key)), Some(script_id)) = (flow_tag, request.script_id)
+                && let Some(content) = tagged(&output, tag)
+            {
+                let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id=$2 AND key='productionAgent'").bind(request.project_id).bind(script_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load production workspace"))?.unwrap_or_else(||json!({}));
+                data[key] = json!(content);
+                sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,$2,'productionAgent',$3,$4,$4) ON CONFLICT(project_id,episodes_id,key) DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(script_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save production sub agent result"))?;
             }
             let memory_role = if agent_key.ends_with(":supervisionAgent") {
                 "assistant:supervision".to_string()

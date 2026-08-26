@@ -54,7 +54,7 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 4. `SecurityConfig::from_env()` 构造 `TokenService`（JWT HS256）。
 5. 依次构造 `SystemState`（带 Redis 缓存）、`InfraState`、`AiState`、`ToonState`、`MediaState`。
 6. `system_state.bootstrap().await?` 启动校验：确认数据库中存在启用的 `super_admin` 角色用户，否则拒绝启动（`crates/modules/system-server/src/bootstrap.rs`）。
-7. 合并五个模块的路由，追加 `/`、`/openapi.json`、`/health` 与 404 fallback。
+7. 合并五个模块的路由，追加 `/`、`/openapi.json`、兼容存活接口 `/health`、新探针 `/livez` 和 `/readyz`，以及 404 fallback。
 8. 全局中间件（自内向外生效）：数据库认证中间件 `authenticate_from_database` → 审计中间件 `audit::record`；若 Redis 可用，再加全局限流中间件 `rate_limit`。
 9. `apply_web_layers` 追加 RequestId（`x-request-id`）、Trace、以及可选的宽松 CORS。
 10. `serve()` 绑定 `GATEWAY_HOST:GATEWAY_PORT`（默认 `0.0.0.0:8080`），支持 Ctrl+C / SIGTERM 优雅停机。
@@ -76,17 +76,17 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ### 3.4 审计
 
-- `services/gateway/src/audit.rs`：全局中间件，将每个 HTTP 请求写入 `infra_api_access_log`（方法、路径、UA、耗时等）。
+- `services/gateway/src/audit.rs`：全局中间件，将业务 HTTP 请求写入 `infra_api_access_log`（方法、路径、UA、耗时等）；高频 `/health`、`/livez`、`/readyz` 探针不写审计表。
 - `system-server/src/audit.rs`：业务操作日志 `system_operate_log` 与登录日志 `system_login_log`。
 
 ### 3.5 限流与缓存
 
-- 限流：`framework/redis/src/rate_limit.rs`，按 `IP + 请求方法 + 路径` 维度在 Redis 计数（窗口默认 60 秒、上限默认 300 次），`/health` 豁免；Redis 故障时放行并告警。客户端 IP 优先取 `x-forwarded-for`。
+- 限流：`framework/redis/src/rate_limit.rs`，按 `IP + 请求方法 + 路径` 维度在 Redis 计数（窗口默认 60 秒、上限默认 300 次），`/health`、`/livez`、`/readyz` 豁免；Redis 故障时放行并告警。客户端 IP 优先取 `x-forwarded-for`。
 - 缓存：`RedisClient` 提供 `get_json` / `set_json` / `delete_by_pattern` 等，键带前缀（默认 `rust-toon`）。
 
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。当前只保留一个最新的 `0001_initial.sql`，包含完整表结构、基础数据和视频衔接缓存结构；新数据库由 gateway 自动执行这一份迁移。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前最新为新增剧集成片归档结构的 `0002_episode_renders.sql`，新数据库由 gateway 自动执行完整迁移链。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。
@@ -120,6 +120,12 @@ AI 能力域：
 - REST 资源：`/toon/projects`、`/toon/episodes`、`/toon/scenes` 等。
 - toonflow 兼容层：大量与 Toonflow 前端协议兼容的路由（`/toonflow/*`、`/api/*` 及不带前缀的别名），覆盖项目、小说、剧本、资产（素材库/AI 生图/提示词润色）、分镜（storyboard）、图片工作流、视频工作台（轨道、视频生成、导出）、配音、手册、任务、设置、技能管理等。
 
+**最终成片归档**（`toonflow_video_export.rs` / `toonflow_episode_renders.rs`）：
+
+- 视频工作台选择生成片段并提交 FFmpeg 合并；只有最终 MP4 上传成功且归档事务提交成功，任务才标记为 `success`。每次成功导出按剧集生成 V1、V2…，新版本默认成为 current，历史版本不会被覆盖。
+- 项目成果接口为 `GET /toonflow/projects/{project_id}/video-archive`；单集版本接口为 `GET /toonflow/projects/{project_id}/episodes/{script_id}/renders`；`PATCH /toonflow/episode-renders/{render_id}/current` 可恢复历史版本。接口同时检查权限、项目所有权及剧本归属。
+- 项目详情第五阶段“剧集成果”消费上述接口，展示的是合并后的最终成片而非单个生成片段，支持播放、下载、版本切换和回到对应剧集继续制作。
+
 **Agent 运行时**（`toonflow_agents.rs` / `toonflow_agent_runtime.rs` / `toonflow_agent_tools.rs`）：
 
 - HTTP 接口 `/api/agents/*`（chat / start / runState / stop / events / retry / memories / runs / clearMemory / tools/execute）与剧本计划接口 `/api/scriptAgent/*`。
@@ -137,6 +143,7 @@ AI 能力域：
 
 - 开发：`pnpm dev:antd`，端口 `5666`（`.env.development` 的 `VITE_PORT`），API 前缀 `/api`，指向 `http://127.0.0.1:8080`。
 - 构建产物：`apps/web/apps/web-antd/dist`（`VITE_ARCHIVER=true` 时额外生成 `dist.zip`）。
+- 项目详情五个阶段均为异步组件；FormCreate/Designer 仅在 `/infra/build` 安装，TinyMCE 在表单实际使用时加载，避免这些重资源进入业务首页首屏。
 - 前端环境变量（`VITE_*`）详见 [configuration.md](configuration.md)。
 
 ## 7. 关键外部依赖端口

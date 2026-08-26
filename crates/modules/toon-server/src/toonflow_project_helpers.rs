@@ -22,18 +22,6 @@ pub(crate) fn video_mode(value: &str) -> &str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{video_mode, video_ratio};
-
-    #[test]
-    fn project_media_defaults_are_stable() {
-        assert_eq!(video_ratio(""), "16:9");
-        assert_eq!(video_ratio("9:16"), "9:16");
-        assert_eq!(video_mode(""), "startEndRequired");
-        assert_eq!(video_mode("text"), "text");
-    }
-}
 use rust_toon_framework_database::PgPool;
 use rust_toon_framework_web::AppError;
 
@@ -74,4 +62,17 @@ pub(crate) async fn validate_models(
 
 pub(crate) const fn default_should_generate() -> i32 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{video_mode, video_ratio};
+
+    #[test]
+    fn project_media_defaults_are_stable() {
+        assert_eq!(video_ratio(""), "16:9");
+        assert_eq!(video_ratio("9:16"), "9:16");
+        assert_eq!(video_mode(""), "startEndRequired");
+        assert_eq!(video_mode("text"), "text");
+    }
 }

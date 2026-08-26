@@ -42,6 +42,7 @@ export const useUserStore = defineStore('core-user', {
   actions: {
     setUserInfo(userInfo: BasicUserInfo | null) {
       this.userInfo = userInfo;
+      if (!userInfo) this.userRoles = [];
     },
     setUserRoles(roles: string[]) {
       this.userRoles = roles;

@@ -6,7 +6,7 @@ export interface ToonStage {
   icon: string;
 }
 
-defineProps<{ modelValue: string; stages: ToonStage[] }>();
+defineProps<{ modelValue: string; stages: readonly ToonStage[] }>();
 defineEmits<{ 'update:modelValue': [value: string] }>();
 </script>
 
