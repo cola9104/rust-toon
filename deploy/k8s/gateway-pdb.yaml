@@ -1,0 +1,14 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rust-toon-gateway
+  labels:
+    app.kubernetes.io/name: rust-toon-gateway
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  # Protect the singleton from accidental voluntary eviction. This deliberately
+  # blocks a node drain until an operator coordinates the maintenance window.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-gateway

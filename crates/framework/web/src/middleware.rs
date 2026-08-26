@@ -40,11 +40,14 @@ pub fn apply_web_layers(router: Router, config: WebConfig) -> Router {
             TraceLayer::new_for_http().make_span_with(|request: &axum::http::Request<Body>| {
                 // Never include the query string here: Toonflow's compatible
                 // WebSocket URL carries a JWT query parameter.
-                tracing::info_span!(
+                let span = tracing::info_span!(
                     "http_request",
                     method = %request.method(),
                     path = %request.uri().path(),
-                )
+                    "otel.kind" = "server",
+                );
+                rust_toon_framework_telemetry::set_parent_from_headers(&span, request.headers());
+                span
             }),
         );
 

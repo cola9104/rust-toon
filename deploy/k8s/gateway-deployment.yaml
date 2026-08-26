@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-toon-gateway
+  labels:
+    app.kubernetes.io/name: rust-toon-gateway
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  # Agent/Workflow live-run registries are process-local. Keep this at one and
+  # use Recreate so a normal Deployment update does not overlap revisions.
+  replicas: 1
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 600
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-gateway
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8080"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/name: rust-toon-gateway
+        app.kubernetes.io/component: gateway
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      serviceAccountName: rust-toon
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: rust-toon/backend:REPLACE_ME
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/rust-toon-gateway
+          envFrom:
+            - configMapRef:
+                name: rust-toon-gateway-config
+            - secretRef:
+                name: rust-toon-gateway-secrets
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+              ephemeral-storage: 6Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            # Keep room inside the 6 GiB ephemeral-storage limit for container
+            # logs and the writable layer.
+            sizeLimit: 5Gi

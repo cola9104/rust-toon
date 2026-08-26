@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 5);
+    assert_eq!(applied, 6);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"
@@ -43,6 +43,41 @@ async fn applies_all_migrations_to_empty_postgres() {
     .execute(&pool)
     .await
     .expect("video id sequence migration is idempotent");
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0006_login_lockout.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("login lockout migration is idempotent");
+
+    for column in ["failed_login_attempts", "locked_until"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='public'
+                 AND table_name='system_users'
+                 AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect login lockout column");
+        assert!(exists, "expected system_users column {column}");
+    }
+
+    let lockout_constraint: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_constraint
+           WHERE conrelid='public.system_users'::regclass
+             AND conname='system_users_failed_login_attempts_non_negative'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect login lockout constraint");
+    assert!(lockout_constraint);
 
     let task_id_default: Option<String> = sqlx::query_scalar(
         "SELECT column_default

@@ -13,6 +13,7 @@ rust-toon-framework-common.workspace = true
 rust-toon-framework-database.workspace = true
 rust-toon-framework-redis.workspace = true
 rust-toon-framework-security.workspace = true
+rust-toon-framework-telemetry.workspace = true
 rust-toon-framework-web.workspace = true
 rust-toon-infra-server.workspace = true
 rust-toon-ai-server.workspace = true

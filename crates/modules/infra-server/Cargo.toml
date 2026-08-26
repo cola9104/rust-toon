@@ -13,6 +13,7 @@ hex.workspace = true
 hmac.workspace = true
 rust-toon-framework-common.workspace = true
 rust-toon-framework-database.workspace = true
+rust-toon-framework-security.workspace = true
 rust-toon-framework-web.workspace = true
 rust-toon-infra-api.workspace = true
 rust_xlsxwriter.workspace = true
@@ -23,4 +24,8 @@ serde_json.workspace = true
 sha2.workspace = true
 sqlx.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 zip.workspace = true
+
+[dev-dependencies]
+tower.workspace = true

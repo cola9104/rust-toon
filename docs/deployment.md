@@ -73,6 +73,7 @@ bash script/test-ai-e2e.sh
 bash script/test-gateway-e2e.sh
 bash script/test-production-e2e.sh
 bash script/test-distributed-deployment.sh
+bash script/test-k8s-deployment.sh
 bash script/test-distributed-jobs-e2e.sh
 bash script/test-minio-backup.sh
 pnpm --dir apps/web run test:unit
@@ -83,7 +84,7 @@ pnpm --dir apps/web --filter @vben/web-antd run typecheck
 
 ## 3. 数据库迁移管理
 
-- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0005`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
+- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0006`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
 - 变更流程（与根 `AGENTS.md` 一致）：
   1. 新增编号迁移文件，已发布/已应用的迁移不得修改。
   2. 迁移必须幂等，同时支持空库初始化与已有库升级。
@@ -129,7 +130,7 @@ BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
 ```
 
-`JWT_SECRET` 必须 ≥ 32 字节，否则启动失败。首次登录成功后将 `BOOTSTRAP_ADMIN_PASSWORD` 从环境文件中移除并重启服务。生产环境如使用本地文件存储，建议显式设置 `INFRA_UPLOAD_DIR`（默认 `storage/uploads`，相对工作目录）；AI 密钥落库加密可通过 `SECRET_ENCRYPTION_KEY` 独立指定（缺省回退 `JWT_SECRET`）。
+`JWT_SECRET` 必须 ≥ 32 字节，否则启动失败。首次登录成功后将 `BOOTSTRAP_ADMIN_PASSWORD` 从环境文件中移除并重启服务。当前上传、生成片段和最终成片统一进入 MinIO/S3；旧版本遗留的 `storage/uploads` 应先用 `script/migrate-local-uploads-to-minio.sh` 迁移。AI 密钥落库加密可通过 `SECRET_ENCRYPTION_KEY` 独立指定（缺省回退 `JWT_SECRET`）。
 
 ### 4.3 构建与试运行
 
@@ -143,11 +144,10 @@ set -a; . /etc/rust-toon/gateway.env; set +a
 
 ### 4.4 systemd
 
-仓库提供样例 `deploy/systemd/rust-toon-gateway.service`（`User=rust-toon`、`EnvironmentFile=/etc/rust-toon/gateway.env`、开启 `ProtectSystem=strict` 等加固项，并放行 `/opt/rust-toon/storage` 可写）：
+仓库提供样例 `deploy/systemd/rust-toon-gateway.service`（`User=rust-toon`、`EnvironmentFile=/etc/rust-toon/gateway.env`、开启 `ProtectSystem=strict` 等加固项；运行时对象进入 MinIO，不开放仓库目录写权限）：
 
 ```bash
 sudo useradd --system --home /opt/rust-toon --shell /usr/sbin/nologin rust-toon
-sudo install -d -o rust-toon -g rust-toon -m 0750 /opt/rust-toon/storage
 sudo install -d -o root -g rust-toon -m 0750 /etc/rust-toon
 ```
 
@@ -241,7 +241,72 @@ docker compose \
 
 该 compose 不包含前端静态站；仍需按第 5 节使用 CDN/独立 Nginx 托管 `dist`，并把 `/api/` 指向 edge。Compose 中的 PostgreSQL、Redis、NATS 和 MinIO 是单机持久化数据面。高可用生产应替换为托管 PostgreSQL/Redis/对象存储及三节点 JetStream 集群。JetStream 卷用于降低恢复延迟，但业务任务真相源是 PostgreSQL outbox，因此不能用 NATS 消息替代数据库备份。
 
-### 4.6 备份与恢复
+### 4.6 Kubernetes：1 Gateway + N Worker
+
+`deploy/k8s` 提供生产基础清单，使用 Kustomize 管理以下资源：
+
+- 固定单副本且使用 `Recreate` 更新策略的 Gateway Deployment/Service。Agent/Workflow 实时运行表仍有进程内状态，因此不能为 Gateway 配置 HPA，也不能把副本数改为 2；`Recreate` 会带来短暂升级窗口，并避免正常 Deployment 更新期间两个 revision 重叠。它不是分布式 leader lease，节点网络分区等极端场景仍需运维隔离故障节点。Gateway PDB 以 `minAvailable: 1` 阻止未协调的自愿驱逐，但不能消除节点故障或版本升级的单副本停机窗口；执行 node drain 前必须先安排维护窗口并临时调整/移除 PDB。
+- 默认 2 副本的 Worker Deployment/Service、CPU HPA（2–8 副本）与 PDB。Worker 通过 PostgreSQL lease/fencing 和共享 JetStream durable consumer 横向扩容。
+- `/livez`、`/readyz` 与启动探针、SIGTERM 宽限、non-root、只读根文件系统、默认 seccomp、移除 Linux capabilities、资源 request/limit 和临时盘上限。
+- 默认拒绝入站/出站的 NetworkPolicy，以及 DNS、Gateway 入口、监控与外部依赖所需的最小端口规则。
+- Gateway/Worker 临时目录使用有 `sizeLimit` 的 `emptyDir`；上传、生成片段和最终成片都写到共享 MinIO/S3，因此基础清单不创建无消费者的本地上传 PVC。
+
+这些清单**不部署 PostgreSQL、Redis、NATS 或 MinIO**。部署前准备外部服务、支持 NetworkPolicy 的 CNI，以及供 HPA 使用的 Metrics Server。基础 HPA 最大 8 个 Worker；按示例连接池计算为 Gateway 12 + Worker 8×8 = 76 个数据库连接，修改上限或副本数时必须重新核算 PostgreSQL 连接预算。生产 JetStream 建议三副本；若外部集群的 replication factor 不同，应同步修改 `NATS_JOB_REPLICAS`。
+
+先构建并推送 `deploy/docker/Dockerfile.backend`，使用不可变 tag 或 digest，然后修改 `deploy/k8s/kustomization.yaml` 的 `images` 条目。不要部署示例中的 `.invalid` 镜像/endpoint。修改两个 ConfigMap 中的 MinIO endpoint、桶和容量参数；敏感连接信息不要写入 ConfigMap 或 Git。
+
+`deploy/k8s/secret.example.yaml` 仅列出 Secret key，故意不在 Kustomize resources 中，所有值都是不可用的 `REPLACE_ME`。它把 Gateway 的 JWT/Redis/管理员密钥与 Worker 的 NATS 密钥拆成两个最小权限 Secret，只有 PostgreSQL/MinIO 连接值需要分别写入两份。建议从权限为 `0600`、位于仓库外的文件或 External Secrets/Sealed Secrets 创建 `rust-toon-gateway-secrets` 和 `rust-toon-worker-secrets`。以下是文件方式的安装顺序：
+
+```bash
+kubectl apply -f deploy/k8s/namespace.yaml
+
+sudo install -o "$(id -un)" -g "$(id -gn)" -m 0600 \
+  deploy/k8s/secret.example.yaml /secure/path/rust-toon-secret.yaml
+${EDITOR:-vi} /secure/path/rust-toon-secret.yaml
+kubectl apply -f /secure/path/rust-toon-secret.yaml
+
+# 确认已修改 image、MINIO_ENDPOINT 和 NATS_JOB_REPLICAS 后再安装。
+kubectl apply -k deploy/k8s
+```
+
+`DATABASE_URL`、`REDIS_URL` 与 `NATS_URL` 均放在 Secret 中；URI 密码的保留字符必须 percent-encode，生产 Redis/NATS 应使用 TLS。`BOOTSTRAP_ADMIN_PASSWORD` 只用于首次启动：第一次成功登录并修改密码后，从 Secret 来源中删除该 key 并重新应用。基础清单使用固定名称的 ConfigMap/Secret，修改或轮换后必须显式执行 `kubectl -n rust-toon rollout restart deployment/rust-toon-gateway`，Worker 配置/密钥变更则重启 `deployment/rust-toon-worker`；等待对应 `rollout status` 成功后再结束变更。Gateway 使用 Recreate，重启期间会短暂不可用，需要在维护窗口执行。环境 overlay 也可以改用带内容哈希的 generator 或受控 reloader。更严格的生产集群应通过外部 Secret 控制器注入密钥，并对 Secret 启用静态加密与最小 RBAC。
+
+全新数据库也可以一次性应用全部资源：Gateway 启动时先执行 SQLx 迁移；每个 Worker 的受限 init container 会持续访问 `rust-toon-gateway:8080/readyz`，只有迁移、管理员校验及 Gateway 必需依赖全部就绪后才启动 Worker。不要删除这个等待条件，也不要让 Worker 自行执行迁移。
+
+基础 NetworkPolicy 只能按常用端口放行任意外部目的地，因为标准 Kubernetes NetworkPolicy 不支持 FQDN。请在环境 overlay 中把 PostgreSQL、Redis、NATS、MinIO 和 HTTPS provider egress 收窄为实际 CIDR，或使用 CNI 的 FQDN policy；若托管服务使用非默认端口也要同步调整。把 Ingress Controller 和监控组件所在 namespace 显式打标后才允许访问：
+
+```bash
+kubectl label namespace ingress-nginx rust-toon.io/gateway-access=true
+kubectl label namespace monitoring rust-toon.io/monitoring-access=true
+```
+
+集群入口、TLS 证书和前端静态站依赖各环境的 Ingress/Gateway API 与证书控制器，因此基础清单不内置。将业务 `/api/` 流量转发到 `Service/rust-toon-gateway:8080`，保持 SSE/WebSocket 超时及关闭代理缓冲等要求。若集群 DNS Pod 不使用 `k8s-app=kube-dns` 标签，应在 overlay 中调整 DNS egress selector。
+
+Gateway 与 Worker 默认输出 JSON 结构化日志并在各自管理 HTTP 端口开放 `/metrics`。Gateway 的 `/metrics` 与业务 API 同在 8080：标准 NetworkPolicy 只能按 IP/端口过滤，**不能按 URL path 阻断**，因此面向公网的 Ingress/Nginx 必须显式拒绝精确路径 `/metrics`（例如 Nginx `location = /metrics { return 404; }`），不得把它随 `/api/` 或 `/` 暴露。Pod 模板已经带有 `prometheus.io/*` 抓取注解；Prometheus 应通过 Kubernetes Pod/EndpointSlice 服务发现逐 Pod 抓取，不能把多副本 Worker 的 ClusterIP 当成单一静态目标，否则每次请求只会随机落到一个副本而漏掉其余进程内指标。Worker 8081 Service 只供集群内探针或监控发现使用。若使用 Prometheus Operator，可在环境 overlay 中按相同标签创建 PodMonitor。若启用注释示例 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`，还必须仅向实际 Collector namespace/CIDR 放行其 4317 端口，不能在基础 egress 中全局开放该端口。
+
+部署后检查：
+
+```bash
+kubectl -n rust-toon rollout status deployment/rust-toon-gateway --timeout=10m
+kubectl -n rust-toon rollout status deployment/rust-toon-worker --timeout=15m
+kubectl -n rust-toon get pods,service,hpa,pdb,networkpolicy
+kubectl -n rust-toon port-forward service/rust-toon-gateway 8080:8080
+curl -fsS http://127.0.0.1:8080/readyz
+```
+
+Gateway 在收到 SIGTERM 后先关闭 readiness 并等待 10 秒摘流，Pod 提供 45 秒终止宽限；Worker 停止领取任务并在 45 秒内把在途尝试安全重新排队，Pod 提供 75 秒宽限。不要把 Kubernetes 宽限缩短到应用 drain deadline 以下。基础清单把单 Pod 导出并发设为 1、Worker ephemeral-storage limit 设为 48 GiB、`/tmp` 的 `emptyDir` 设为 44 GiB，以容纳默认最多 10 GiB 源文件、规范化副本、最终输出和 FFmpeg 余量，并为容器日志/可写层保留 4 GiB；优先通过 Worker 副本扩容。Gateway 同样在 6 GiB limit 内只给 `/tmp` 分配 5 GiB。提高并发、分辨率或单任务上限前，必须用实际码率测算峰值并同步扩大 ephemeral-storage request/limit、`emptyDir.sizeLimit` 与节点磁盘预算。
+
+无需集群即可验证 Kustomize 引用、YAML、单 Gateway 限制、探针、安全上下文、HPA/PDB 与 NetworkPolicy：
+
+```bash
+bash script/test-k8s-deployment.sh
+```
+
+脚本优先使用本机 `kubectl kustomize` 或 `kustomize build`；没有这两个工具时使用 Ruby YAML/语义检查，最后还有 POSIX 工具的最小 fallback。CI 会执行同一检查。
+
+Kubernetes 环境的 PostgreSQL/对象备份优先使用托管服务 PITR、CSI VolumeSnapshot/S3 versioning 或同一恢复点能力；下面的 systemd 停写协调器用于仓库提供的单机/systemd 拓扑，不能直接当作 Kubernetes 多节点备份方案。
+
+### 4.7 备份与恢复
 
 仓库提供脚本与定时器样例：
 
@@ -291,6 +356,10 @@ location / {
     try_files $uri $uri/ /index.html;
 }
 
+location = /api/metrics {
+    return 404;
+}
+
 location /api/ {
     proxy_pass http://127.0.0.1:8080/;
     proxy_http_version 1.1;
@@ -303,7 +372,7 @@ location /api/ {
 }
 ```
 
-要点：`X-Forwarded-For` 影响后端限流的客户端识别；SSE/流式响应需要关闭代理缓冲并加大读超时；WebSocket 端点（`/api/socket/{agent}`）依赖 Upgrade 头。生产跨域应在反代层控制，不要开启 `WEB_PERMISSIVE_CORS`。
+要点：`X-Forwarded-For` 影响后端限流的客户端识别；SSE/流式响应需要关闭代理缓冲并加大读超时；WebSocket 端点（`/api/socket/{agent}`）依赖 Upgrade 头。生产跨域应在反代层控制，不要开启 `WEB_PERMISSIVE_CORS`。`/api/metrics` 必须在通用 `/api/` 代理规则之前精确拒绝；Prometheus 从内网直接抓 Gateway `/metrics`。
 
 ## 6. 持续集成
 

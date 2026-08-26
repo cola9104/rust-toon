@@ -124,16 +124,37 @@ for _ in $(seq 1 4); do
   curl -fsS "http://127.0.0.1:${gateway_port}/readyz" >/dev/null
 done
 
+# Metrics are scrape-only operations: they bypass auth/audit/user rate limits,
+# use OpenMetrics, and expose bounded route templates rather than query data.
+for _ in $(seq 1 4); do
+  curl -fsS \
+    -D "$work_dir/metrics.headers" \
+    "http://127.0.0.1:${gateway_port}/metrics?token=must-not-appear" \
+    >"$work_dir/metrics.txt"
+done
+if ! grep -qi '^content-type: application/openmetrics-text' "$work_dir/metrics.headers"; then
+  echo "Gateway /metrics did not return OpenMetrics content type" >&2
+  exit 1
+fi
+if ! grep -q '^rust_toon_http_requests_total' "$work_dir/metrics.txt"; then
+  echo "Gateway /metrics did not expose HTTP request counters" >&2
+  exit 1
+fi
+if grep -q 'must-not-appear' "$work_dir/metrics.txt"; then
+  echo "Gateway metrics leaked query credentials" >&2
+  exit 1
+fi
+
 E2E_BASE_URL="http://127.0.0.1:${gateway_port}" \
   node script/e2e/gateway-smoke.mjs
 
 sleep 1
 probe_audit_count="$(
   docker exec "$postgres_container" psql -U rust_toon -d rust_toon_test -Atc \
-    "SELECT count(*) FROM public.infra_api_access_log WHERE request_url IN ('/health','/livez','/readyz')"
+    "SELECT count(*) FROM public.infra_api_access_log WHERE request_url IN ('/health','/livez','/readyz','/metrics')"
 )"
 if [[ "$probe_audit_count" != "0" ]]; then
-  echo "Health probes polluted the API audit log: $probe_audit_count rows" >&2
+  echo "Operations probes polluted the API audit log: $probe_audit_count rows" >&2
   exit 1
 fi
 

@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rust-toon-worker
+  labels:
+    app.kubernetes.io/name: rust-toon-worker
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-worker

@@ -44,6 +44,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 futures-util = "0.3"
 hex = "0.4"
 hmac = "0.12"
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic", "tls-webpki-roots"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
+prometheus-client = "0.25"
 rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 redis = { version = "0.32", default-features = false, features = ["aio", "tokio-comp"] }
@@ -75,6 +79,7 @@ tokio-util = { version = "0.7", features = ["io"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "request-id", "trace"] }
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-opentelemetry = { version = "0.33", default-features = false, features = ["tracing-log"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.16", features = ["serde", "v4"] }
 zip = "8.6"

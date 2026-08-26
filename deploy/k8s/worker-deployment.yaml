@@ -1,0 +1,139 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-toon-worker
+  labels:
+    app.kubernetes.io/name: rust-toon-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 900
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-worker
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8081"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/name: rust-toon-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      serviceAccountName: rust-toon
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 75
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      # The Gateway owns SQLx migrations. On a fresh database every Worker
+      # waits until Gateway readiness proves migrations and dependencies are
+      # ready before the Worker binary can start.
+      initContainers:
+        - name: wait-for-gateway-migrations
+          image: rust-toon/backend:REPLACE_ME
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until curl --fail --silent --show-error \
+                --connect-timeout 3 --max-time 5 \
+                http://rust-toon-gateway:8080/readyz >/dev/null; do
+                echo "waiting for Gateway migrations and readiness"
+                sleep 3
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: worker
+          image: rust-toon/backend:REPLACE_ME
+          imagePullPolicy: IfNotPresent
+          command:
+            - /usr/local/bin/rust-toon-worker
+          envFrom:
+            - configMapRef:
+                name: rust-toon-worker-config
+            - secretRef:
+                name: rust-toon-worker-secrets
+          ports:
+            - name: management
+              containerPort: 8081
+              protocol: TCP
+          startupProbe:
+            httpGet:
+              path: /livez
+              port: management
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: management
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: management
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 8Gi
+            limits:
+              cpu: "4"
+              memory: 4Gi
+              ephemeral-storage: 48Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            # The container ephemeral-storage limit is 48 GiB; reserve the
+            # remainder for logs and its writable layer.
+            sizeLimit: 44Gi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-worker

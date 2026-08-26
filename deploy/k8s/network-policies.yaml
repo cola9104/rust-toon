@@ -1,0 +1,162 @@
+# Default isolation. The policies below add only the flows required by this
+# base. If your CNI supports FQDN policies, replace broad port-only egress with
+# the exact managed-service hostnames or CIDRs in an environment overlay.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  labels:
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  labels:
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-ingress
+  labels:
+    app.kubernetes.io/name: rust-toon-gateway
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-gateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Label the ingress-controller namespace with:
+        # rust-toon.io/gateway-access=true
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/gateway-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        # Worker init containers use this path to wait for migrations.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-worker
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-ingress
+  labels:
+    app.kubernetes.io/name: rust-toon-worker
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-worker
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-external-egress
+  labels:
+    app.kubernetes.io/name: rust-toon-gateway
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-gateway
+  policyTypes:
+    - Egress
+  egress:
+    # PostgreSQL, Redis, S3-compatible storage, and HTTPS AI/media providers.
+    # Scope these destinations by CIDR or CNI FQDN policy in production.
+    - ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 6380
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-external-egress
+  labels:
+    app.kubernetes.io/name: rust-toon-worker
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-worker
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        # Worker init containers must reach Gateway readiness before migrations
+        # are considered complete.
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-gateway
+      ports:
+        - protocol: TCP
+          port: 8080
+    # PostgreSQL, NATS, S3-compatible storage, and HTTPS source downloads.
+    # Scope these destinations by CIDR or CNI FQDN policy in production.
+    - ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 4222
+        - protocol: TCP
+          port: 9000
+        - protocol: TCP
+          port: 443

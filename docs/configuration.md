@@ -61,9 +61,9 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 
 | 变量 | 默认值 | 说明 | 来源 |
 | --- | --- | --- | --- |
-| `INFRA_UPLOAD_DIR` | `storage/uploads`（相对工作目录） | 本地上传根目录；infra 文件下载路由 `GET /upload/{*path}` 与 toon 素材/导出共用 | `infra-server/src/lib.rs`、`toon-server/src/toonflow_materials.rs`、`toonflow_video_export.rs` |
+| `INFRA_UPLOAD_MAX_BYTES` | `20971520`（20 MiB） | `/infra/file/upload` 的文件体积上限；最大可配置为 100 MiB | `infra-server/src/lib.rs` |
 
-生产环境若用 systemd 且开启 `ProtectSystem=strict`，需保证该目录可写（`deploy/systemd/rust-toon-gateway.service` 已放行 `/opt/rust-toon/storage`）。
+当前应用运行时文件统一存入 MinIO/S3；`INFRA_UPLOAD_DIR` 只由旧本地文件迁移脚本读取，不再是 Gateway 运行参数。FFmpeg/供应商下载的中间文件使用系统临时目录并在完成或恢复时清理。
 
 ### 1.7 MinIO 对象存储（`crates/modules/toon-server/src/toonflow_storage.rs`）
 
@@ -77,11 +77,29 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `MINIO_BUCKET` | `rust-toon` | 桶名 |
 | `MINIO_REGION` | `us-east-1` | 签名区域 |
 
-### 1.8 其他
+### 1.8 可观测性（`crates/framework/telemetry`）
+
+Gateway 与 Toon Worker 默认在各自监听端口暴露 `GET /metrics`，使用 OpenMetrics 文本格式，包含按路由模板聚合的 HTTP 请求量、耗时、在途请求，以及 Worker 的任务结果、执行耗时、在途任务、outbox 投递、租约回收和对象清理指标。指标标签不会写入原始 URL、查询串、项目 ID 或视频 ID，避免泄露令牌和产生无界基数。
+
+`/metrics` 不经过业务认证、审计和用户限流，必须仅允许 Prometheus 从内网抓取；面向公网的 Nginx/Ingress 应显式拒绝该路径。生产日志建议设为 JSON，开发环境可继续使用默认文本格式。
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `RUST_LOG` | `info` | `tracing` 的 EnvFilter；例如 `info,rust_toon_toon_server=debug` |
+| `TELEMETRY_LOG_FORMAT` | `text` | `text` 保持现有日志输出兼容；生产建议使用 `json` 供 Loki/ELK 采集 |
+| `TELEMETRY_METRICS_ENABLED` | `true` | 设为 `false` 时不挂载 `/metrics`，指标记录也变为无操作 |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | 无 | 可选 OTLP gRPC trace endpoint；优先级高于通用 endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | 无 | 可选通用 OTLP gRPC endpoint，例如 `http://otel-collector:4317`；两个 endpoint 均未配置时不会创建 exporter 或发起外部连接 |
+| `OTEL_EXPORTER_OTLP_TRACES_TIMEOUT` | 无 | trace 专用导出超时（毫秒），优先级高于通用 timeout；范围 100～300000 |
+| `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | 通用单批导出超时（毫秒），范围 100～300000 |
+| `OTEL_SDK_DISABLED` | `false` | 设为 `true` 时即使配置了 endpoint 也禁用 OTLP trace 导出 |
+
+启用 OTLP 后，HTTP `traceparent` / `tracestate` 会被提取并设置为 `http_request` server span 的父上下文，可发送到 OpenTelemetry Collector、开启 OTLP receiver 的 SkyWalking 或 Tempo。当前 NATS durable job envelope 仍保留既有业务 `trace_id` 字符串，尚未注入 W3C trace context，因此 HTTP 到 Worker 的跨消息完整父子链路仍是后续项；Worker span 会携带 `job.trace_id`、job ID 和 NATS destination 供检索关联，不应把它宣称为完整分布式 trace。
+
+### 1.9 其他
 
 | 变量 | 默认值 | 说明 | 来源 |
 | --- | --- | --- | --- |
-| `RUST_LOG` | `info` | tracing 日志过滤（EnvFilter） | `framework/common/src/telemetry.rs` |
 | `RUST_ENV` | `development` | 运行环境标识，展示在 infra 监控的服务器信息中 | `infra-server/src/monitor.rs` |
 | `READINESS_REQUIRE_REDIS` | 设置了 `REDIS_URL` 时为 `true` | Redis 不可用时让 `/readyz` 返回 503 | `gateway/src/readiness.rs` |
 | `READINESS_REQUIRE_MINIO` | 生产环境或设置了 `MINIO_ENDPOINT` 时为 `true` | 使用生产链路同款签名 S3 请求验证凭据和 bucket；不可访问时让 `/readyz` 返回 503 | `gateway/src/readiness.rs` |
@@ -94,7 +112,7 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `AI_VIDEO_POLL_INTERVAL_SECONDS` | `5` | 异步视频任务轮询间隔 | `toon-server/src/ai_client.rs` |
 | `AI_VIDEO_POLL_TIMEOUT_SECONDS` | `600` | 异步视频任务最长等待时间 | `toon-server/src/ai_client.rs` |
 
-### 1.9 分布式任务与 Toon Worker
+### 1.10 分布式任务与 Toon Worker
 
 最终成片等长任务不在 HTTP 网关进程中执行。网关在同一个 PostgreSQL 事务中写入业务任务和 `toonflow.distributed_jobs`，worker 的 dispatcher 再把任务引用投递到 NATS JetStream。PostgreSQL 是任务真相源，JetStream 使用显式 ACK 和至少一次投递；worker 通过数据库租约、心跳和 fencing token 保证多个实例竞争时只有租约持有者能够提交结果。
 
@@ -144,7 +162,7 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 
 模型能力矩阵写入 `ai.model_configs.config.capabilities`，支持 `videoModes`、`durationResolutionMap`、`thinkLevels` 和 `multiReference`。视频调用会在请求上游前校验模式以及时长/分辨率组合；未配置能力矩阵的旧模型保持兼容。
 
-### 1.10 启动账号说明
+### 1.11 启动账号说明
 
 根 `AGENTS.md` 与 `deploy/env/gateway.env.example` 约定了 `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` 两个变量用于首次启动的初始管理员。请以代码实际行为为准理解当前版本：`system-server` 的启动引导（`bootstrap.rs`）是**校验**数据库中必须存在启用状态的 `super_admin` 用户，否则拒绝启动；基线迁移 `sql/postgresql/0001_initial.sql` 已内置 `admin` 用户（bcrypt 密码散列）与 `super_admin` 角色，空库初始化后可直接使用。前端开发环境默认填充的登录口令见 `apps/web/apps/web-antd/.env.development`（`VITE_APP_DEFAULT_USERNAME=admin` / `VITE_APP_DEFAULT_PASSWORD=admin123`）。首次登录后请立即修改密码。
 

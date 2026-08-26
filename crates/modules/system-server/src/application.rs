@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use rust_toon_system_api::{LoginRequest, RefreshTokenRequest, TokenResponse};
 use tracing::warn;
 use uuid::Uuid;
@@ -46,9 +46,15 @@ pub async fn login(
         return Err(LoginError::InvalidCredentials);
     }
 
-    infrastructure::record_successful_login(&state.pool, account.id)
+    let login_recorded = infrastructure::record_successful_login(&state.pool, account.id)
         .await
         .map_err(|_| LoginError::Internal)?;
+    // A concurrent failed request may have established the lock while the
+    // password hash was being verified. Do not let this stale login snapshot
+    // clear that newly-created lock and issue a token.
+    if !login_recorded {
+        return Err(LoginError::Locked);
+    }
     let response = issue_token_pair(state, account.id).await?;
     audit::record_login(state, Some(account.id), &account.username, 100, 0).await;
     Ok(response)
@@ -153,12 +159,14 @@ async fn record_failed_login(
     state: &SystemState,
     account: &infrastructure::UserAccount,
 ) -> Result<(), LoginError> {
-    let attempts = account.failed_login_attempts.saturating_add(1);
-    let locked_until = (attempts >= MAX_FAILED_LOGIN_ATTEMPTS)
-        .then(|| Utc::now() + Duration::minutes(LOGIN_LOCK_DURATION_MINUTES));
-    infrastructure::record_failed_login(&state.pool, account.id, attempts, locked_until)
-        .await
-        .map_err(|_| LoginError::Internal)
+    infrastructure::record_failed_login(
+        &state.pool,
+        account.id,
+        MAX_FAILED_LOGIN_ATTEMPTS,
+        LOGIN_LOCK_DURATION_MINUTES as i32,
+    )
+    .await
+    .map_err(|_| LoginError::Internal)
 }
 
 fn is_locked(account: &infrastructure::UserAccount) -> bool {

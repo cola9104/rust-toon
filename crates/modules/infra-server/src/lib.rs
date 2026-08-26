@@ -3,8 +3,11 @@ use std::{collections::HashMap, env, io::Write, time::Instant};
 use axum::{
     Json, Router,
     body::{Body, Bytes},
-    extract::{Multipart, Path, Query, State},
-    http::header,
+    extract::{
+        DefaultBodyLimit, Multipart, Path, Query, Request, State, multipart::MultipartError,
+    },
+    http::{StatusCode, header},
+    middleware::{Next, from_fn, from_fn_with_state},
     response::Response,
     routing::{delete, get, post, put},
 };
@@ -12,25 +15,39 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use chrono::{Datelike, Timelike, Utc};
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_database::PgPool;
+use rust_toon_framework_security::{CurrentUser, Permission, TokenService, authenticate};
 use rust_toon_framework_web::AppError;
 use rust_toon_infra_api::InfraCapability;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 mod excel;
 mod monitor;
 mod object_storage;
 
+const DEFAULT_UPLOAD_MAX_BYTES: usize = 20 * 1024 * 1024;
+const MAX_CONFIGURABLE_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
+// `DefaultBodyLimit` applies to the complete multipart envelope, while the
+// configured limit describes the file itself. Keep a small, bounded allowance
+// for the boundary and content-disposition headers and enforce the exact file
+// limit again after extraction.
+const MULTIPART_OVERHEAD_BYTES: usize = 64 * 1024;
+
 #[derive(Clone)]
 pub struct InfraState {
     pool: PgPool,
+    tokens: TokenService,
+    upload_max_bytes: usize,
     started_at: Instant,
 }
 
 impl InfraState {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, tokens: TokenService) -> Self {
         Self {
             pool,
+            tokens,
+            upload_max_bytes: configured_upload_max_bytes(),
             started_at: Instant::now(),
         }
     }
@@ -51,8 +68,7 @@ pub struct QueryParams {
 }
 
 pub fn routes(state: InfraState) -> Router {
-    Router::new()
-        .route("/infra/capabilities", get(capabilities))
+    let protected = Router::new()
         .route("/infra/config/page", get(config_page))
         .route("/infra/config/get", get(config_get))
         .route("/infra/config/get-value-by-key", get(config_value_by_key))
@@ -86,8 +102,14 @@ pub fn routes(state: InfraState) -> Router {
         .route("/infra/file-config/test", get(ok_bool))
         .route("/infra/file/page", get(file_page))
         .route("/infra/file/create", post(file_create))
-        .route("/infra/file/upload", post(file_upload))
-        .route("/upload/{*path}", get(file_download))
+        .route(
+            "/infra/file/upload",
+            post(file_upload).layer(DefaultBodyLimit::max(
+                state
+                    .upload_max_bytes
+                    .saturating_add(MULTIPART_OVERHEAD_BYTES),
+            )),
+        )
         .route("/infra/file/presigned-url", get(file_presigned_url))
         .route("/infra/file/delete", delete(file_delete))
         .route("/infra/file/delete-list", delete(file_delete_list))
@@ -297,7 +319,171 @@ pub fn routes(state: InfraState) -> Router {
             "/infra/demo03-student-erp/demo03-grade/delete-list",
             delete(demo03_grade_delete_list),
         )
+        .route_layer(from_fn(authorize_infra))
+        .route_layer(from_fn_with_state(state.tokens.clone(), authenticate));
+
+    Router::new()
+        .route("/infra/capabilities", get(capabilities))
+        .route("/upload/{*path}", get(file_download))
+        .merge(protected)
         .with_state(state)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InfraPolicy {
+    Authenticated,
+    SuperAdmin,
+    Permission(&'static str),
+}
+
+async fn authorize_infra(request: Request, next: Next) -> Result<Response, AppError> {
+    let user = request
+        .extensions()
+        .get::<CurrentUser>()
+        .ok_or_else(|| AppError::unauthorized("authentication required"))?;
+    if user.role_codes.iter().any(|role| role == "super_admin") {
+        return Ok(next.run(request).await);
+    }
+
+    match infra_policy(request.uri().path()) {
+        Some(InfraPolicy::Authenticated) => Ok(next.run(request).await),
+        Some(InfraPolicy::SuperAdmin) => Err(AppError::forbidden("permission denied")),
+        Some(InfraPolicy::Permission(code)) => {
+            let permission =
+                Permission::new(code).map_err(|_| AppError::internal("invalid policy"))?;
+            if user.can(&permission) {
+                Ok(next.run(request).await)
+            } else {
+                Err(AppError::forbidden("permission denied"))
+            }
+        }
+        None => Err(AppError::forbidden(
+            "infrastructure route has no access policy",
+        )),
+    }
+}
+
+fn infra_policy(path: &str) -> Option<InfraPolicy> {
+    use InfraPolicy::{Authenticated, Permission as Allow, SuperAdmin};
+
+    let policy = match path {
+        "/infra/config/page" | "/infra/config/get" | "/infra/config/get-value-by-key" => {
+            Allow("infra:config:query")
+        }
+        "/infra/config/create" => Allow("infra:config:create"),
+        "/infra/config/update" => Allow("infra:config:update"),
+        "/infra/config/delete" | "/infra/config/delete-list" => Allow("infra:config:delete"),
+        "/infra/config/export-excel" => Allow("infra:config:export"),
+
+        "/infra/data-source-config/list" | "/infra/data-source-config/get" => {
+            Allow("infra:data-source-config:query")
+        }
+        "/infra/data-source-config/create" => Allow("infra:data-source-config:create"),
+        "/infra/data-source-config/update" => Allow("infra:data-source-config:update"),
+        "/infra/data-source-config/delete" | "/infra/data-source-config/delete-list" => {
+            Allow("infra:data-source-config:delete")
+        }
+
+        "/infra/file-config/page" | "/infra/file-config/get" | "/infra/file-config/test" => {
+            Allow("infra:file-config:query")
+        }
+        "/infra/file-config/create" => Allow("infra:file-config:create"),
+        "/infra/file-config/update" | "/infra/file-config/update-master" => {
+            Allow("infra:file-config:update")
+        }
+        "/infra/file-config/delete" | "/infra/file-config/delete-list" => {
+            Allow("infra:file-config:delete")
+        }
+
+        "/infra/file/page" => Allow("infra:file:query"),
+        // Shared profile, chat, editor, and knowledge uploads intentionally only
+        // require a valid account. `presigned-url` and `create` are the two
+        // companion calls used by the optional browser-to-S3 upload mode.
+        // File administration still requires the query/delete permissions.
+        "/infra/file/upload" | "/infra/file/presigned-url" | "/infra/file/create" => Authenticated,
+        "/infra/file/delete" | "/infra/file/delete-list" => Allow("infra:file:delete"),
+
+        "/infra/job/page"
+        | "/infra/job/get"
+        | "/infra/job/get_next_times"
+        | "/infra/job-log/page" => Allow("infra:job:query"),
+        "/infra/job/create" => Allow("infra:job:create"),
+        "/infra/job/update" | "/infra/job/update-status" | "/infra/job/sync" => {
+            Allow("infra:job:update")
+        }
+        "/infra/job/trigger" => Allow("infra:job:trigger"),
+        "/infra/job/delete" | "/infra/job/delete-list" => Allow("infra:job:delete"),
+        "/infra/job/export-excel" | "/infra/job-log/export-excel" => Allow("infra:job:export"),
+
+        "/infra/api-access-log/page" => Allow("infra:api-access-log:query"),
+        "/infra/api-access-log/export-excel" => Allow("infra:api-access-log:export"),
+        "/infra/api-error-log/page" => Allow("infra:api-error-log:query"),
+        "/infra/api-error-log/update-status" => Allow("infra:api-error-log:update-status"),
+        "/infra/api-error-log/export-excel" => Allow("infra:api-error-log:export"),
+        "/infra/redis/get-monitor-info" => Allow("infra:redis:get-monitor-info"),
+        // These views expose database activity and cross-user request traces.
+        // Their legacy menu entries have no permission codes, so fail closed
+        // to the existing super-admin role instead of exposing them to every
+        // authenticated account.
+        "/infra/monitor/postgresql" | "/infra/monitor/rust" | "/infra/monitor/traces" => SuperAdmin,
+
+        "/infra/codegen/table/list"
+        | "/infra/codegen/table/page"
+        | "/infra/codegen/detail"
+        | "/infra/codegen/db/table/list" => Allow("infra:codegen:query"),
+        "/infra/codegen/update" | "/infra/codegen/sync-from-db" => Allow("infra:codegen:update"),
+        "/infra/codegen/preview" => Allow("infra:codegen:preview"),
+        "/infra/codegen/download" => Allow("infra:codegen:download"),
+        "/infra/codegen/create-list" => Allow("infra:codegen:create"),
+        "/infra/codegen/delete" | "/infra/codegen/delete-list" => Allow("infra:codegen:delete"),
+
+        path if path.starts_with("/infra/demo01-contact/") => {
+            demo_policy(path, "/infra/demo01-contact/", "infra:demo01-contact")?
+        }
+        path if path.starts_with("/infra/demo02-category/") => {
+            demo_policy(path, "/infra/demo02-category/", "infra:demo02-category")?
+        }
+        path if path.starts_with("/infra/demo03-student-") => {
+            let action = path.rsplit('/').next()?;
+            demo_action_policy(action, "infra:demo03-student")?
+        }
+        _ => return None,
+    };
+    Some(policy)
+}
+
+fn demo_policy(path: &str, prefix: &str, permission_prefix: &'static str) -> Option<InfraPolicy> {
+    demo_action_policy(path.strip_prefix(prefix)?, permission_prefix)
+}
+
+fn demo_action_policy(action: &str, permission_prefix: &'static str) -> Option<InfraPolicy> {
+    let suffix = match action {
+        "page" | "list" | "get" | "list-by-student-id" | "get-by-student-id" => "query",
+        "create" => "create",
+        "update" => "update",
+        "delete" | "delete-list" => "delete",
+        "export-excel" => "export",
+        _ => return None,
+    };
+    let code = match (permission_prefix, suffix) {
+        ("infra:demo01-contact", "query") => "infra:demo01-contact:query",
+        ("infra:demo01-contact", "create") => "infra:demo01-contact:create",
+        ("infra:demo01-contact", "update") => "infra:demo01-contact:update",
+        ("infra:demo01-contact", "delete") => "infra:demo01-contact:delete",
+        ("infra:demo01-contact", "export") => "infra:demo01-contact:export",
+        ("infra:demo02-category", "query") => "infra:demo02-category:query",
+        ("infra:demo02-category", "create") => "infra:demo02-category:create",
+        ("infra:demo02-category", "update") => "infra:demo02-category:update",
+        ("infra:demo02-category", "delete") => "infra:demo02-category:delete",
+        ("infra:demo02-category", "export") => "infra:demo02-category:export",
+        ("infra:demo03-student", "query") => "infra:demo03-student:query",
+        ("infra:demo03-student", "create") => "infra:demo03-student:create",
+        ("infra:demo03-student", "update") => "infra:demo03-student:update",
+        ("infra:demo03-student", "delete") => "infra:demo03-student:delete",
+        ("infra:demo03-student", "export") => "infra:demo03-student:export",
+        _ => return None,
+    };
+    Some(InfraPolicy::Permission(code))
 }
 
 async fn capabilities() -> Json<ApiResponse<InfraCapability>> {
@@ -547,7 +733,7 @@ async fn file_upload(
     let field = multipart
         .next_field()
         .await
-        .map_err(|_| AppError::bad_request("failed to read upload file"))?
+        .map_err(upload_multipart_error)?
         .ok_or_else(|| AppError::bad_request("file is required"))?;
     let name = field
         .file_name()
@@ -561,10 +747,13 @@ async fn file_upload(
     let bytes = field
         .bytes()
         .await
-        .map_err(|_| AppError::bad_request("failed to read upload file"))?
+        .map_err(upload_multipart_error)?
         .to_vec();
+    if bytes.len() > state.upload_max_bytes {
+        return Err(upload_too_large_error());
+    }
     let date = Utc::now().format("%Y%m%d").to_string();
-    let object_name = format!("{}_{}", Utc::now().timestamp_millis(), name);
+    let object_name = format!("{}_{}", Uuid::new_v4().simple(), name);
     let relative_path = format!("{date}/{object_name}");
     let object_key = format!("infra/{relative_path}");
     object_storage::put(&object_key, bytes.clone())
@@ -580,6 +769,22 @@ async fn file_upload(
     )))
 }
 
+fn upload_multipart_error(error: MultipartError) -> AppError {
+    if error.status() == StatusCode::PAYLOAD_TOO_LARGE {
+        upload_too_large_error()
+    } else {
+        AppError::bad_request("failed to read upload file")
+    }
+}
+
+fn upload_too_large_error() -> AppError {
+    AppError::new(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        StatusCode::PAYLOAD_TOO_LARGE.as_u16(),
+        "upload exceeds the configured size limit",
+    )
+}
+
 async fn file_download(Path(path): Path<String>) -> Result<Response, AppError> {
     if path.split('/').any(|part| part == ".." || part.is_empty()) {
         return Err(AppError::bad_request("invalid file path"));
@@ -587,11 +792,41 @@ async fn file_download(Path(path): Path<String>) -> Result<Response, AppError> {
     let bytes = object_storage::get(&format!("infra/{path}"))
         .await
         .map_err(|_| AppError::not_found("file not found"))?;
-    let content_type = infer_content_type(&path);
+    build_file_download_response(&path, bytes)
+}
+
+fn build_file_download_response(path: &str, bytes: Vec<u8>) -> Result<Response, AppError> {
+    let content_type = infer_content_type(path);
+    let file_name = path
+        .rsplit('/')
+        .next()
+        .map(sanitize_file_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "download".to_owned());
+    let disposition = if is_safe_inline_image(path) {
+        format!("inline; filename=\"{file_name}\"")
+    } else {
+        format!("attachment; filename=\"{file_name}\"")
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .header("x-content-type-options", "nosniff")
+        .header("content-security-policy", "default-src 'none'; sandbox")
         .body(Body::from(bytes))
         .map_err(|_| AppError::internal("failed to read file"))
+}
+
+fn configured_upload_max_bytes() -> usize {
+    parse_upload_max_bytes(env::var("INFRA_UPLOAD_MAX_BYTES").ok().as_deref())
+}
+
+fn parse_upload_max_bytes(value: Option<&str>) -> usize {
+    value
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_UPLOAD_MAX_BYTES)
+        .min(MAX_CONFIGURABLE_UPLOAD_BYTES)
 }
 
 fn sanitize_file_name(value: &str) -> String {
@@ -623,6 +858,17 @@ fn infer_content_type(path: &str) -> &'static str {
         "html" => "text/html; charset=utf-8",
         _ => "application/octet-stream",
     }
+}
+
+fn is_safe_inline_image(path: &str) -> bool {
+    matches!(
+        path.rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp"
+    )
 }
 
 async fn file_presigned_url(
@@ -1930,4 +2176,247 @@ fn html_type(data_type: &str) -> &'static str {
 
 async fn ok_bool() -> Json<ApiResponse<bool>> {
     Json(ApiResponse::new(true))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use rust_toon_framework_security::{
+        CurrentUser, DataScope, Permission, PermissionSet, SecurityConfig, TokenService,
+    };
+    use sqlx::postgres::PgPoolOptions;
+    use tower::ServiceExt;
+
+    use super::{
+        DEFAULT_UPLOAD_MAX_BYTES, InfraPolicy, InfraState, MAX_CONFIGURABLE_UPLOAD_BYTES,
+        MULTIPART_OVERHEAD_BYTES, build_file_download_response, infra_policy,
+        parse_upload_max_bytes, routes,
+    };
+
+    fn token_service() -> TokenService {
+        TokenService::new(
+            SecurityConfig::new(
+                "infra-test-secret-with-at-least-thirty-two-bytes",
+                "infra-test",
+                "infra-test-client",
+                Duration::from_secs(60),
+            )
+            .expect("valid test token configuration"),
+        )
+    }
+
+    fn test_state(upload_max_bytes: usize) -> InfraState {
+        InfraState {
+            pool: PgPoolOptions::new()
+                .connect_lazy("postgres://rust_toon:rust_toon@127.0.0.1/rust_toon_test")
+                .expect("valid lazy test database URL"),
+            tokens: token_service(),
+            upload_max_bytes,
+            started_at: Instant::now(),
+        }
+    }
+
+    fn ordinary_user() -> CurrentUser {
+        CurrentUser {
+            user_id: "ordinary-user".into(),
+            username: "ordinary".into(),
+            tenant_id: Some("1".into()),
+            role_codes: vec!["ordinary".into()],
+            permissions: PermissionSet::default(),
+            data_scope: DataScope::SelfOnly,
+        }
+    }
+
+    fn upload_request(token: Option<&str>, body: Body) -> Request<Body> {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/infra/file/upload")
+            .header(
+                header::CONTENT_TYPE,
+                "multipart/form-data; boundary=infra-test",
+            );
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        request.body(body).expect("valid upload request")
+    }
+
+    #[test]
+    fn every_registered_protected_route_has_a_policy() {
+        // Read the route declarations themselves so a newly registered route
+        // cannot silently be omitted from a manually duplicated test table.
+        let source = include_str!("lib.rs");
+        let protected_routes = source
+            .split_once("let protected =")
+            .expect("protected router declaration")
+            .1
+            .split_once(".route_layer(from_fn(authorize_infra))")
+            .expect("authorization layer declaration")
+            .0;
+
+        let mut checked = 0;
+        for route in protected_routes.split(".route(").skip(1) {
+            let Some((_, quoted)) = route.split_once('"') else {
+                continue;
+            };
+            let Some((path, _)) = quoted.split_once('"') else {
+                continue;
+            };
+            if !path.starts_with("/infra/") {
+                continue;
+            }
+            let policy = infra_policy(path)
+                .unwrap_or_else(|| panic!("protected route has no access policy: {path}"));
+            if let InfraPolicy::Permission(code) = policy {
+                Permission::new(code)
+                    .unwrap_or_else(|_| panic!("route has an invalid permission code: {path}"));
+            }
+            checked += 1;
+        }
+
+        assert!(checked >= 100, "unexpectedly parsed only {checked} routes");
+    }
+
+    #[test]
+    fn sensitive_monitors_are_super_admin_only_but_upload_is_account_wide() {
+        assert_eq!(
+            infra_policy("/infra/monitor/postgresql"),
+            Some(InfraPolicy::SuperAdmin)
+        );
+        assert_eq!(
+            infra_policy("/infra/file/upload"),
+            Some(InfraPolicy::Authenticated)
+        );
+        assert_eq!(
+            infra_policy("/infra/file/presigned-url"),
+            Some(InfraPolicy::Authenticated)
+        );
+        assert_eq!(
+            infra_policy("/infra/file/create"),
+            Some(InfraPolicy::Authenticated)
+        );
+        assert!(matches!(
+            infra_policy("/infra/config/page"),
+            Some(InfraPolicy::Permission("infra:config:query"))
+        ));
+        assert_eq!(infra_policy("/infra/not-registered"), None);
+    }
+
+    #[tokio::test]
+    async fn authentication_runs_before_policy_and_ordinary_users_can_reach_upload() {
+        let state = test_state(1024);
+        let token = state
+            .tokens
+            .issue_access_token(ordinary_user())
+            .expect("issue test access token");
+        let app = routes(state);
+        let empty_multipart = || Body::from("--infra-test--\r\n");
+
+        let missing_credentials = app
+            .clone()
+            .oneshot(upload_request(None, empty_multipart()))
+            .await
+            .expect("upload response");
+        assert_eq!(missing_credentials.status(), StatusCode::UNAUTHORIZED);
+
+        // A valid multipart envelope with no file reaches the handler and is
+        // rejected as a bad request. A 401/403 here would mean authentication
+        // and authorization were stacked in the wrong order, or ordinary
+        // account uploads had accidentally been made admin-only.
+        let ordinary_upload = app
+            .clone()
+            .oneshot(upload_request(Some(&token), empty_multipart()))
+            .await
+            .expect("upload response");
+        assert_eq!(ordinary_upload.status(), StatusCode::BAD_REQUEST);
+
+        let forbidden_admin_route = app
+            .oneshot(
+                Request::builder()
+                    .uri("/infra/config/page")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .expect("valid admin request"),
+            )
+            .await
+            .expect("admin response");
+        assert_eq!(forbidden_admin_route.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn multipart_envelope_is_bounded_before_the_upload_handler() {
+        let state = test_state(8);
+        let token = state
+            .tokens
+            .issue_access_token(ordinary_user())
+            .expect("issue test access token");
+        let app = routes(state);
+        let file_too_large = "--infra-test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n123456789\r\n--infra-test--\r\n".to_owned();
+        let response = app
+            .clone()
+            .oneshot(upload_request(Some(&token), Body::from(file_too_large)))
+            .await
+            .expect("upload response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+        let oversized_envelope = "x".repeat(MULTIPART_OVERHEAD_BYTES + 32);
+        let multipart = format!(
+            "--infra-test\r\nContent-Disposition: form-data; name=\"file\"; filename=\"large.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n{oversized_envelope}\r\n--infra-test--\r\n"
+        );
+
+        let response = app
+            .oneshot(upload_request(Some(&token), Body::from(multipart)))
+            .await
+            .expect("upload response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn upload_limit_defaults_and_caps_invalid_configuration() {
+        assert_eq!(parse_upload_max_bytes(None), DEFAULT_UPLOAD_MAX_BYTES);
+        assert_eq!(parse_upload_max_bytes(Some("0")), DEFAULT_UPLOAD_MAX_BYTES);
+        assert_eq!(
+            parse_upload_max_bytes(Some("not-a-number")),
+            DEFAULT_UPLOAD_MAX_BYTES
+        );
+        assert_eq!(parse_upload_max_bytes(Some("4096")), 4096);
+        assert_eq!(
+            parse_upload_max_bytes(Some("999999999999")),
+            MAX_CONFIGURABLE_UPLOAD_BYTES
+        );
+    }
+
+    #[test]
+    fn active_download_types_are_forced_to_attachment_with_browser_guards() {
+        for path in ["20260827/payload.html", "20260827/payload.svg"] {
+            let response =
+                build_file_download_response(path, b"payload".to_vec()).expect("download response");
+            assert!(
+                response.headers()[header::CONTENT_DISPOSITION]
+                    .to_str()
+                    .expect("valid disposition")
+                    .starts_with("attachment;")
+            );
+            assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+            assert_eq!(
+                response.headers()["content-security-policy"],
+                "default-src 'none'; sandbox"
+            );
+        }
+
+        let image =
+            build_file_download_response("20260827/preview.png", vec![]).expect("image response");
+        assert!(
+            image.headers()[header::CONTENT_DISPOSITION]
+                .to_str()
+                .expect("valid disposition")
+                .starts_with("inline;")
+        );
+        assert_eq!(image.headers()[header::CONTENT_TYPE], "image/png");
+    }
 }

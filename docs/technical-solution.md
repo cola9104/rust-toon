@@ -25,7 +25,7 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 │   │   ├── web/               # AppError、CORS/RequestId/Trace 等 Web 层
 │   │   ├── mq/                # NATS JetStream 连接、消息信封与显式 ACK
 │   │   ├── tenant/            # 租户上下文扩展点（预留）
-│   │   └── telemetry/         # 遥测扩展点（当前 re-export init_tracing）
+│   │   └── telemetry/         # JSON/text 日志、Prometheus 指标与可选 OTLP trace
 │   └── modules/               # 业务模块，每模块一对 crate：
 │       ├── system-api/server  #   账号、角色、菜单、字典、部门、租户、日志等管理域
 │       ├── infra-api/server   #   参数配置、文件、定时任务、代码生成、监控等基础设施域
@@ -37,8 +37,8 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 │   ├── postgresql/            # SQLx 迁移链（0001 起，唯一事实来源）
 │   └── bootstrap/current.sql  # 参考用 pg_dump 快照，应用从不加载
 ├── script/                    # docker-compose、迁移测试、备份/恢复等脚本
-├── deploy/                    # 环境变量样例与 systemd unit 样例
-└── storage/uploads/           # 本地文件上传默认目录
+├── deploy/                    # 环境变量、systemd、容器与 Kubernetes 部署样例
+└── storage/uploads/           # 旧版本本地文件迁移来源（运行时统一使用 MinIO）
 ```
 
 `*-api` crate 放共享类型（能力描述、请求/响应模型、平台枚举），`*-server` crate 放路由与业务实现。`*-server` 不单独起进程，全部由 gateway 以库形式链接、合并路由。
@@ -49,13 +49,13 @@ rust-toon 是一个动漫（短剧）制作管理平台，由以下部分组成�
 
 所有业务模块编译进同一个网关二进制（`cargo run -p rust-toon-gateway`）。gateway 在 `services/gateway/src/main.rs` 中：
 
-1. `init_tracing("gateway")` 初始化日志（`RUST_LOG` 控制，默认 `info`）。
+1. `init_telemetry("gateway")` 初始化 text/JSON 日志、进程内 Prometheus 指标与可选 OTLP trace；未配置 OTLP endpoint 时不会连接外部 collector。
 2. `DatabaseConfig::from_env()` + `connect()` 建立 PostgreSQL 连接池，随后 `migrate()` 执行 SQLx 迁移。
 3. `RedisConfig::from_env()` 可选连接 Redis；连接失败仅告警并降级（缓存与限流关闭），不阻断启动。
 4. `SecurityConfig::from_env()` 构造 `TokenService`（JWT HS256）。
-5. 依次构造 `SystemState`（带 Redis 缓存）、`InfraState`、`AiState`、`ToonState`、`MediaState`。
+5. 依次构造 `SystemState`（带 Redis 缓存）、`InfraState`、`AiState`、`ToonState`、`MediaState`；`InfraState` 同样持有 `TokenService`，管理路由在后端强制认证和 RBAC。
 6. `system_state.bootstrap().await?` 启动校验：确认数据库中存在启用的 `super_admin` 角色用户，否则拒绝启动（`crates/modules/system-server/src/bootstrap.rs`）。
-7. 合并五个模块的路由，追加 `/`、`/openapi.json`、兼容存活接口 `/health`、新探针 `/livez` 和 `/readyz`，以及 404 fallback。
+7. 合并五个模块的路由，追加 `/`、`/openapi.json`、兼容存活接口 `/health`、新探针 `/livez`、`/readyz`、Prometheus `/metrics`，以及 404 fallback。
 8. 全局中间件（自内向外生效）：数据库认证中间件 `authenticate_from_database` → 审计中间件 `audit::record`；若 Redis 可用，再加全局限流中间件 `rate_limit`。
 9. `apply_web_layers` 追加 RequestId（`x-request-id`）、Trace、以及可选的宽松 CORS。
 10. `serve()` 绑定 `GATEWAY_HOST:GATEWAY_PORT`（默认 `0.0.0.0:8080`），支持 Ctrl+C / SIGTERM 优雅停机。
@@ -87,9 +87,19 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 - 限流：`framework/redis/src/rate_limit.rs`，按 `IP + 请求方法 + 路径` 维度在 Redis 计数（窗口默认 60 秒、上限默认 300 次），`/health`、`/livez`、`/readyz` 豁免；Redis 故障时放行并告警。客户端 IP 优先取 `x-forwarded-for`。
 - 缓存：`RedisClient` 提供 `get_json` / `set_json` / `delete_by_pattern` 等，键带前缀（默认 `rust-toon`）。
 
+### 3.6 分布式治理与可观测边界
+
+当前部署单元是“模块化 Gateway + 持久媒体 Worker”，而不是把每个 CRUD 模块拆成独立进程。认证、文件、字典和配置作为 workspace 内的公共模块复用；只有需要独立扩缩和故障隔离的长耗时媒体任务进入 Worker。这样保持 Toonflow 的 API 与操作方式不变，也避免在没有独立数据所有权前形成共享数据库的伪微服务。
+
+- **发现与配置**：Kubernetes 部署使用 Service/DNS 发现，进程配置使用 Rust typed config + ConfigMap/Secret；当前拓扑没有引入 Nacos/Apollo。需要动态刷新的业务配置仍应通过带版本的 PostgreSQL 配置和通知机制实现，而不是把密钥写入普通配置表。
+- **容错**：AI/媒体外部调用已有超时、有限重试和并发信号量；Worker 有 lease、heartbeat、fencing、重试、接管与优雅排空。统一 circuit breaker/load-shed 尚未覆盖全部外部适配器，不应宣传为完整服务治理平台。
+- **事务一致性**：视频任务采用本地 PostgreSQL 事务 + outbox、JetStream 至少一次投递、幂等/围栏提交和对象清理补偿；不使用 XA/2PC。PostgreSQL 始终是任务真相源。
+- **观测**：Gateway 与 Worker 支持 JSON stdout（由 Fluent Bit/Vector 等采集到 Loki/ELK）、OpenMetrics `/metrics`（Prometheus/Grafana）以及可选 OTLP gRPC trace（Collector 可转发到 SkyWalking/Tempo/Jaeger）。HTTP 会提取 W3C `traceparent`；NATS 信封目前只有业务 `trace_id`，完整的跨消息父子 trace 仍是后续项。
+- **副本边界**：媒体 Worker 可以水平扩容；Agent/Workflow 活跃运行注册表仍含进程内状态，因此 Gateway 固定单副本。`deploy/k8s` 的 HPA 只作用于 Worker，不能把当前清单描述为 Gateway 高可用。
+
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0005`，依次包含基线、剧集成片归档、分布式任务、投递防护与数据库视频 ID/连续帧约束，新数据库由 gateway 自动执行完整迁移链。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0006`，依次包含基线、剧集成片归档、分布式任务、投递防护、数据库视频 ID/连续帧约束与持久登录锁定，新数据库由 gateway 自动执行完整迁移链。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。
@@ -102,7 +112,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ### 5.2 infra（`crates/modules/infra-server`）
 
-基础设施域：参数配置、数据源配置、文件与文件配置（本地存储 + 预签名 URL）、定时任务（job / job-log）、代码生成（codegen）、API 访问日志、监控（`monitor.rs`，上报 `RUST_ENV`）等，路由前缀 `/infra/*`。文件下载走公开路由 `GET /upload/{*path}`，默认根目录 `storage/uploads`。
+基础设施域：参数配置、数据源配置、文件与文件配置、定时任务目录（job / job-log）、代码生成（codegen）、API 访问日志、监控（`monitor.rs`，上报 `RUST_ENV`）等，路由前缀 `/infra/*`。除能力探针和文件读取外，管理路由全部要求登录，并按现有 `infra:*` 权限码在后端授权。上传有服务端体积上限并使用不可猜对象名；公开 `GET /upload/{*path}` 只允许栅格图片 inline，其余类型强制 attachment，同时返回 CSP 与 `nosniff`。`infra_job` 当前只提供目录和 cron 预览，不是通用分布式执行器；真实媒体调度由 `toon-worker` 承担。
 
 ### 5.3 ai（`crates/modules/ai-server`）
 
@@ -137,8 +147,8 @@ AI 能力域：
 
 **文件与对象存储**：
 
-- 素材/片段上传（base64 data URL）落盘到 `INFRA_UPLOAD_DIR`（默认 `storage/uploads`，`toonflow_materials.rs`、`toonflow_video_export.rs`）。
-- MinIO 交互在 `toonflow_storage.rs`：不依赖 SDK，自行实现 AWS SigV4 签名（HMAC-SHA256）对 S3 请求签名，用于桶内对象的读写。endpoint/密钥/桶/区域由 `MINIO_*` 环境变量配置。
+- 素材、生成片段、通用上传和最终成片统一进入 MinIO/S3；旧版本 `storage/uploads` 仅作为一次性迁移来源，中间处理文件使用受配额约束的系统临时目录。
+- MinIO 交互在 `toonflow_storage.rs` 与 infra 的对象存储适配器中：以 AWS SigV4（HMAC-SHA256）签名 S3 请求。endpoint/密钥/桶/区域由 `MINIO_*` 环境变量配置。
 
 ## 6. 前端
 
@@ -153,8 +163,8 @@ AI 能力域：
 
 | 组件 | 端口 | 说明 |
 | --- | --- | --- |
-| gateway | 8080 | HTTP API |
-| toon-worker | 8081 | 仅运维用 `/livez`、`/readyz` |
+| gateway | 8080 | HTTP API、探针、内网 `/metrics` |
+| toon-worker | 8081 | 仅运维用 `/livez`、`/readyz`、`/metrics` |
 | 前端 dev server | 5666 | `VITE_PORT` |
 | PostgreSQL | 5432 | 主数据库 |
 | Redis | 6379 | 缓存/限流（可选） |

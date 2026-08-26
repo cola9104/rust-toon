@@ -17,6 +17,9 @@ env:
   CARGO_TERM_COLOR: always
   MINIO_IMAGE: minio/minio:RELEASE.2025-04-22T22-12-26Z
   MINIO_MC_IMAGE: minio/mc:RELEASE.2025-04-16T18-13-26Z
+  KUSTOMIZE_VERSION: "5.7.1"
+  KUBECONFORM_VERSION: "0.8.0"
+  KUBERNETES_SCHEMA_VERSION: "1.31.0"
 
 jobs:
   rust:
@@ -42,6 +45,37 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: bash script/test-database-migrations.sh
+
+  kubernetes:
+    name: Kubernetes render, schema, and policy validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Kubernetes validation tools
+        run: |
+          sudo env \
+            KUSTOMIZE_VERSION="$KUSTOMIZE_VERSION" \
+            KUBECONFORM_VERSION="$KUBECONFORM_VERSION" \
+            bash script/install-k8s-validation-tools.sh /usr/local/bin
+      - name: Validate Kubernetes manifests
+        env:
+          CI: "true"
+        run: bash script/test-k8s-deployment.sh
+
+  backend-image:
+    name: Backend image build and runtime smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Docker daemon
+        run: docker version
+      - name: Build backend image and verify runtime contents
+        env:
+          BACKEND_IMAGE_TAG: rust-toon/backend:ci-validation
+          BUILDKIT_PROGRESS: plain
+        run: bash script/test-backend-image.sh
 
   ai-e2e:
     name: Mock AI provider E2E

@@ -35,6 +35,8 @@ assert.equal(readiness.checks.redis.status, 'ok');
 assert.equal(readiness.checks.minio.status, 'ok');
 
 await request('/toonflow/projects', {}, 401);
+await request('/infra/config/page', {}, 401);
+await request('/infra/capabilities');
 
 const login = await request('/system/auth/login', {
   method: 'POST',
@@ -50,6 +52,11 @@ const authenticated = { authorization: `Bearer ${token}` };
 
 const me = await request('/system/auth/me', { headers: authenticated });
 assert.equal(me?.data?.username, 'admin');
+
+const infraConfig = await request('/infra/config/page', {
+  headers: authenticated,
+});
+assert.ok(Array.isArray(infraConfig?.data?.list));
 
 const created = await request('/toonflow/projects', {
   method: 'POST',

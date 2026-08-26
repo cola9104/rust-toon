@@ -11,16 +11,20 @@ use std::{
 
 use anyhow::Context;
 use async_nats::jetstream::{AckKind, Message};
-use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Json, Router, extract::State, http::StatusCode, middleware::from_fn_with_state,
+    response::IntoResponse, routing::get,
+};
 use futures_util::StreamExt;
 use job_store::{ClaimResult, CompletionDisposition, FailureDisposition, JobStore};
-use rust_toon_framework_common::{ServiceConfig, init_tracing};
+use rust_toon_framework_common::ServiceConfig;
 use rust_toon_framework_database::{DatabaseConfig, connect, ping};
 use rust_toon_framework_mq::{Broker, JobEnvelope, NatsConfig};
+use rust_toon_framework_telemetry::{Metrics, init_telemetry, record_http_metrics};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::watch, task::JoinSet};
-use tracing::{error, info, warn};
+use tracing::{Instrument, error, info, info_span, warn};
 use uuid::Uuid;
 
 const SERVICE_NAME: &str = "toon-worker";
@@ -137,7 +141,8 @@ struct HealthBody {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing(SERVICE_NAME);
+    let telemetry = init_telemetry(SERVICE_NAME)?;
+    let metrics = telemetry.metrics();
     let settings = WorkerSettings::from_env()?;
     let pool = connect(&DatabaseConfig::from_env()?).await?;
     // The gateway/deployment migration job owns schema initialization. A
@@ -196,16 +201,19 @@ async fn main() -> anyhow::Result<()> {
         store.clone(),
         broker.clone(),
         settings.clone(),
+        metrics.clone(),
         shutdown_rx.clone(),
     ));
     tasks.spawn(run_maintenance(
         store.clone(),
         settings.clone(),
+        metrics.clone(),
         shutdown_rx.clone(),
     ));
     tasks.spawn(run_storage_cleanup(
         store.clone(),
         settings.clone(),
+        metrics.clone(),
         shutdown_rx.clone(),
     ));
     tasks.spawn(run_consumer(
@@ -213,6 +221,7 @@ async fn main() -> anyhow::Result<()> {
         broker.clone(),
         settings.clone(),
         rust_toon_toon_server::VIDEO_EXPORT_JOB_KIND,
+        metrics.clone(),
         shutdown_rx.clone(),
     ));
     if settings.test_jobs {
@@ -221,12 +230,14 @@ async fn main() -> anyhow::Result<()> {
             broker.clone(),
             settings.clone(),
             TEST_JOB_KIND,
+            metrics.clone(),
             shutdown_rx.clone(),
         ));
     }
     tasks.spawn(serve_health(
         ServiceConfig::from_env(SERVICE_NAME, 8081),
         health,
+        metrics,
         shutdown_rx,
     ));
 
@@ -295,6 +306,7 @@ async fn run_dispatcher(
     store: JobStore,
     broker: Broker,
     settings: WorkerSettings,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     loop {
@@ -312,6 +324,7 @@ async fn run_dispatcher(
         {
             Ok(jobs) => {
                 for job in jobs {
+                    let metric_kind = job.kind.clone();
                     let envelope = match JobEnvelope::new(
                         job.message_id,
                         job.id,
@@ -329,12 +342,15 @@ async fn run_dispatcher(
                                 .await
                             {
                                 Ok(true) => {
+                                    metrics.record_worker_dispatch(&metric_kind, "invalid");
                                     error!(job_id = job.id, %error, "invalid outbox row failed without stopping dispatcher")
                                 }
                                 Ok(false) => {
+                                    metrics.record_worker_dispatch(&metric_kind, "claim_lost");
                                     warn!(job_id = job.id, %error, "invalid outbox row lost its publish claim")
                                 }
                                 Err(store_error) => {
+                                    metrics.record_worker_dispatch(&metric_kind, "store_error");
                                     warn!(job_id = job.id, %error, %store_error, "failed to quarantine invalid outbox row")
                                 }
                             }
@@ -347,6 +363,14 @@ async fn run_dispatcher(
                                 .mark_published(job.id, job.message_id, job.publish_token)
                                 .await?
                             {
+                                metrics.record_worker_dispatch(
+                                    &metric_kind,
+                                    if receipt.duplicate {
+                                        "duplicate"
+                                    } else {
+                                        "published"
+                                    },
+                                );
                                 info!(
                                     job_id = job.id,
                                     task_id = job.task_id,
@@ -354,15 +378,21 @@ async fn run_dispatcher(
                                     duplicate = receipt.duplicate,
                                     "durable job dispatched"
                                 );
+                            } else {
+                                metrics.record_worker_dispatch(&metric_kind, "claim_lost");
                             }
                         }
                         Err(error) => {
+                            metrics.record_worker_dispatch(&metric_kind, "deferred");
                             warn!(job_id = job.id, %error, "durable job publish deferred");
                         }
                     }
                 }
             }
-            Err(error) => warn!(%error, "outbox dispatch query failed"),
+            Err(error) => {
+                metrics.record_worker_dispatch("all", "query_error");
+                warn!(%error, "outbox dispatch query failed");
+            }
         }
         tokio::select! {
             _ = tokio::time::sleep(settings.dispatch_interval) => {}
@@ -378,6 +408,7 @@ async fn run_dispatcher(
 async fn run_maintenance(
     store: JobStore,
     settings: WorkerSettings,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let heartbeat_interval = settings.heartbeat.min(Duration::from_secs(10));
@@ -392,6 +423,7 @@ async fn run_maintenance(
             }
             _ = reaper_tick.tick() => {
                 let result = store.reap_expired(100).await?;
+                metrics.record_worker_lease_reaps(result.retried, result.failed);
                 if result.retried > 0 || result.failed > 0 {
                     warn!(retried = result.retried, failed = result.failed, "expired worker leases reaped");
                 }
@@ -408,6 +440,7 @@ async fn run_maintenance(
 async fn run_storage_cleanup(
     store: JobStore,
     settings: WorkerSettings,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let mut cleanup_tick = tokio::time::interval(settings.cleanup_interval);
@@ -422,6 +455,11 @@ async fn run_storage_cleanup(
                     settings.cleanup_timeout,
                 ).await {
                     Ok(cleanup) if cleanup.completed > 0 || cleanup.deferred > 0 || cleanup.failed > 0 => {
+                        metrics.record_worker_storage_cleanup(
+                            cleanup.completed,
+                            cleanup.deferred,
+                            cleanup.failed,
+                        );
                         info!(
                             completed = cleanup.completed,
                             deferred = cleanup.deferred,
@@ -430,7 +468,10 @@ async fn run_storage_cleanup(
                         );
                     }
                     Ok(_) => {}
-                    Err(error) => warn!(%error, "storage cleanup batch failed"),
+                    Err(error) => {
+                        metrics.record_worker_storage_cleanup(0, 0, 1);
+                        warn!(%error, "storage cleanup batch failed");
+                    }
                 }
             }
             changed = shutdown.changed() => {
@@ -447,6 +488,7 @@ async fn run_consumer(
     broker: Broker,
     settings: WorkerSettings,
     kind: &'static str,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let durable_name = durable_name(kind);
@@ -508,10 +550,29 @@ async fn run_consumer(
             let task_store = store.clone();
             let task_settings = settings.clone();
             let task_shutdown = shutdown.clone();
+            let task_metrics = metrics.clone();
             tokio::spawn(async move {
                 let _permit = permit;
-                if let Err(error) =
-                    process_message(task_store, task_settings, kind, message, task_shutdown).await
+                let span = info_span!(
+                    "worker_job_delivery",
+                    "messaging.system" = "nats",
+                    "messaging.destination.name" = kind,
+                    "messaging.message.id" = tracing::field::Empty,
+                    "job.id" = tracing::field::Empty,
+                    "job.task_id" = tracing::field::Empty,
+                    "job.trace_id" = tracing::field::Empty,
+                    "otel.kind" = "consumer",
+                );
+                if let Err(error) = process_message(
+                    task_store,
+                    task_settings,
+                    kind,
+                    message,
+                    task_metrics,
+                    task_shutdown,
+                )
+                .instrument(span)
+                .await
                 {
                     error!(%error, kind, "job delivery processing failed");
                 }
@@ -530,6 +591,7 @@ async fn process_message(
     settings: WorkerSettings,
     expected_kind: &'static str,
     message: Message,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     if *shutdown.borrow() {
@@ -549,6 +611,11 @@ async fn process_message(
             return Ok(());
         }
     };
+    let current_span = tracing::Span::current();
+    current_span.record("messaging.message.id", envelope.message_id.to_string());
+    current_span.record("job.id", envelope.job_id);
+    current_span.record("job.task_id", envelope.task_id);
+    current_span.record("job.trace_id", envelope.trace_id.as_str());
     let claimed = match store
         .claim(
             envelope.job_id,
@@ -593,6 +660,7 @@ async fn process_message(
         trace_id = %claimed.trace_id,
         "durable job claimed"
     );
+    let job_timer = metrics.worker_job_started(expected_kind);
     let (execution, shutdown_requeue) = {
         let execution = execute_job(&store, &claimed, expected_kind);
         let heartbeat = run_job_heartbeat(
@@ -624,9 +692,9 @@ async fn process_message(
         }
     };
 
-    match execution {
-        Ok(result) => {
-            match store
+    let finalization: anyhow::Result<&'static str> = async {
+        let metric_outcome = match execution {
+            Ok(result) => match store
                 .complete(claimed.id, claimed.lease_token, &result)
                 .await?
             {
@@ -637,6 +705,7 @@ async fn process_message(
                         task_id = claimed.task_id,
                         "durable job completed"
                     );
+                    "completed"
                 }
                 CompletionDisposition::AlreadyCompleted => {
                     acknowledge_confirmed(&message).await?;
@@ -645,60 +714,85 @@ async fn process_message(
                         task_id = claimed.task_id,
                         "handler transaction had already completed durable job"
                     );
+                    "already_completed"
                 }
                 CompletionDisposition::LeaseLost => {
                     warn!(job_id = claimed.id, "job completion lost its lease fence");
                     acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
+                    "lease_lost"
+                }
+            },
+            Err(reason) => {
+                if shutdown_requeue {
+                    match store
+                        .requeue_for_shutdown(claimed.id, claimed.lease_token, &reason)
+                        .await?
+                    {
+                        FailureDisposition::Retry => {
+                            info!(
+                                job_id = claimed.id,
+                                "shutdown handed the job to another worker without consuming an attempt"
+                            );
+                            acknowledge_confirmed(&message).await?;
+                            "shutdown_requeued"
+                        }
+                        FailureDisposition::LeaseLost => {
+                            warn!(job_id = claimed.id, "shutdown requeue lost its lease fence");
+                            acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
+                            "lease_lost"
+                        }
+                        FailureDisposition::Terminal => {
+                            unreachable!("shutdown requeue never exhausts retries")
+                        }
+                    }
+                } else {
+                    let retry_after = retry_delay(claimed.attempt);
+                    match store
+                        .fail(claimed.id, claimed.lease_token, &reason, retry_after)
+                        .await?
+                    {
+                        FailureDisposition::Retry => {
+                            warn!(job_id = claimed.id, %reason, ?retry_after, "durable job scheduled for retry");
+                            // PostgreSQL rotated message_id and reopened the outbox row.
+                            // Remove this stale delivery; dispatcher will publish the
+                            // replacement after available_at.
+                            acknowledge_confirmed(&message).await?;
+                            "retry"
+                        }
+                        FailureDisposition::Terminal => {
+                            error!(job_id = claimed.id, %reason, "durable job exhausted retries");
+                            acknowledge_confirmed(&message).await?;
+                            "failed"
+                        }
+                        FailureDisposition::LeaseLost => {
+                            warn!(job_id = claimed.id, "failed job lost its lease fence");
+                            acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
+                            "lease_lost"
+                        }
+                    }
                 }
             }
+        };
+        Ok(metric_outcome)
+    }
+    .await;
+    finish_job_metrics(job_timer, finalization)
+}
+
+fn finish_job_metrics(
+    job_timer: rust_toon_framework_telemetry::WorkerJobTimer,
+    finalization: anyhow::Result<&'static str>,
+) -> anyhow::Result<()> {
+    match finalization {
+        Ok(outcome) => {
+            job_timer.finish(outcome);
+            Ok(())
         }
-        Err(reason) => {
-            if shutdown_requeue {
-                match store
-                    .requeue_for_shutdown(claimed.id, claimed.lease_token, &reason)
-                    .await?
-                {
-                    FailureDisposition::Retry => {
-                        info!(
-                            job_id = claimed.id,
-                            "shutdown handed the job to another worker without consuming an attempt"
-                        );
-                        acknowledge_confirmed(&message).await?;
-                    }
-                    FailureDisposition::LeaseLost => {
-                        warn!(job_id = claimed.id, "shutdown requeue lost its lease fence");
-                        acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
-                    }
-                    FailureDisposition::Terminal => {
-                        unreachable!("shutdown requeue never exhausts retries")
-                    }
-                }
-                return Ok(());
-            }
-            let retry_after = retry_delay(claimed.attempt);
-            match store
-                .fail(claimed.id, claimed.lease_token, &reason, retry_after)
-                .await?
-            {
-                FailureDisposition::Retry => {
-                    warn!(job_id = claimed.id, %reason, ?retry_after, "durable job scheduled for retry");
-                    // PostgreSQL rotated message_id and reopened the outbox row.
-                    // Remove this stale delivery; dispatcher will publish the
-                    // replacement after available_at.
-                    acknowledge_confirmed(&message).await?;
-                }
-                FailureDisposition::Terminal => {
-                    error!(job_id = claimed.id, %reason, "durable job exhausted retries");
-                    acknowledge_confirmed(&message).await?;
-                }
-                FailureDisposition::LeaseLost => {
-                    warn!(job_id = claimed.id, "failed job lost its lease fence");
-                    acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
-                }
-            }
+        Err(error) => {
+            job_timer.finish("finalization_error");
+            Err(error)
         }
     }
-    Ok(())
 }
 
 async fn run_job_heartbeat(
@@ -774,13 +868,18 @@ async fn acknowledge_confirmed(message: &Message) -> anyhow::Result<()> {
 async fn serve_health(
     config: ServiceConfig,
     state: HealthState,
+    metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let app = Router::new()
+    let mut app = Router::new()
         .route("/health", get(livez))
         .route("/livez", get(livez))
         .route("/readyz", get(readyz))
         .with_state(state);
+    if metrics.enabled() {
+        app = app.merge(metrics.routes());
+    }
+    let app = app.layer(from_fn_with_state(metrics, record_http_metrics));
     let address = config.addr()?;
     let listener = TcpListener::bind(address).await?;
     info!(%address, "worker health server listening");
@@ -927,5 +1026,19 @@ mod tests {
             durable_name(rust_toon_toon_server::VIDEO_EXPORT_JOB_KIND),
             "toon_workers_toon_video_export"
         );
+    }
+
+    #[test]
+    fn finalization_errors_are_not_recorded_as_cancelled_jobs() {
+        let metrics = Metrics::new("worker-test", true);
+        let result = finish_job_metrics(
+            metrics.worker_job_started("video.merge"),
+            Err(anyhow::anyhow!("message acknowledgement failed")),
+        );
+
+        assert!(result.is_err());
+        let encoded = metrics.encode().expect("encode worker metrics");
+        assert!(encoded.contains("outcome=\"finalization_error\""));
+        assert!(!encoded.contains("outcome=\"cancelled\""));
     }
 }

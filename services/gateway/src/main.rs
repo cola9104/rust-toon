@@ -3,10 +3,11 @@
 use std::{env, time::Duration};
 
 use axum::{Json, Router, middleware::from_fn_with_state, routing::get};
-use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route, init_tracing};
+use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route};
 use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
 use rust_toon_framework_redis::{RateLimitConfig, RateLimitState, RedisClient, RedisConfig};
 use rust_toon_framework_security::{SecurityConfig, TokenService};
+use rust_toon_framework_telemetry::{init_telemetry, record_http_metrics};
 use rust_toon_framework_web::{AppError, WebConfig, apply_web_layers};
 use serde::Serialize;
 use tokio::net::TcpListener;
@@ -26,7 +27,8 @@ struct GatewayIndex {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    init_tracing(SERVICE_NAME);
+    let telemetry = init_telemetry(SERVICE_NAME)?;
+    let metrics = telemetry.metrics();
 
     let database = connect(&DatabaseConfig::from_env()?).await?;
     migrate(&database).await?;
@@ -52,7 +54,7 @@ async fn main() -> anyhow::Result<()> {
         tokens.clone(),
         redis.clone(),
     );
-    let infra_state = rust_toon_infra_server::InfraState::new(database.clone());
+    let infra_state = rust_toon_infra_server::InfraState::new(database.clone(), tokens.clone());
     let ai_state = rust_toon_ai_server::AiState::new(database.clone(), tokens.clone());
     if std::env::var_os("MINIO_ENDPOINT").is_some() {
         rust_toon_toon_server::initialize_object_storage()
@@ -93,6 +95,13 @@ async fn main() -> anyhow::Result<()> {
             rust_toon_framework_redis::rate_limit,
         ));
     }
+
+    // Merge the scrape endpoint after auth/audit/rate-limit layers so routine
+    // Prometheus collection does not create audit rows or consume user quota.
+    if metrics.enabled() {
+        app = app.merge(metrics.routes());
+    }
+    let app = app.layer(from_fn_with_state(metrics.clone(), record_http_metrics));
 
     let app = apply_web_layers(app, WebConfig::from_env());
 

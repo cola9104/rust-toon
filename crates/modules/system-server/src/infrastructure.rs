@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::{Context, anyhow, ensure};
 use chrono::{DateTime, Utc};
 use rust_toon_framework_database::PgPool;
 use rust_toon_framework_security::{CurrentUser, DataScope, Permission, PermissionSet};
@@ -12,7 +12,6 @@ pub struct UserAccount {
     pub password_hash: String,
     pub tenant_id: Option<String>,
     pub status: String,
-    pub failed_login_attempts: i32,
     pub locked_until: Option<DateTime<Utc>>,
 }
 
@@ -26,8 +25,7 @@ pub async fn find_account_by_username(
                 source.username, source.password AS password_hash,
                 source.tenant_id::text AS tenant_id,
                 CASE source.status WHEN 0 THEN 'active' ELSE 'disabled' END AS status,
-                0 AS failed_login_attempts,
-                NULL::timestamptz AS locked_until
+                source.locked_until
          FROM system_users source
          WHERE lower(source.username) = lower($1)
            AND (
@@ -59,8 +57,7 @@ pub async fn find_account_by_id(
                 source.username, source.password AS password_hash,
                 source.tenant_id::text AS tenant_id,
                 CASE source.status WHEN 0 THEN 'active' ELSE 'disabled' END AS status,
-                0 AS failed_login_attempts,
-                NULL::timestamptz AS locked_until
+                source.locked_until
          FROM system_users source
          WHERE md5('yudao-user:' || source.id::text)::uuid = $1
            AND source.deleted = 0
@@ -76,29 +73,64 @@ pub async fn find_account_by_id(
 pub async fn record_failed_login(
     pool: &PgPool,
     user_id: Uuid,
-    failed_attempts: i32,
-    lock_until: Option<DateTime<Utc>>,
+    max_failed_attempts: i32,
+    lock_duration_minutes: i32,
 ) -> anyhow::Result<()> {
-    let status = if lock_until.is_some() {
-        "locked"
-    } else {
-        "active"
-    };
-    let _ = (pool, user_id, failed_attempts, lock_until, status);
+    ensure!(
+        max_failed_attempts > 0,
+        "max failed attempts must be positive"
+    );
+    ensure!(
+        lock_duration_minutes > 0,
+        "lock duration minutes must be positive"
+    );
+    sqlx::query(
+        "UPDATE system_users source
+         SET failed_login_attempts = CASE
+                 WHEN source.locked_until IS NOT NULL AND source.locked_until <= now()
+                 THEN 1
+                 ELSE LEAST(source.failed_login_attempts, $2 - 1) + 1
+             END,
+             locked_until = CASE
+                 WHEN CASE
+                          WHEN source.locked_until IS NOT NULL
+                               AND source.locked_until <= now()
+                          THEN 1
+                          ELSE LEAST(source.failed_login_attempts, $2 - 1) + 1
+                      END >= $2
+                 THEN now() + make_interval(mins => $3)
+                 ELSE NULL
+             END,
+             update_time = now()
+         WHERE md5('yudao-user:' || source.id::text)::uuid = $1
+           AND source.deleted = 0
+           AND (source.locked_until IS NULL OR source.locked_until <= now())",
+    )
+    .bind(user_id)
+    .bind(max_failed_attempts)
+    .bind(lock_duration_minutes)
+    .execute(pool)
+    .await
+    .context("failed to record failed login")?;
     Ok(())
 }
 
-pub async fn record_successful_login(pool: &PgPool, user_id: Uuid) -> anyhow::Result<()> {
-    sqlx::query(
+pub async fn record_successful_login(pool: &PgPool, user_id: Uuid) -> anyhow::Result<bool> {
+    let result = sqlx::query(
         "UPDATE system_users source
-         SET login_date = now(), update_time = now()
-         WHERE md5('yudao-user:' || source.id::text)::uuid = $1",
+         SET login_date = now(),
+             failed_login_attempts = 0,
+             locked_until = NULL,
+             update_time = now()
+         WHERE md5('yudao-user:' || source.id::text)::uuid = $1
+           AND source.deleted = 0
+           AND (source.locked_until IS NULL OR source.locked_until <= now())",
     )
     .bind(user_id)
     .execute(pool)
     .await
     .context("failed to record successful login")?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 #[derive(Debug, FromRow)]
@@ -204,9 +236,12 @@ fn widest_scope(left: DataScope, right: DataScope) -> DataScope {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{DateTime, Utc};
     use rust_toon_framework_security::DataScope;
+    use sqlx::postgres::PgPoolOptions;
+    use uuid::Uuid;
 
-    use super::widest_scope;
+    use super::{record_failed_login, record_successful_login, widest_scope};
 
     #[test]
     fn combines_multiple_roles_using_the_widest_data_scope() {
@@ -214,5 +249,133 @@ mod tests {
             widest_scope(DataScope::Department, DataScope::Organization),
             DataScope::Organization
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_lockout_configuration_before_querying() {
+        let pool = PgPoolOptions::new()
+            .connect_lazy("postgres://rust_toon:rust_toon@127.0.0.1/rust_toon_test")
+            .expect("valid lazy test database URL");
+        let user_id = Uuid::nil();
+
+        assert!(record_failed_login(&pool, user_id, 0, 15).await.is_err());
+        assert!(record_failed_login(&pool, user_id, 5, 0).await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn login_lockout_database_tests() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .connect(&url)
+            .await
+            .expect("connect lockout test database");
+        let user_id: Uuid = sqlx::query_scalar(
+            "SELECT md5('yudao-user:' || id::text)::uuid
+             FROM system_users
+             WHERE deleted = 0
+             ORDER BY id
+             LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("baseline user");
+
+        sqlx::query(
+            "UPDATE system_users
+             SET failed_login_attempts = 0, locked_until = NULL
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("reset baseline lockout state");
+
+        let (one, two, three, four, five) = tokio::join!(
+            record_failed_login(&pool, user_id, 5, 15),
+            record_failed_login(&pool, user_id, 5, 15),
+            record_failed_login(&pool, user_id, 5, 15),
+            record_failed_login(&pool, user_id, 5, 15),
+            record_failed_login(&pool, user_id, 5, 15),
+        );
+        for result in [one, two, three, four, five] {
+            result.expect("record concurrent failed login");
+        }
+
+        let (attempts, locked_until): (i32, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT failed_login_attempts, locked_until
+             FROM system_users
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read locked account");
+        assert_eq!(attempts, 5);
+        let locked_until = locked_until.expect("fifth failure must lock the account");
+        assert!(locked_until > Utc::now());
+
+        // A request that was already in flight when another request created
+        // the lock must neither increment the counter nor extend its duration.
+        record_failed_login(&pool, user_id, 5, 15)
+            .await
+            .expect("active lock is an idempotent no-op");
+        let unchanged: (i32, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT failed_login_attempts, locked_until
+             FROM system_users
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read unchanged active lock");
+        assert_eq!(unchanged, (5, Some(locked_until)));
+        assert!(
+            !record_successful_login(&pool, user_id)
+                .await
+                .expect("active lock success check")
+        );
+
+        // Once the lock expires a fresh failure window starts at one instead
+        // of immediately re-locking because of the previous window's count.
+        sqlx::query(
+            "UPDATE system_users
+             SET locked_until = now() - interval '1 second'
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("expire account lock");
+        record_failed_login(&pool, user_id, 5, 15)
+            .await
+            .expect("start fresh failure window");
+        let fresh_window: (i32, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT failed_login_attempts, locked_until
+             FROM system_users
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read fresh failure window");
+        assert_eq!(fresh_window, (1, None));
+
+        assert!(
+            record_successful_login(&pool, user_id)
+                .await
+                .expect("record successful login")
+        );
+        let reset: (i32, Option<DateTime<Utc>>) = sqlx::query_as(
+            "SELECT failed_login_attempts, locked_until
+             FROM system_users
+             WHERE md5('yudao-user:' || id::text)::uuid = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read reset login state");
+        assert_eq!(reset, (0, None));
     }
 }

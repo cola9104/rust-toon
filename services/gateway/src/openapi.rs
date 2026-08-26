@@ -46,6 +46,7 @@ pub async fn document() -> Json<Value> {
             "/system/audit-logs": { "get": { "tags": ["system-audit"], "summary": "List audit logs", "security": [{ "bearerAuth": [] }], "responses": { "200": { "description": "Audit logs" } } } },
             "/livez": { "get": { "tags": ["ops"], "summary": "Process liveness", "responses": { "200": { "description": "Process is alive" } } } },
             "/readyz": { "get": { "tags": ["ops"], "summary": "Dependency readiness", "responses": { "200": { "description": "Required dependencies are ready" }, "503": { "description": "A required dependency is unavailable" } } } },
+            "/metrics": { "get": { "tags": ["ops"], "summary": "Prometheus/OpenMetrics scrape endpoint", "responses": { "200": { "description": "OpenMetrics text exposition" } } } },
             "/health": { "get": { "tags": ["ops"], "summary": "Backward-compatible process health", "responses": { "200": { "description": "Process is alive" } } } },
             "/infra/capabilities": { "get": { "tags": ["infra"], "summary": "Infra module capabilities", "responses": { "200": { "description": "OK" } } } },
             "/toon/capabilities": { "get": { "tags": ["toon"], "summary": "Toon module capabilities", "responses": { "200": { "description": "OK" } } } },

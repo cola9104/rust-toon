@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: rust-toon
+
+resources:
+  - namespace.yaml
+  - service-account.yaml
+  - configmap.yaml
+  - gateway-deployment.yaml
+  - gateway-service.yaml
+  - gateway-pdb.yaml
+  - worker-deployment.yaml
+  - worker-service.yaml
+  - worker-hpa.yaml
+  - worker-pdb.yaml
+  - network-policies.yaml
+
+# Replace this registry and immutable tag (or digest) before deployment. Never
+# deploy a floating `latest` tag in production.
+images:
+  - name: rust-toon/backend
+    newName: registry.example.invalid/rust-toon/backend
+    newTag: REPLACE_ME

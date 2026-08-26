@@ -92,6 +92,16 @@ if [[ "$direct_body" != '/readyz?token=must-not-appear' ]]; then
   echo "Edge changed a direct gateway route: $direct_body" >&2
   exit 1
 fi
+for metrics_path in /metrics /api/metrics; do
+  metrics_status="$(
+    curl -sS -o /dev/null -w '%{http_code}' \
+      "http://127.0.0.1:${edge_port}${metrics_path}"
+  )"
+  if [[ "$metrics_status" != '404' ]]; then
+    echo "Edge exposed private metrics path ${metrics_path}: HTTP ${metrics_status}" >&2
+    exit 1
+  fi
+done
 
 edge_logs="$(docker logs "$edge_container" 2>&1)"
 if [[ "$edge_logs" == *must-not-appear* ]]; then

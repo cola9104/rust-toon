@@ -52,7 +52,7 @@ cargo run -p rust-toon-gateway
 和基准数据，因此部署时不需要
 `sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
 
-后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0002`），并在干净数据库
+后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0006`），并在干净数据库
 完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
 
 可选环境变量：
@@ -117,7 +117,7 @@ BACKUP_DIR="$PWD/backups/postgresql" \
 bash script/database/backup-postgres.sh
 ```
 
-备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#45-备份与恢复)。
+备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#47-备份与恢复)。
 
 项目图片、视频、音频和成片存放在 MinIO，必须和数据库一起备份：
 

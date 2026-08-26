@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-gateway-config
+  labels:
+    app.kubernetes.io/name: rust-toon-gateway
+    app.kubernetes.io/part-of: rust-toon
+data:
+  GATEWAY_HOST: "0.0.0.0"
+  GATEWAY_PORT: "8080"
+  GATEWAY_DRAIN_DELAY_SECONDS: "10"
+  DATABASE_MIN_CONNECTIONS: "1"
+  DATABASE_MAX_CONNECTIONS: "12"
+  MINIO_ENDPOINT: "https://replace-with-object-storage-endpoint.invalid"
+  MINIO_BUCKET: "rust-toon"
+  MINIO_CONNECT_TIMEOUT_SECONDS: "10"
+  MINIO_REQUEST_TIMEOUT_SECONDS: "30"
+  MINIO_STREAM_TIMEOUT_SECONDS: "1800"
+  INFRA_UPLOAD_MAX_BYTES: "20971520"
+  READINESS_REQUIRE_REDIS: "true"
+  READINESS_REQUIRE_MINIO: "true"
+  READINESS_REQUIRE_FFMPEG: "false"
+  BOOTSTRAP_ADMIN_USERNAME: "admin"
+  RUST_ENV: "production"
+  RUST_LOG: "info"
+  TELEMETRY_LOG_FORMAT: "json"
+  TELEMETRY_METRICS_ENABLED: "true"
+  # Opt in only from an environment overlay, and allow the collector port in
+  # the corresponding egress policy:
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector.monitoring.svc:4317"
+  TOON_PROVIDER_VIDEO_CONCURRENCY: "2"
+  TOON_PROVIDER_VIDEO_MAX_BYTES: "2147483648"
+  TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES: "4294967296"
+  TOON_WORKER_SOURCE_TIMEOUT_SECONDS: "1800"
+  TOON_WORKFLOW_STALE_SECONDS: "7200"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-worker-config
+  labels:
+    app.kubernetes.io/name: rust-toon-worker
+    app.kubernetes.io/part-of: rust-toon
+data:
+  TOON_WORKER_HOST: "0.0.0.0"
+  TOON_WORKER_PORT: "8081"
+  DATABASE_MIN_CONNECTIONS: "1"
+  DATABASE_MAX_CONNECTIONS: "8"
+  MINIO_ENDPOINT: "https://replace-with-object-storage-endpoint.invalid"
+  MINIO_BUCKET: "rust-toon"
+  MINIO_CONNECT_TIMEOUT_SECONDS: "10"
+  MINIO_REQUEST_TIMEOUT_SECONDS: "30"
+  MINIO_STREAM_TIMEOUT_SECONDS: "1800"
+  RUST_LOG: "info"
+  TELEMETRY_LOG_FORMAT: "json"
+  TELEMETRY_METRICS_ENABLED: "true"
+  # Opt in only from an environment overlay, and allow the collector port in
+  # the corresponding egress policy:
+  # OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector.monitoring.svc:4317"
+  # One export can temporarily retain the sources, normalized copies and final
+  # output together. Scale through Worker replicas before raising concurrency.
+  TOON_WORKER_CONCURRENCY: "1"
+  TOON_WORKER_LEASE_SECONDS: "60"
+  TOON_WORKER_HEARTBEAT_SECONDS: "15"
+  TOON_WORKER_DISPATCH_INTERVAL_MS: "500"
+  TOON_WORKER_PUBLISH_CLAIM_SECONDS: "15"
+  TOON_WORKER_REPUBLISH_AFTER_SECONDS: "300"
+  TOON_WORKER_REAPER_INTERVAL_SECONDS: "5"
+  TOON_WORKER_CLEANUP_INTERVAL_SECONDS: "5"
+  TOON_WORKER_CLEANUP_TIMEOUT_SECONDS: "30"
+  TOON_WORKER_STAGING_CLEANUP_DELAY_SECONDS: "1800"
+  TOON_WORKER_DRAIN_TIMEOUT_SECONDS: "45"
+  TOON_WORKER_MAX_SOURCE_BYTES: "2147483648"
+  TOON_WORKER_MAX_JOB_SOURCE_BYTES: "10737418240"
+  TOON_WORKER_SOURCE_TIMEOUT_SECONDS: "1800"
+  TOON_WORKER_FFMPEG_TIMEOUT_SECONDS: "7200"
+  TOON_WORKER_STALE_WORKDIR_SECONDS: "604800"
+  TOON_WORKER_ALLOW_HTTP_SOURCES: "false"
+  # Set this to the replication factor supported by the external JetStream
+  # cluster. Production should normally use three NATS replicas.
+  NATS_JOB_REPLICAS: "3"
+  NATS_JOB_MAX_BYTES: "10737418240"
+  NATS_JOB_ACK_WAIT_SECONDS: "120"
+  NATS_JOB_MAX_DELIVER: "20"
+  NATS_JOB_MAX_ACK_PENDING: "32"
