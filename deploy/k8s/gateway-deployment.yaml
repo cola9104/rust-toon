@@ -93,9 +93,14 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: dynamic-config-cache
+              mountPath: /var/cache/rust-toon/nacos
       volumes:
         - name: tmp
           emptyDir:
             # Keep room inside the 6 GiB ephemeral-storage limit for container
             # logs and the writable layer.
             sizeLimit: 5Gi
+        - name: dynamic-config-cache
+          emptyDir:
+            sizeLimit: 16Mi

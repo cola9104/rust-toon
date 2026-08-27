@@ -1,7 +1,9 @@
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use reqwest::{Method, Url, header};
+use rust_toon_framework_resilience::{HttpResilienceConfig, ResilientHttpClient};
 use sha2::{Digest, Sha256};
+use std::{sync::OnceLock, time::Duration};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -56,16 +58,46 @@ async fn request(method: Method, key: &str, body: Vec<u8>) -> Result<reqwest::Re
     let authorization = format!(
         "AWS4-HMAC-SHA256 Credential={access}/{scope}, SignedHeaders={signed}, Signature={signature}"
     );
-    reqwest::Client::new()
-        .request(method, url)
-        .header(header::HOST, host)
-        .header("x-amz-content-sha256", payload)
-        .header("x-amz-date", amz_date)
-        .header(header::AUTHORIZATION, authorization)
-        .body(body)
-        .send()
+    storage_client()
+        .execute(
+            reqwest::Client::new()
+                .request(method, url)
+                .header(header::HOST, host)
+                .header("x-amz-content-sha256", payload)
+                .header("x-amz-date", amz_date)
+                .header(header::AUTHORIZATION, authorization)
+                .body(body),
+        )
         .await
         .map_err(|error| error.to_string())
+}
+
+fn storage_client() -> &'static ResilientHttpClient {
+    static CLIENT: OnceLock<ResilientHttpClient> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let timeout = Duration::from_secs(
+            std::env::var("MINIO_REQUEST_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(30)
+                .clamp(1, 3_600),
+        );
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        ResilientHttpClient::new(
+            "object-storage",
+            client,
+            HttpResilienceConfig {
+                timeout,
+                max_attempts: 3,
+                max_concurrent_calls: 32,
+                ..HttpResilienceConfig::default()
+            },
+        )
+        .expect("static object storage resilience configuration must be valid")
+    })
 }
 
 pub async fn put(key: &str, bytes: Vec<u8>) -> Result<(), String> {

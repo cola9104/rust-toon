@@ -7,11 +7,16 @@ resources:
   - namespace.yaml
   - service-account.yaml
   - configmap.yaml
+  - rnacos.yaml
+  - monitoring.yaml
+  - logs-traces.yaml
+  - otel-collector.yaml
   - gateway-deployment.yaml
   - gateway-service.yaml
   - gateway-pdb.yaml
   - worker-deployment.yaml
   - worker-service.yaml
+  - worker-metrics-service.yaml
   - worker-hpa.yaml
   - worker-pdb.yaml
   - network-policies.yaml
@@ -22,3 +27,6 @@ images:
   - name: rust-toon/backend
     newName: registry.example.invalid/rust-toon/backend
     newTag: REPLACE_ME
+  - name: qingpan/rnacos
+    newName: qingpan/rnacos
+    newTag: v0.8.6

@@ -75,6 +75,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -97,6 +104,106 @@ spec:
       ports:
         - protocol: TCP
           port: 8081
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-prometheus
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector-ingress
+  labels:
+    app.kubernetes.io/name: rust-toon-otel-collector
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-otel-collector
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [rust-toon-gateway, rust-toon-worker]
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 4318
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 8888
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-prometheus
+      ports:
+        - protocol: TCP
+          port: 8888
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-tempo
+      ports:
+        - protocol: TCP
+          port: 4317
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rnacos-access
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-rnacos
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [rust-toon-gateway, rust-toon-worker, rust-toon-rnacos]
+      ports:
+        - protocol: TCP
+          port: 8848
+        - protocol: TCP
+          port: 9848
+    - from:
+        # Label an administrator access namespace with:
+        # rust-toon.io/config-admin-access=true
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/config-admin-access: "true"
+      ports:
+        - protocol: TCP
+          port: 10848
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-rnacos
+      ports:
+        - protocol: TCP
+          port: 8848
+        - protocol: TCP
+          port: 9848
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -112,6 +219,22 @@ spec:
   policyTypes:
     - Egress
   egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-rnacos
+      ports:
+        - protocol: TCP
+          port: 8848
+        - protocol: TCP
+          port: 9848
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
     # PostgreSQL, Redis, S3-compatible storage, and HTTPS AI/media providers.
     # Scope these destinations by CIDR or CNI FQDN policy in production.
     - ports:
@@ -141,6 +264,15 @@ spec:
     - Egress
   egress:
     - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-rnacos
+      ports:
+        - protocol: TCP
+          port: 8848
+        - protocol: TCP
+          port: 9848
+    - to:
         # Worker init containers must reach Gateway readiness before migrations
         # are considered complete.
         - podSelector:
@@ -149,6 +281,13 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-otel-collector
+      ports:
+        - protocol: TCP
+          port: 4317
     # PostgreSQL, NATS, S3-compatible storage, and HTTPS source downloads.
     # Scope these destinations by CIDR or CNI FQDN policy in production.
     - ports:
@@ -160,3 +299,167 @@ spec:
           port: 9000
         - protocol: TCP
           port: 443
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-access
+  labels:
+    app.kubernetes.io/name: rust-toon-prometheus
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-prometheus
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-grafana
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - rust-toon-gateway
+                  - rust-toon-worker
+                  - rust-toon-otel-collector
+      ports:
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8081
+        - protocol: TCP
+          port: 8888
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-alertmanager
+      ports:
+        - protocol: TCP
+          port: 9093
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alertmanager-access
+  labels:
+    app.kubernetes.io/name: rust-toon-alertmanager
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-alertmanager
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [rust-toon-prometheus, rust-toon-grafana]
+      ports:
+        - protocol: TCP
+          port: 9093
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana-access
+  labels:
+    app.kubernetes.io/name: rust-toon-grafana
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-grafana
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/monitoring-access: "true"
+      ports:
+        - protocol: TCP
+          port: 3000
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - rust-toon-prometheus
+                  - rust-toon-alertmanager
+                  - rust-toon-loki
+                  - rust-toon-tempo
+      ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 3100
+        - protocol: TCP
+          port: 3200
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki-access
+  labels:
+    app.kubernetes.io/name: rust-toon-loki
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-loki
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-grafana
+        - namespaceSelector:
+            matchLabels:
+              rust-toon.io/logging-agent: "true"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-vector
+      ports:
+        - protocol: TCP
+          port: 3100
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tempo-access
+  labels:
+    app.kubernetes.io/name: rust-toon-tempo
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-tempo
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values: [rust-toon-otel-collector, rust-toon-grafana]
+      ports:
+        - protocol: TCP
+          port: 4317
+        - protocol: TCP
+          port: 3200

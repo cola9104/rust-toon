@@ -1,0 +1,202 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rust-toon-logging
+  labels:
+    rust-toon.io/logging-agent: "true"
+    # Reading Kubernetes node log files requires read-only hostPath mounts,
+    # which are intentionally kept outside the restricted application namespace.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rust-toon-vector
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/part-of: rust-toon
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rust-toon-vector
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/part-of: rust-toon
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, nodes, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rust-toon-vector
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/part-of: rust-toon
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rust-toon-vector
+subjects:
+  - kind: ServiceAccount
+    name: rust-toon-vector
+    namespace: rust-toon-logging
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-vector-config
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/part-of: rust-toon
+data:
+  vector.yaml: |
+    api:
+      enabled: false
+    data_dir: /var/lib/vector
+    sources:
+      kubernetes_logs:
+        type: kubernetes_logs
+        self_node_name: ${VECTOR_SELF_NODE_NAME}
+    transforms:
+      rust_toon_only:
+        type: filter
+        inputs: [kubernetes_logs]
+        # Do not feed Loki/Prometheus/Grafana logs back into the same Loki.
+        condition: '.kubernetes.pod_namespace == "rust-toon" && (.kubernetes.container_name == "gateway" || .kubernetes.container_name == "worker" || .kubernetes.container_name == "collector")'
+    sinks:
+      loki:
+        type: loki
+        inputs: [rust_toon_only]
+        endpoint: http://rust-toon-loki.rust-toon.svc.cluster.local:3100
+        encoding:
+          codec: json
+        labels:
+          namespace: '{{ kubernetes.pod_namespace }}'
+          pod: '{{ kubernetes.pod_name }}'
+          container: '{{ kubernetes.container_name }}'
+          node: '{{ kubernetes.pod_node_name }}'
+        out_of_order_action: accept
+        remove_label_fields: true
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: rust-toon-vector
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/component: logging-agent
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-vector
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rust-toon-vector
+        app.kubernetes.io/component: logging-agent
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      serviceAccountName: rust-toon-vector
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: vector
+          image: timberio/vector:0.49.0-debian
+          args: [--config, /etc/vector/vector.yaml]
+          env:
+            - name: VECTOR_SELF_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/vector
+              readOnly: true
+            - name: pod-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: data
+              mountPath: /var/lib/vector
+            - name: tmp
+              mountPath: /tmp
+      tolerations:
+        - operator: Exists
+      volumes:
+        - name: config
+          configMap:
+            name: rust-toon-vector-config
+        - name: pod-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: data
+          hostPath:
+            path: /var/lib/rust-toon-vector
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: rust-toon-vector-egress
+  labels:
+    app.kubernetes.io/name: rust-toon-vector
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-vector
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: rust-toon
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-loki
+      ports:
+        - protocol: TCP
+          port: 3100
+    # The Kubernetes log source watches Pod metadata through the API server.
+    # Replace this port-only rule with the control-plane CIDR in hardened overlays.
+    - ports:
+        - protocol: TCP
+          port: 443

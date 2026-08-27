@@ -5,9 +5,10 @@ use rust_toon_ai_api::{
     ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse, ImageRequest, MediaResponse,
     ModelConfig, SpeechRequest,
 };
+use rust_toon_framework_resilience::{HttpResilienceConfig, ResilientHttpClient};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tracing::warn;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,65 +125,60 @@ pub(crate) fn http_client() -> reqwest::Client {
 pub(crate) async fn send_with_retry(
     request: reqwest::RequestBuilder,
 ) -> Result<reqwest::Response, String> {
-    let template = request
-        .try_clone()
-        .ok_or_else(|| "AI 请求无法安全重试".to_string())?;
-    let retries = retry_limit();
-    for attempt in 0..=retries {
-        let current = if attempt == 0 {
-            request
-                .try_clone()
-                .unwrap_or_else(|| template.try_clone().unwrap())
-        } else {
-            template.try_clone().unwrap()
-        };
-        match current.send().await {
-            Ok(response) if retryable_status(response.status()) && attempt < retries => {
-                warn!(
-                    attempt = attempt + 1,
-                    max_attempts = retries + 1,
-                    status = response.status().as_u16(),
-                    "AI provider request will retry after transient response"
-                );
-                if let Some(delay) = response
-                    .headers()
-                    .get("retry-after")
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                {
-                    tokio::time::sleep(std::time::Duration::from_secs(delay.min(30))).await;
-                } else {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        250 * 2u64.pow(attempt.min(6) as u32),
-                    ))
-                    .await;
-                }
-            }
-            Ok(response) => return Ok(response),
-            Err(error) if (error.is_connect() || error.is_timeout()) && attempt < retries => {
-                warn!(
-                    attempt = attempt + 1,
-                    max_attempts = retries + 1,
-                    timeout = error.is_timeout(),
-                    "AI provider request will retry after transport failure"
-                );
-                tokio::time::sleep(std::time::Duration::from_millis(
-                    250 * 2u64.pow(attempt.min(6) as u32),
-                ))
-                .await;
-            }
-            Err(error) => return Err(transport_error(&error)),
-        }
+    resilient_ai_client()
+        .execute(request)
+        .await
+        .map_err(ai_resilience_error)
+}
+
+async fn send_http1(request: reqwest::RequestBuilder) -> Result<reqwest::Response, String> {
+    resilient_ai_http1_client()
+        .execute(request)
+        .await
+        .map_err(ai_resilience_error)
+}
+
+fn resilient_ai_client() -> &'static ResilientHttpClient {
+    static CLIENT: OnceLock<ResilientHttpClient> = OnceLock::new();
+    CLIENT.get_or_init(|| build_resilient_ai_client("ai-provider", false))
+}
+
+fn resilient_ai_http1_client() -> &'static ResilientHttpClient {
+    static CLIENT: OnceLock<ResilientHttpClient> = OnceLock::new();
+    CLIENT.get_or_init(|| build_resilient_ai_client("ai-provider-http1", true))
+}
+
+fn build_resilient_ai_client(dependency: &'static str, http1_only: bool) -> ResilientHttpClient {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(request_timeout());
+    if http1_only {
+        builder = builder.http1_only();
     }
-    Err(ProviderError {
-        code: "AI_UPSTREAM_RETRY_EXHAUSTED".into(),
+    let client = builder.build().unwrap_or_else(|_| reqwest::Client::new());
+    ResilientHttpClient::new(
+        dependency,
+        client,
+        HttpResilienceConfig {
+            timeout: request_timeout(),
+            max_attempts: retry_limit() + 1,
+            max_concurrent_calls: 64,
+            ..HttpResilienceConfig::default()
+        },
+    )
+    .expect("static AI resilience configuration must be valid")
+}
+
+fn ai_resilience_error(error: rust_toon_framework_resilience::ResilienceError) -> String {
+    ProviderError {
+        code: "AI_UPSTREAM_RESILIENCE".into(),
         category: "transport".into(),
         message: "AI 服务暂时不可用，请稍后重试".into(),
         status: None,
-        response_data: None,
+        response_data: Some(json!({"summary": truncate(&error.to_string(), 1000)})),
         retryable: true,
     }
-    .encoded())
+    .encoded()
 }
 
 mod anthropic;
@@ -565,7 +561,7 @@ impl OpenAiCompatibleProvider {
         if !config.api_key.is_empty() {
             image_request = image_request.bearer_auth(config.api_key.trim_start_matches("Bearer "));
         }
-        let response = send_with_retry(image_request.json(&body)).await?;
+        let response = send_http1(image_request.json(&body)).await?;
         let (status, value) = response_json(response, "图片生成失败").await?;
         if !status.is_success() {
             return Err(upstream_error(status, &value, "图片生成失败"));

@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "rateLimit": {
+    "maxRequests": 300,
+    "windowSeconds": 60
+  }
+}

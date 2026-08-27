@@ -61,6 +61,32 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+  rnacos-e2e:
+    name: r-nacos authenticated hot-update E2E
+    runs-on: [ubuntu-24, x64, medium]
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source
+        uses: checkout
+      - name: Restore Cargo cache
+        uses: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Prepare Rust stable
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Verify authenticated initial publish and gRPC push
+        run: |
+          docker version
+          bash script/test-rnacos-dynamic-config.sh
+
   frontend:
     name: Frontend typecheck, unit tests, and build
     runs-on: [ubuntu-24, x64, medium]
@@ -150,7 +176,9 @@ jobs:
       - name: Validate Kubernetes manifests
         env:
           CI: "true"
-        run: bash script/test-k8s-deployment.sh
+        run: |
+          bash script/test-k8s-deployment.sh
+          bash script/test-observability-deployment.sh
 
   ai-e2e:
     name: Mock AI provider E2E

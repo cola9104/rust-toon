@@ -8,7 +8,14 @@ use async_nats::{
     },
 };
 use serde::Serialize;
-use std::path::PathBuf;
+use std::{
+    error::Error,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tower::{Layer, ServiceExt, util::BoxCloneService};
+use tower_resilience::{bulkhead::BulkheadLayer, circuitbreaker::CircuitBreakerLayer};
 
 use crate::{JobEnvelope, MqError, NatsConfig, Result, envelope::validate_subject_path};
 
@@ -26,6 +33,17 @@ pub struct Broker {
     client: async_nats::Client,
     jetstream: jetstream::Context,
     config: NatsConfig,
+    publish_service: Arc<Mutex<PublishService>>,
+}
+
+type BoxError = Box<dyn Error + Send + Sync>;
+type PublishService = BoxCloneService<PublishRequest, PublishReceipt, BoxError>;
+
+#[derive(Clone)]
+struct PublishRequest {
+    subject: String,
+    headers: HeaderMap,
+    payload: Vec<u8>,
 }
 
 impl Broker {
@@ -57,10 +75,12 @@ impl Broker {
 
         let mut jetstream = jetstream::new(client.clone());
         jetstream.set_timeout(config.request_timeout);
+        let publish_service = build_publish_service(jetstream.clone(), config.request_timeout)?;
         let broker = Self {
             client,
             jetstream,
             config,
+            publish_service: Arc::new(Mutex::new(publish_service)),
         };
         broker.ensure_work_queue_stream().await?;
         Ok(broker)
@@ -90,23 +110,19 @@ impl Broker {
         let subject = self.subject_for(&envelope.kind)?;
         let headers = publish_headers(envelope);
 
-        let publish = self
-            .jetstream
-            .publish_with_headers(subject, headers, payload.into());
-        let acknowledgement = tokio::time::timeout(self.config.request_timeout, publish)
+        let service = self
+            .publish_service
+            .lock()
+            .map_err(|_| MqError::Nats("publish resilience service lock was poisoned".into()))?
+            .clone();
+        service
+            .oneshot(PublishRequest {
+                subject,
+                headers,
+                payload,
+            })
             .await
-            .map_err(|_| MqError::Timeout("publish"))?
-            .map_err(|error| MqError::Nats(error.to_string()))?;
-        let acknowledgement = tokio::time::timeout(self.config.request_timeout, acknowledgement)
-            .await
-            .map_err(|_| MqError::Timeout("publish acknowledgement"))?
-            .map_err(|error| MqError::Nats(error.to_string()))?;
-
-        Ok(PublishReceipt {
-            stream: acknowledgement.stream,
-            sequence: acknowledgement.sequence,
-            duplicate: acknowledgement.duplicate,
-        })
+            .map_err(|error| MqError::Nats(error.to_string()))
     }
 
     /// Create or update a named durable pull consumer for one exact job kind.
@@ -156,9 +172,60 @@ impl Broker {
     }
 }
 
+fn build_publish_service(
+    jetstream: jetstream::Context,
+    request_timeout: Duration,
+) -> Result<PublishService> {
+    let base = tower::service_fn(move |request: PublishRequest| {
+        let jetstream = jetstream.clone();
+        async move {
+            let publish = jetstream.publish_with_headers(
+                request.subject,
+                request.headers,
+                request.payload.into(),
+            );
+            let acknowledgement = tokio::time::timeout(request_timeout, publish)
+                .await
+                .map_err(|_| -> BoxError { Box::new(MqError::Timeout("publish")) })?
+                .map_err(|error| -> BoxError { Box::new(MqError::Nats(error.to_string())) })?;
+            let acknowledgement = tokio::time::timeout(request_timeout, acknowledgement)
+                .await
+                .map_err(|_| -> BoxError { Box::new(MqError::Timeout("publish acknowledgement")) })?
+                .map_err(|error| -> BoxError { Box::new(MqError::Nats(error.to_string())) })?;
+            Ok::<PublishReceipt, BoxError>(PublishReceipt {
+                stream: acknowledgement.stream,
+                sequence: acknowledgement.sequence,
+                duplicate: acknowledgement.duplicate,
+            })
+        }
+    });
+    let bulkhead = BulkheadLayer::builder()
+        .max_concurrent_calls(128)
+        .max_wait_duration(Duration::from_secs(1))
+        .build()
+        .map_err(|error| MqError::Config(format!("invalid NATS bulkhead: {error}")))?;
+    let breaker = CircuitBreakerLayer::builder()
+        .name("nats-publish")
+        .failure_rate_threshold(0.5)
+        .sliding_window_size(20)
+        .minimum_number_of_calls(10)
+        .wait_duration_in_open(Duration::from_secs(15))
+        .build()
+        .map_err(|error| MqError::Config(format!("invalid NATS circuit breaker: {error}")))?;
+    let service = breaker
+        .layer(bulkhead.layer(base))
+        .map_err(|error| -> BoxError { Box::new(error) });
+    Ok(BoxCloneService::new(service))
+}
+
 fn publish_headers<T>(envelope: &JobEnvelope<T>) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(NATS_MESSAGE_ID, envelope.deduplication_id());
+    for key in ["traceparent", "tracestate"] {
+        if let Some(value) = envelope.trace_context.get(key) {
+            headers.insert(key, value.clone());
+        }
+    }
     headers
 }
 

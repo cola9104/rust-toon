@@ -7,10 +7,12 @@
 mod config;
 mod metrics;
 
+use std::collections::BTreeMap;
+
 use axum::http::HeaderMap;
 use opentelemetry::{
     global,
-    propagation::Extractor,
+    propagation::{Extractor, Injector},
     trace::{TraceContextExt, TracerProvider as _},
 };
 use opentelemetry_otlp::WithExportConfig;
@@ -23,6 +25,28 @@ pub use config::{LogFormat, TelemetryConfig};
 pub use metrics::{Metrics, WorkerJobTimer, record_http_metrics};
 
 struct HeaderExtractor<'a>(&'a HeaderMap);
+
+pub type TraceContext = BTreeMap<String, String>;
+
+struct TraceContextInjector<'a>(&'a mut TraceContext);
+
+impl Injector for TraceContextInjector<'_> {
+    fn set(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_string(), value);
+    }
+}
+
+struct TraceContextExtractor<'a>(&'a TraceContext);
+
+impl Extractor for TraceContextExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).map(String::as_str)
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(String::as_str).collect()
+    }
+}
 
 impl Extractor for HeaderExtractor<'_> {
     fn get(&self, key: &str) -> Option<&str> {
@@ -41,6 +65,49 @@ pub fn set_parent_from_headers(span: &tracing::Span, headers: &HeaderMap) {
         global::get_text_map_propagator(|propagator| propagator.extract(&HeaderExtractor(headers)));
     if parent.span().span_context().is_valid() {
         let _ = span.set_parent(parent);
+    }
+    record_span_trace_id(span);
+}
+
+/// Captures the current span as a portable W3C carrier suitable for JSON or
+/// messaging headers. An empty map means there is no valid sampled context.
+pub fn current_trace_context() -> TraceContext {
+    let context = tracing::Span::current().context();
+    let mut carrier = TraceContext::new();
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&context, &mut TraceContextInjector(&mut carrier));
+    });
+    carrier
+}
+
+pub fn current_trace_id() -> Option<String> {
+    let context = tracing::Span::current().context();
+    let span = context.span();
+    let span_context = span.span_context();
+    span_context
+        .is_valid()
+        .then(|| span_context.trace_id().to_string())
+}
+
+pub fn set_parent_from_trace_context(span: &tracing::Span, carrier: &TraceContext) {
+    let parent = global::get_text_map_propagator(|propagator| {
+        propagator.extract(&TraceContextExtractor(carrier))
+    });
+    if parent.span().span_context().is_valid() {
+        let _ = span.set_parent(parent);
+    }
+    record_span_trace_id(span);
+}
+
+fn record_span_trace_id(span: &tracing::Span) {
+    let context = span.context();
+    let otel_span = context.span();
+    let span_context = otel_span.span_context();
+    if span_context.is_valid() {
+        let trace_id = span_context.trace_id().to_string();
+        // `record` is a no-op for spans that do not declare this field. HTTP
+        // and durable-job root spans declare it so JSON logs can link to Tempo.
+        span.record("trace_id", trace_id.as_str());
     }
 }
 
@@ -77,6 +144,7 @@ pub fn init_telemetry(service_name: &'static str) -> anyhow::Result<Telemetry> {
 }
 
 fn init_telemetry_with_config(config: TelemetryConfig) -> anyhow::Result<Telemetry> {
+    global::set_text_map_propagator(TraceContextPropagator::new());
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let (trace_provider, tracer) = build_otlp_tracer(&config)?;
     let otel_layer = tracer.map(|tracer| tracing_opentelemetry::layer().with_tracer(tracer));

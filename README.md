@@ -34,7 +34,7 @@ bash script/start-local.sh all
 docker compose -f script/docker/docker-compose.yml up -d
 ```
 
-启动 PostgreSQL、Redis、NATS 和 MinIO。容器只创建空数据库 `rust_toon`，
+启动 PostgreSQL、Redis、NATS、MinIO 和 r-nacos。容器只创建空数据库 `rust_toon`，
 数据库结构统一由 Rust 网关的 SQLx Migrator 自动管理。
 
 ### 2. 启动 Rust 网关
@@ -45,6 +45,11 @@ export REDIS_URL='redis://127.0.0.1:6379'
 export JWT_SECRET='replace-with-at-least-32-random-bytes'
 export BOOTSTRAP_ADMIN_USERNAME='admin'
 export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
+export NACOS_ENABLED='true'
+export NACOS_REQUIRED='true'
+export NACOS_SERVER_ADDR='127.0.0.1:8848'
+export NACOS_USERNAME='rust_toon'
+export NACOS_PASSWORD='rust_toon_nacos_password'
 cargo run -p rust-toon-gateway
 ```
 
@@ -52,7 +57,7 @@ cargo run -p rust-toon-gateway
 和基准数据，因此部署时不需要
 `sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
 
-后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0006`），并在干净数据库
+后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0007`），并在干净数据库
 完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
 
 可选环境变量：
@@ -84,6 +89,7 @@ bash script/test-database-migrations.sh
 bash script/test-gateway-e2e.sh
 bash script/test-ai-e2e.sh
 bash script/test-production-e2e.sh
+bash script/test-rnacos-dynamic-config.sh
 bash script/test-minio-backup.sh
 pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck

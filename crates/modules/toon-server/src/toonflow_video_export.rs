@@ -447,12 +447,12 @@ pub(crate) async fn download_external_video(
     max_bytes: u64,
 ) -> Result<u64, String> {
     let url = reqwest::Url::parse(source).map_err(|error| format!("视频地址无效：{error}"))?;
-    let response = safe_video_client(&url)
-        .await?
-        .get(url)
-        .send()
-        .await
-        .map_err(|error| format!("下载视频失败：{error}"))?;
+    let response = rust_toon_framework_resilience::inject_trace_context(
+        safe_video_client(&url).await?.get(url),
+    )
+    .send()
+    .await
+    .map_err(|error| format!("下载视频失败：{error}"))?;
     if !response.status().is_success() {
         return Err(format!(
             "下载视频失败：HTTP {}（不跟随重定向）",
@@ -1050,13 +1050,19 @@ pub async fn export(
             AppError::internal("failed to create export task")
         })?;
     sqlx::query(
-        "INSERT INTO toonflow.distributed_jobs(message_id,task_id,kind,trace_id,payload)
-         VALUES($1,$2,$3,$4,$5)",
+        "INSERT INTO toonflow.distributed_jobs(message_id,task_id,kind,trace_id,trace_context,payload)
+         VALUES($1,$2,$3,$4,$5,$6)",
     )
     .bind(Uuid::new_v4())
     .bind(task_id)
     .bind(VIDEO_EXPORT_JOB_KIND)
-    .bind(format!("video-export-{task_id}"))
+    .bind(
+        rust_toon_framework_telemetry::current_trace_id()
+            .unwrap_or_else(|| format!("video-export-{task_id}")),
+    )
+    .bind(json!(
+        rust_toon_framework_telemetry::current_trace_context()
+    ))
     .bind(payload)
     .execute(&mut *tx)
     .await

@@ -52,6 +52,33 @@ services:
       retries: 10
       start_period: 5s
 
+  rnacos:
+    image: qingpan/rnacos:v0.8.6
+    container_name: rust-toon-rnacos
+    environment:
+      RNACOS_DATA_DIR: /io/nacos_db
+      RNACOS_SDK_HOST: 0.0.0.0
+      RNACOS_CONSOLE_HOST: 0.0.0.0
+      RNACOS_ENABLE_OPEN_API_AUTH: "true"
+      RNACOS_ENABLE_NO_AUTH_CONSOLE: "false"
+      RNACOS_INIT_ADMIN_USERNAME: rust_toon
+      RNACOS_INIT_ADMIN_PASSWORD: rust_toon_nacos_password
+      RNACOS_BACKUP_TOKEN: rust_toon_local_backup_token_32_bytes
+      RNACOS_GMT_OFFSET_HOURS: "8"
+      RUST_LOG: warn
+    ports:
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
+      - "127.0.0.1:10848:10848"
+    volumes:
+      - rust-toon-rnacos:/io/nacos_db
+    healthcheck:
+      test: ["CMD", "/usr/bin/bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/9848"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
     container_name: rust-toon-minio
@@ -75,3 +102,4 @@ volumes:
   rust-toon-postgres:
   rust-toon-nats:
   rust-toon-minio:
+  rust-toon-rnacos:

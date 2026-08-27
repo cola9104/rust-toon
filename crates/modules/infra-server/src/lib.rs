@@ -12,10 +12,14 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use chrono::{Datelike, Timelike, Utc};
+use chrono::Utc;
 use rust_toon_framework_common::ApiResponse;
 use rust_toon_framework_database::PgPool;
+use rust_toon_framework_jobs::{
+    INFRA_SCHEDULED_JOB_KIND, ScheduledJobPayload, next_occurrence, next_occurrences, validate_cron,
+};
 use rust_toon_framework_security::{CurrentUser, Permission, TokenService, authenticate};
+use rust_toon_framework_telemetry::{current_trace_context, current_trace_id};
 use rust_toon_framework_web::AppError;
 use rust_toon_infra_api::InfraCapability;
 use serde::{Deserialize, Serialize};
@@ -33,6 +37,7 @@ const MAX_CONFIGURABLE_UPLOAD_BYTES: usize = 100 * 1024 * 1024;
 // for the boundary and content-disposition headers and enforce the exact file
 // limit again after extraction.
 const MULTIPART_OVERHEAD_BYTES: usize = 64 * 1024;
+const INFRA_JOB_STATUS_NORMAL: i16 = 1;
 
 #[derive(Clone)]
 pub struct InfraState {
@@ -917,8 +922,15 @@ async fn job_create(
     State(state): State<InfraState>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ApiResponse<String>>, AppError> {
-    let id = sqlx::query_scalar::<_, i64>("INSERT INTO infra_job (id, name, status, handler_name, handler_param, cron_expression, retry_count, retry_interval, monitor_timeout) VALUES (nextval('infra_job_seq'),$1,$2,$3,$4,$5,$6,$7,$8) RETURNING id")
-        .bind(str_field(&payload, "name")).bind(i16_field(&payload, "status", 0)).bind(str_field(&payload, "handlerName")).bind(opt_str_field(&payload, "handlerParam")).bind(str_field(&payload, "cronExpression")).bind(i32_field(&payload, "retryCount", 0)).bind(i32_field(&payload, "retryInterval", 0)).bind(i32_field(&payload, "monitorTimeout", 0))
+    let expression = str_field(&payload, "cronExpression");
+    validate_cron(&expression).map_err(AppError::bad_request)?;
+    let status = INFRA_JOB_STATUS_NORMAL;
+    let next_run_at = (status == INFRA_JOB_STATUS_NORMAL)
+        .then(|| next_occurrence(&expression, Utc::now()))
+        .transpose()
+        .map_err(AppError::bad_request)?;
+    let id = sqlx::query_scalar::<_, i64>("INSERT INTO infra_job (id, name, status, handler_name, handler_param, cron_expression, retry_count, retry_interval, monitor_timeout, next_run_at) VALUES (nextval('infra_job_seq'),$1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id")
+        .bind(str_field(&payload, "name")).bind(status).bind(str_field(&payload, "handlerName")).bind(opt_str_field(&payload, "handlerParam")).bind(expression).bind(i32_field(&payload, "retryCount", 0)).bind(i32_field(&payload, "retryInterval", 0)).bind(i32_field(&payload, "monitorTimeout", 0)).bind(next_run_at)
         .fetch_one(&state.pool).await.map_err(|_| AppError::internal("failed to create job"))?;
     Ok(Json(ApiResponse::new(id.to_string())))
 }
@@ -927,8 +939,25 @@ async fn job_update(
     State(state): State<InfraState>,
     Json(payload): Json<Value>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    sqlx::query("UPDATE infra_job SET name=$2,status=$3,handler_name=$4,handler_param=$5,cron_expression=$6,retry_count=$7,retry_interval=$8,monitor_timeout=$9,update_time=now() WHERE id=$1 AND deleted=0")
-        .bind(i64_field(&payload, "id", 0)).bind(str_field(&payload, "name")).bind(i16_field(&payload, "status", 0)).bind(str_field(&payload, "handlerName")).bind(opt_str_field(&payload, "handlerParam")).bind(str_field(&payload, "cronExpression")).bind(i32_field(&payload, "retryCount", 0)).bind(i32_field(&payload, "retryInterval", 0)).bind(i32_field(&payload, "monitorTimeout", 0))
+    let id = i64_field(&payload, "id", 0);
+    let current_status: i16 =
+        sqlx::query_scalar("SELECT status FROM infra_job WHERE id=$1 AND deleted=0")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to read job"))?
+            .ok_or_else(|| AppError::not_found("job not found"))?;
+    let expression = str_field(&payload, "cronExpression");
+    validate_cron(&expression).map_err(AppError::bad_request)?;
+    let status = opt_i64_field(&payload, "status")
+        .and_then(|value| i16::try_from(value).ok())
+        .unwrap_or(current_status);
+    let next_run_at = (status == INFRA_JOB_STATUS_NORMAL)
+        .then(|| next_occurrence(&expression, Utc::now()))
+        .transpose()
+        .map_err(AppError::bad_request)?;
+    sqlx::query("UPDATE infra_job SET name=$2,status=$3,handler_name=$4,handler_param=$5,cron_expression=$6,retry_count=$7,retry_interval=$8,monitor_timeout=$9,next_run_at=$10,update_time=now() WHERE id=$1 AND deleted=0")
+        .bind(id).bind(str_field(&payload, "name")).bind(status).bind(str_field(&payload, "handlerName")).bind(opt_str_field(&payload, "handlerParam")).bind(expression).bind(i32_field(&payload, "retryCount", 0)).bind(i32_field(&payload, "retryInterval", 0)).bind(i32_field(&payload, "monitorTimeout", 0)).bind(next_run_at)
         .execute(&state.pool).await.map_err(|_| AppError::internal("failed to update job"))?;
     Ok(Json(ApiResponse::new(())))
 }
@@ -957,13 +986,30 @@ async fn job_update_status(
                 .and_then(|value| opt_i64_field(value, "status"))
                 .and_then(|value| i16::try_from(value).ok())
         })
-        .unwrap_or(0);
-    sqlx::query("UPDATE infra_job SET status=$2, update_time=now() WHERE id=$1 AND deleted=0")
-        .bind(id)
-        .bind(status)
-        .execute(&state.pool)
-        .await
-        .map_err(|_| AppError::internal("failed to update job status"))?;
+        .ok_or_else(|| AppError::bad_request("status is required"))?;
+    if !matches!(status, 1 | 2) {
+        return Err(AppError::bad_request("status must be 1 or 2"));
+    }
+    let expression: String =
+        sqlx::query_scalar("SELECT cron_expression FROM infra_job WHERE id=$1 AND deleted=0")
+            .bind(id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to read job"))?
+            .ok_or_else(|| AppError::not_found("job not found"))?;
+    let next_run_at = (status == INFRA_JOB_STATUS_NORMAL)
+        .then(|| next_occurrence(&expression, Utc::now()))
+        .transpose()
+        .map_err(AppError::bad_request)?;
+    sqlx::query(
+        "UPDATE infra_job SET status=$2,next_run_at=$3,update_time=now() WHERE id=$1 AND deleted=0",
+    )
+    .bind(id)
+    .bind(status)
+    .bind(next_run_at)
+    .execute(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to update job status"))?;
     Ok(Json(ApiResponse::new(())))
 }
 
@@ -980,32 +1026,117 @@ async fn job_trigger(
     State(state): State<InfraState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
-    let job = job_get(State(state.clone()), Query(params)).await?.0.data;
-    let now = Utc::now().naive_utc();
-    sqlx::query("INSERT INTO infra_job_log (id, job_id, handler_name, handler_param, begin_time, end_time, duration, status, result) VALUES (nextval('infra_job_log_seq'),$1,$2,$3,$4,$4,0,1,'manual trigger')")
-        .bind(job["id"].as_i64().unwrap_or_default()).bind(job["handlerName"].as_str().unwrap_or_default()).bind(job["handlerParam"].as_str()).bind(now)
-        .execute(&state.pool).await.map_err(|_| AppError::internal("failed to trigger job"))?;
+    let id = id_param(&params)?;
+    let job: Option<(String, Option<String>, i32, i32, i32)> = sqlx::query_as(
+        "SELECT handler_name,handler_param,retry_count,retry_interval,monitor_timeout FROM infra_job WHERE id=$1 AND deleted=0",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to read job"))?;
+    let (handler_name, handler_param, retry_count, retry_interval, monitor_timeout) =
+        job.ok_or_else(|| AppError::not_found("job not found"))?;
+    enqueue_infra_job(
+        &state.pool,
+        ScheduledJobPayload {
+            infra_job_id: id,
+            handler_name,
+            handler_param,
+            scheduled_at: Utc::now(),
+            triggered_by: "manual".to_string(),
+            retry_interval_millis: u64::try_from(retry_interval).unwrap_or_default(),
+            monitor_timeout_millis: u64::try_from(monitor_timeout).unwrap_or_default(),
+        },
+        retry_count,
+    )
+    .await?;
     Ok(Json(ApiResponse::new(())))
 }
 
 async fn job_next_times(
     Query(params): Query<HashMap<String, String>>,
-) -> Json<ApiResponse<Vec<String>>> {
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
     let expression = params
         .get("cronExpression")
         .or_else(|| params.get("cron"))
         .map(String::as_str)
         .unwrap_or("0 0/5 * * * ?");
-    Json(ApiResponse::new(next_cron_times(expression, 5)))
+    let values = next_occurrences(expression, Utc::now(), 5)
+        .map_err(AppError::bad_request)?
+        .into_iter()
+        .map(|value| value.to_rfc3339())
+        .collect();
+    Ok(Json(ApiResponse::new(values)))
 }
 
 async fn job_sync(State(state): State<InfraState>) -> Result<Json<ApiResponse<i64>>, AppError> {
-    let enabled_jobs =
-        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM infra_job WHERE deleted=0 AND status=0")
-            .fetch_one(&state.pool)
+    let jobs: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id,cron_expression FROM infra_job WHERE deleted=0 AND status=1")
+            .fetch_all(&state.pool)
             .await
             .map_err(|_| AppError::internal("failed to sync jobs"))?;
-    Ok(Json(ApiResponse::new(enabled_jobs)))
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to sync jobs"))?;
+    for (id, expression) in &jobs {
+        let next = next_occurrence(expression, Utc::now()).map_err(AppError::bad_request)?;
+        sqlx::query("UPDATE infra_job SET next_run_at=$2,update_time=now() WHERE id=$1")
+            .bind(id)
+            .bind(next)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to sync jobs"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to sync jobs"))?;
+    Ok(Json(ApiResponse::new(jobs.len() as i64)))
+}
+
+async fn enqueue_infra_job(
+    pool: &PgPool,
+    payload: ScheduledJobPayload,
+    retry_count: i32,
+) -> Result<i64, AppError> {
+    let payload_json = serde_json::to_value(&payload)
+        .map_err(|_| AppError::internal("failed to encode scheduled job"))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to trigger job"))?;
+    let task_id: i64 = sqlx::query_scalar(
+        "INSERT INTO toonflow.tasks
+         (project_id,task_class,related_objects,model,description,state,start_time)
+         VALUES(NULL,'infraJob',$1,'rust-worker',$2,'running',
+                (extract(epoch from clock_timestamp())*1000)::bigint)
+         RETURNING id",
+    )
+    .bind(json!({"infraJobId": payload.infra_job_id}).to_string())
+    .bind(format!("执行定时任务 {}", payload.handler_name))
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to create scheduled task"))?;
+    sqlx::query(
+        "INSERT INTO toonflow.distributed_jobs
+         (message_id,task_id,kind,trace_id,trace_context,payload,max_attempts)
+         VALUES($1,$2,$3,$4,$5,$6,$7)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(task_id)
+    .bind(INFRA_SCHEDULED_JOB_KIND)
+    .bind(current_trace_id().unwrap_or_else(|| format!("infra-job-{task_id}")))
+    .bind(json!(current_trace_context()))
+    .bind(payload_json)
+    .bind(retry_count.clamp(0, 99) + 1)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to enqueue scheduled job"))?;
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to trigger job"))?;
+    Ok(task_id)
 }
 
 async fn job_delete(
@@ -1108,81 +1239,6 @@ async fn redis_monitor_info_value() -> Result<Value, String> {
         "dbSize": db_size,
         "commandStats": command_stats
     }))
-}
-
-fn next_cron_times(expression: &str, count: usize) -> Vec<String> {
-    let fields: Vec<&str> = expression.split_whitespace().collect();
-    if fields.len() < 6 {
-        return fallback_next_times(count);
-    }
-    let minutes = parse_cron_number_field(fields[1], 0, 59);
-    let hours = parse_cron_number_field(fields[2], 0, 23);
-    let days = parse_cron_number_field(fields[3], 1, 31);
-    let months = parse_cron_number_field(fields[4], 1, 12);
-    let mut cursor = Utc::now() + chrono::Duration::minutes(1);
-    cursor = cursor
-        .with_second(0)
-        .and_then(|value| value.with_nanosecond(0))
-        .unwrap_or(cursor);
-    let mut result = Vec::with_capacity(count);
-    for _ in 0..(366 * 24 * 60) {
-        let minute_ok = minutes
-            .as_ref()
-            .is_none_or(|values| values.contains(&cursor.minute()));
-        let hour_ok = hours
-            .as_ref()
-            .is_none_or(|values| values.contains(&cursor.hour()));
-        let day_ok = days
-            .as_ref()
-            .is_none_or(|values| values.contains(&cursor.day()));
-        let month_ok = months
-            .as_ref()
-            .is_none_or(|values| values.contains(&cursor.month()));
-        if minute_ok && hour_ok && day_ok && month_ok {
-            result.push(cursor.to_rfc3339());
-            if result.len() == count {
-                break;
-            }
-        }
-        cursor += chrono::Duration::minutes(1);
-    }
-    if result.is_empty() {
-        fallback_next_times(count)
-    } else {
-        result
-    }
-}
-
-fn parse_cron_number_field(field: &str, min: u32, max: u32) -> Option<Vec<u32>> {
-    if matches!(field, "*" | "?") {
-        return None;
-    }
-    let mut values = Vec::new();
-    for part in field.split(',') {
-        if let Some((start, step)) = part.split_once('/') {
-            let start = if start == "*" {
-                min
-            } else {
-                start.parse::<u32>().ok()?.clamp(min, max)
-            };
-            let step = step.parse::<usize>().ok()?.max(1);
-            values.extend((start..=max).step_by(step));
-        } else if let Some((start, end)) = part.split_once('-') {
-            values.extend(start.parse::<u32>().ok()?.max(min)..=end.parse::<u32>().ok()?.min(max));
-        } else {
-            values.push(part.parse::<u32>().ok()?.clamp(min, max));
-        }
-    }
-    values.sort_unstable();
-    values.dedup();
-    Some(values)
-}
-
-fn fallback_next_times(count: usize) -> Vec<String> {
-    let now = Utc::now();
-    (1..=count)
-        .map(|n| (now + chrono::Duration::minutes((n * 5) as i64)).to_rfc3339())
-        .collect()
 }
 
 #[derive(Clone, Copy)]

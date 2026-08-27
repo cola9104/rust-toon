@@ -1,0 +1,178 @@
+name: Delivery
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Protected GitHub Environment to deploy
+        required: true
+        type: choice
+        default: staging
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: delivery-${{ github.event_name == 'workflow_run' && 'staging' || inputs.target_environment }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      image_ref: ${{ steps.reference.outputs.image_ref }}
+      source_sha: ${{ steps.source.outputs.source_sha }}
+    steps:
+      - name: Resolve immutable source revision
+        id: source
+        env:
+          WORKFLOW_RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          source_sha="$WORKFLOW_RUN_SHA"
+          if [[ -z "$source_sha" ]]; then
+            source_sha="$DISPATCH_SHA"
+          fi
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "source revision is not a full Git commit SHA" >&2
+            exit 1
+          }
+          echo "source_sha=$source_sha" >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.source.outputs.source_sha }}
+      - name: Resolve lowercase GHCR repository
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          image_name="ghcr.io/${REPOSITORY,,}/backend"
+          echo "name=$image_name" >>"$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build, publish, and generate supply-chain metadata
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.backend
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ steps.source.outputs.source_sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign immutable image digest
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_NAME@$IMAGE_DIGEST"
+      - name: Publish GitHub build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Export immutable deployment reference
+        id: reference
+        env:
+          IMAGE_NAME: ${{ steps.image.outputs.name }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "image_ref=$IMAGE_NAME@$IMAGE_DIGEST" >>"$GITHUB_OUTPUT"
+
+  deploy:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: ${{ github.event_name == 'workflow_run' && 'staging' || inputs.target_environment }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.publish.outputs.source_sha }}
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+      - uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: 5.7.1
+      - name: Install scoped kubeconfig
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          [[ -n "$KUBECONFIG_B64" ]] || {
+            echo "GitHub Environment secret KUBECONFIG_B64 is required" >&2
+            exit 1
+          }
+          kubeconfig_path="$RUNNER_TEMP/rust-toon-kubeconfig"
+          printf '%s' "$KUBECONFIG_B64" | base64 --decode >"$kubeconfig_path"
+          chmod 600 "$kubeconfig_path"
+          echo "KUBECONFIG=$kubeconfig_path" >>"$GITHUB_ENV"
+      - name: Verify target and required Secrets
+        run: |
+          kubectl auth can-i create deployments.apps --namespace rust-toon | grep -qx yes
+          kubectl apply --server-side --field-manager=rust-toon-delivery \
+            -f deploy/k8s/namespace.yaml
+          for secret_name in \
+            rust-toon-gateway-secrets \
+            rust-toon-worker-secrets \
+            rust-toon-observability-secrets; do
+            kubectl --namespace rust-toon get secret "$secret_name" >/dev/null
+          done
+      - name: Render immutable application image
+        env:
+          IMAGE_REF: ${{ needs.publish.outputs.image_ref }}
+        working-directory: deploy/k8s
+        run: |
+          kustomize edit set image "rust-toon/backend=$IMAGE_REF"
+          kustomize build . >"$RUNNER_TEMP/rust-toon-rendered.yaml"
+          grep -F -q "$IMAGE_REF" "$RUNNER_TEMP/rust-toon-rendered.yaml"
+      - name: Apply and verify rollout
+        env:
+          IMAGE_REF: ${{ needs.publish.outputs.image_ref }}
+        run: |
+          rollback() {
+            echo "rollout failed; requesting rollback to the previous revisions" >&2
+            kubectl --namespace rust-toon rollout undo deployment/rust-toon-gateway || true
+            kubectl --namespace rust-toon rollout undo deployment/rust-toon-worker || true
+          }
+          trap rollback ERR
+
+          kubectl apply --server-side --field-manager=rust-toon-delivery \
+            -f "$RUNNER_TEMP/rust-toon-rendered.yaml"
+          kubectl apply --server-side --field-manager=rust-toon-delivery \
+            -k deploy/logging-agent
+
+          kubectl --namespace rust-toon rollout status deployment/rust-toon-gateway --timeout=10m
+          kubectl --namespace rust-toon rollout status deployment/rust-toon-worker --timeout=15m
+          kubectl --namespace rust-toon rollout status deployment/rust-toon-otel-collector --timeout=5m
+          kubectl --namespace rust-toon rollout status statefulset/rust-toon-prometheus --timeout=10m
+          kubectl --namespace rust-toon rollout status statefulset/rust-toon-alertmanager --timeout=5m
+          kubectl --namespace rust-toon rollout status statefulset/rust-toon-loki --timeout=10m
+          kubectl --namespace rust-toon rollout status statefulset/rust-toon-tempo --timeout=10m
+          kubectl --namespace rust-toon rollout status deployment/rust-toon-grafana --timeout=5m
+          kubectl --namespace rust-toon-logging rollout status daemonset/rust-toon-vector --timeout=10m
+
+          deployed_image="$(kubectl --namespace rust-toon get deployment rust-toon-gateway \
+            -o jsonpath='{.spec.template.spec.containers[?(@.name=="gateway")].image}')"
+          [[ "$deployed_image" == "$IMAGE_REF" ]]
+          trap - ERR

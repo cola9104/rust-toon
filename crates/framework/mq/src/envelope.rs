@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
@@ -21,6 +23,8 @@ pub struct JobEnvelope<T = serde_json::Value> {
     pub kind: String,
     pub attempt: u32,
     pub trace_id: String,
+    #[serde(default)]
+    pub trace_context: BTreeMap<String, String>,
     pub payload: T,
 }
 
@@ -42,10 +46,17 @@ impl<T> JobEnvelope<T> {
             kind: kind.into(),
             attempt,
             trace_id: trace_id.into(),
+            trace_context: BTreeMap::new(),
             payload,
         };
         envelope.validate()?;
         Ok(envelope)
+    }
+
+    pub fn with_trace_context(mut self, trace_context: BTreeMap<String, String>) -> Result<Self> {
+        self.trace_context = trace_context;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validate fields that are common to all payload types.
@@ -74,6 +85,16 @@ impl<T> JobEnvelope<T> {
         if self.trace_id.len() > 256 {
             return Err(MqError::Protocol(
                 "trace_id must not exceed 256 bytes".to_string(),
+            ));
+        }
+        if self.trace_context.len() > 16
+            || self
+                .trace_context
+                .iter()
+                .any(|(key, value)| key.len() > 64 || value.len() > 1_024)
+        {
+            return Err(MqError::Protocol(
+                "trace_context exceeds carrier limits".to_string(),
             ));
         }
         Ok(())

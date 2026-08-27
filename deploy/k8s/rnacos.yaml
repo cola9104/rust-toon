@@ -1,0 +1,246 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-rnacos-bootstrap
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/part-of: rust-toon
+data:
+  entrypoint.sh: |-
+    #!/bin/sh
+    set -eu
+    ordinal="${HOSTNAME##*-}"
+    export RNACOS_RAFT_NODE_ID="$((ordinal + 1))"
+    export RNACOS_RAFT_NODE_ADDR="${HOSTNAME}.rust-toon-rnacos-headless.rust-toon.svc.cluster.local:9848"
+    if [ "$ordinal" = "0" ]; then
+      export RNACOS_RAFT_AUTO_INIT=true
+      unset RNACOS_RAFT_JOIN_ADDR || true
+    else
+      export RNACOS_RAFT_AUTO_INIT=false
+      export RNACOS_RAFT_JOIN_ADDR="rust-toon-rnacos-0.rust-toon-rnacos-headless.rust-toon.svc.cluster.local:9848"
+    fi
+    exec /usr/bin/rnacos
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-toon-rnacos-headless
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app.kubernetes.io/name: rust-toon-rnacos
+  ports:
+    - name: sdk-http
+      port: 8848
+      targetPort: sdk-http
+    - name: grpc
+      port: 9848
+      targetPort: grpc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-toon-rnacos
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  selector:
+    app.kubernetes.io/name: rust-toon-rnacos
+  ports:
+    - name: sdk-http
+      port: 8848
+      targetPort: sdk-http
+    - name: grpc
+      port: 9848
+      targetPort: grpc
+    - name: console
+      port: 10848
+      targetPort: console
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rust-toon-rnacos
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/component: dynamic-configuration
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  serviceName: rust-toon-rnacos-headless
+  replicas: 3
+  podManagementPolicy: OrderedReady
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-rnacos
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rust-toon-rnacos
+        app.kubernetes.io/component: dynamic-configuration
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      serviceAccountName: rust-toon
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rnacos
+          image: qingpan/rnacos:v0.8.6
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - /etc/rnacos/entrypoint.sh
+          env:
+            - name: RNACOS_DATA_DIR
+              value: /io/nacos_db
+            - name: RNACOS_SDK_HOST
+              value: 0.0.0.0
+            - name: RNACOS_HTTP_PORT
+              value: "8848"
+            - name: RNACOS_GRPC_PORT
+              value: "9848"
+            - name: RNACOS_CONSOLE_HOST
+              value: 0.0.0.0
+            - name: RNACOS_HTTP_CONSOLE_PORT
+              value: "10848"
+            - name: RNACOS_HTTP_WORKERS
+              value: "4"
+            - name: RNACOS_ENABLE_OPEN_API_AUTH
+              value: "true"
+            - name: RNACOS_ENABLE_NO_AUTH_CONSOLE
+              value: "false"
+            - name: RNACOS_CONSOLE_LOGIN_ONE_HOUR_LIMIT
+              value: "5"
+            - name: RNACOS_CONSOLE_ENABLE_CAPTCHA
+              value: "true"
+            - name: RNACOS_ENABLE_METRICS
+              value: "true"
+            - name: RNACOS_GMT_OFFSET_HOURS
+              value: "8"
+            - name: RUST_LOG
+              value: warn
+            - name: RNACOS_INIT_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: rust-toon-rnacos-secrets
+                  key: RNACOS_INIT_ADMIN_USERNAME
+            - name: RNACOS_INIT_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rust-toon-rnacos-secrets
+                  key: RNACOS_INIT_ADMIN_PASSWORD
+            - name: RNACOS_CLUSTER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rust-toon-rnacos-secrets
+                  key: RNACOS_CLUSTER_TOKEN
+            - name: RNACOS_BACKUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: rust-toon-rnacos-secrets
+                  key: RNACOS_BACKUP_TOKEN
+          ports:
+            - name: sdk-http
+              containerPort: 8848
+              protocol: TCP
+            - name: grpc
+              containerPort: 9848
+              protocol: TCP
+            - name: console
+              containerPort: 10848
+              protocol: TCP
+          startupProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 40
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+              ephemeral-storage: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: bootstrap
+              mountPath: /etc/rnacos/entrypoint.sh
+              subPath: entrypoint.sh
+              readOnly: true
+            - name: data
+              mountPath: /io/nacos_db
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: bootstrap
+          configMap:
+            name: rust-toon-rnacos-bootstrap
+            defaultMode: 0555
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: rust-toon-rnacos
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: rust-toon-rnacos
+          app.kubernetes.io/part-of: rust-toon
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 10Gi
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rust-toon-rnacos
+  labels:
+    app.kubernetes.io/name: rust-toon-rnacos
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-rnacos

@@ -5,12 +5,15 @@ use std::{env, time::Duration};
 use axum::{Json, Router, middleware::from_fn_with_state, routing::get};
 use rust_toon_framework_common::{ApiResponse, ServiceConfig, health_route};
 use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+use rust_toon_framework_dynamic_config::{
+    DynamicConfig, GatewayRuntimeConfig, NacosConfig, subscribe_json,
+};
 use rust_toon_framework_redis::{RateLimitConfig, RateLimitState, RedisClient, RedisConfig};
 use rust_toon_framework_security::{SecurityConfig, TokenService};
 use rust_toon_framework_telemetry::{init_telemetry, record_http_metrics};
 use rust_toon_framework_web::{AppError, WebConfig, apply_web_layers};
 use serde::Serialize;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::watch};
 use tracing::{info, warn};
 
 mod audit;
@@ -29,6 +32,18 @@ struct GatewayIndex {
 async fn main() -> anyhow::Result<()> {
     let telemetry = init_telemetry(SERVICE_NAME)?;
     let metrics = telemetry.metrics();
+
+    let rate_limit_defaults = RateLimitConfig::from_env();
+    let gateway_dynamic = subscribe_json(
+        NacosConfig::from_env(SERVICE_NAME)?,
+        GatewayRuntimeConfig::new(
+            rate_limit_defaults.max_requests,
+            rate_limit_defaults.window.as_secs(),
+        ),
+        GatewayRuntimeConfig::validate,
+    )
+    .await?;
+    let rate_limit_config = project_rate_limit_config(&gateway_dynamic, rate_limit_defaults);
 
     let database = connect(&DatabaseConfig::from_env()?).await?;
     migrate(&database).await?;
@@ -91,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(redis) = redis {
         app = app.layer(from_fn_with_state(
-            RateLimitState::new(redis, RateLimitConfig::from_env()),
+            RateLimitState::with_receiver(redis, rate_limit_config),
             rust_toon_framework_redis::rate_limit,
         ));
     }
@@ -106,6 +121,31 @@ async fn main() -> anyhow::Result<()> {
     let app = apply_web_layers(app, WebConfig::from_env());
 
     serve_gateway(ServiceConfig::from_env(SERVICE_NAME, 8080), app, drain).await
+}
+
+fn project_rate_limit_config(
+    dynamic: &DynamicConfig<GatewayRuntimeConfig>,
+    defaults: RateLimitConfig,
+) -> watch::Receiver<RateLimitConfig> {
+    let namespace = defaults.namespace;
+    let current = dynamic.current();
+    let (sender, receiver) = watch::channel(RateLimitConfig {
+        namespace: namespace.clone(),
+        max_requests: current.rate_limit.max_requests,
+        window: Duration::from_secs(current.rate_limit.window_seconds),
+    });
+    let mut source = dynamic.receiver();
+    tokio::spawn(async move {
+        while source.changed().await.is_ok() {
+            let current = source.borrow().clone();
+            sender.send_replace(RateLimitConfig {
+                namespace: namespace.clone(),
+                max_requests: current.rate_limit.max_requests,
+                window: Duration::from_secs(current.rate_limit.window_seconds),
+            });
+        }
+    });
+    receiver
 }
 
 async fn serve_gateway(

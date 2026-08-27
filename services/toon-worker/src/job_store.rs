@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use rust_toon_framework_jobs::{INFRA_SCHEDULED_JOB_KIND, ScheduledJobPayload, next_occurrence};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
@@ -17,6 +18,7 @@ pub struct DispatchJob {
     pub task_id: i64,
     pub kind: String,
     pub trace_id: String,
+    pub trace_context: Value,
     pub payload: Value,
     pub attempt: i32,
     pub publish_token: Uuid,
@@ -32,6 +34,18 @@ pub struct ClaimedJob {
     pub max_attempts: i32,
     pub lease_token: Uuid,
     pub lease_until: DateTime<Utc>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct DueInfraJob {
+    id: i64,
+    handler_name: String,
+    handler_param: Option<String>,
+    cron_expression: String,
+    retry_count: i32,
+    retry_interval: i32,
+    monitor_timeout: i32,
+    next_run_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -81,6 +95,93 @@ impl JobStore {
         &self.pool
     }
 
+    /// Claims due scheduler rows under `SKIP LOCKED`, writes their task and
+    /// outbox records atomically, then advances the schedule. Multiple workers
+    /// can run this loop without producing duplicate occurrences.
+    pub async fn schedule_due_infra_jobs(&self, limit: i64) -> anyhow::Result<u64> {
+        let now = Utc::now();
+        let mut tx = self.pool.begin().await?;
+        let jobs: Vec<DueInfraJob> = sqlx::query_as(
+            "SELECT id,handler_name,handler_param,cron_expression,retry_count,
+                    retry_interval,monitor_timeout,next_run_at
+             FROM infra_job
+             WHERE deleted=0 AND status=1
+               AND (next_run_at IS NULL OR next_run_at <= now())
+             ORDER BY next_run_at NULLS FIRST,id
+             FOR UPDATE SKIP LOCKED
+             LIMIT $1",
+        )
+        .bind(limit.clamp(1, 1_000))
+        .fetch_all(&mut *tx)
+        .await?;
+        let mut scheduled = 0_u64;
+        for job in jobs {
+            let scheduled_at = job.next_run_at;
+            let after = scheduled_at.map_or(now, |value| value.max(now));
+            let next_run_at =
+                next_occurrence(&job.cron_expression, after).map_err(anyhow::Error::msg)?;
+
+            // A NULL schedule means this row predates the scheduler migration
+            // or was explicitly resynchronised. Initialize it without firing a
+            // surprise catch-up execution.
+            if let Some(scheduled_at) = scheduled_at {
+                let payload = ScheduledJobPayload {
+                    infra_job_id: job.id,
+                    handler_name: job.handler_name.clone(),
+                    handler_param: job.handler_param.clone(),
+                    scheduled_at,
+                    triggered_by: "cron".to_string(),
+                    retry_interval_millis: u64::try_from(job.retry_interval).unwrap_or_default(),
+                    monitor_timeout_millis: u64::try_from(job.monitor_timeout).unwrap_or_default(),
+                };
+                let payload = serde_json::to_value(payload)?;
+                let task_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO toonflow.tasks
+                     (project_id,task_class,related_objects,model,description,state,start_time)
+                     VALUES(NULL,'infraJob',$1,'rust-worker',$2,'running',
+                            (extract(epoch from clock_timestamp())*1000)::bigint)
+                     RETURNING id",
+                )
+                .bind(serde_json::json!({"infraJobId": job.id}).to_string())
+                .bind(format!("执行定时任务 {}", job.handler_name))
+                .fetch_one(&mut *tx)
+                .await?;
+                sqlx::query(
+                    "INSERT INTO toonflow.distributed_jobs
+                     (message_id,task_id,kind,trace_id,trace_context,payload,max_attempts)
+                     VALUES($1,$2,$3,$4,$5,$6,$7)",
+                )
+                .bind(Uuid::new_v4())
+                .bind(task_id)
+                .bind(INFRA_SCHEDULED_JOB_KIND)
+                .bind(
+                    rust_toon_framework_telemetry::current_trace_id()
+                        .unwrap_or_else(|| format!("infra-job-{task_id}")),
+                )
+                .bind(serde_json::json!(
+                    rust_toon_framework_telemetry::current_trace_context()
+                ))
+                .bind(payload)
+                .bind(job.retry_count.clamp(0, 99) + 1)
+                .execute(&mut *tx)
+                .await?;
+                scheduled += 1;
+            }
+            sqlx::query(
+                "UPDATE infra_job
+                 SET last_scheduled_at=$2,next_run_at=$3,update_time=now()
+                 WHERE id=$1",
+            )
+            .bind(job.id)
+            .bind(scheduled_at)
+            .bind(next_run_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(scheduled)
+    }
+
     pub async fn prepare_dispatch(
         &self,
         worker_id: &str,
@@ -115,7 +216,7 @@ impl JobStore {
                  updated_at=now()
              FROM candidates
              WHERE jobs.id=candidates.id
-             RETURNING jobs.id,jobs.message_id,jobs.task_id,jobs.kind,jobs.trace_id,
+             RETURNING jobs.id,jobs.message_id,jobs.task_id,jobs.kind,jobs.trace_id,jobs.trace_context,
                        jobs.payload,jobs.attempt,jobs.publish_token",
         )
         .bind(worker_id)

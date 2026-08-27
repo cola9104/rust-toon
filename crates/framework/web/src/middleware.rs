@@ -44,6 +44,7 @@ pub fn apply_web_layers(router: Router, config: WebConfig) -> Router {
                     "http_request",
                     method = %request.method(),
                     path = %request.uri().path(),
+                    trace_id = tracing::field::Empty,
                     "otel.kind" = "server",
                 );
                 rust_toon_framework_telemetry::set_parent_from_headers(&span, request.headers());

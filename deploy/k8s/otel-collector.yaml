@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-otel-collector-config
+  labels:
+    app.kubernetes.io/name: rust-toon-otel-collector
+    app.kubernetes.io/component: telemetry
+    app.kubernetes.io/part-of: rust-toon
+data:
+  collector.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:4317
+          http:
+            endpoint: 0.0.0.0:4318
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 384
+        spike_limit_mib: 96
+      batch:
+        timeout: 5s
+        send_batch_size: 1024
+    exporters:
+      otlp/tempo:
+        endpoint: rust-toon-tempo:4317
+        tls:
+          insecure: true
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      telemetry:
+        metrics:
+          readers:
+            - pull:
+                exporter:
+                  prometheus:
+                    host: 0.0.0.0
+                    port: 8888
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlp/tempo]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rust-toon-otel-collector
+  labels:
+    app.kubernetes.io/name: rust-toon-otel-collector
+    app.kubernetes.io/component: telemetry
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-otel-collector
+  template:
+    metadata:
+      annotations:
+        prometheus.io/path: /metrics
+        prometheus.io/port: "8888"
+        prometheus.io/scrape: "true"
+      labels:
+        app.kubernetes.io/name: rust-toon-otel-collector
+        app.kubernetes.io/component: telemetry
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      serviceAccountName: rust-toon
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: collector
+          image: otel/opentelemetry-collector-contrib:0.159.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config=/etc/otelcol-contrib/collector.yaml
+          ports:
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+            - name: metrics
+              containerPort: 8888
+            - name: health
+              containerPort: 13133
+          startupProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: health
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otelcol-contrib
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: rust-toon-otel-collector-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-toon-otel-collector
+  labels:
+    app.kubernetes.io/name: rust-toon-otel-collector
+    app.kubernetes.io/component: telemetry
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  selector:
+    app.kubernetes.io/name: rust-toon-otel-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http
+    - name: metrics
+      port: 8888
+      targetPort: metrics

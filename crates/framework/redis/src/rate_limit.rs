@@ -14,6 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use rust_toon_framework_common::{ApiResponse, is_health_probe_path};
+use tokio::sync::watch;
 use tracing::warn;
 
 use crate::RedisClient;
@@ -56,11 +57,19 @@ impl RateLimitConfig {
 #[derive(Clone)]
 pub struct RateLimitState {
     redis: RedisClient,
-    config: RateLimitConfig,
+    config: watch::Receiver<RateLimitConfig>,
 }
 
 impl RateLimitState {
     pub fn new(redis: RedisClient, config: RateLimitConfig) -> Self {
+        let (_sender, receiver) = watch::channel(config);
+        Self {
+            redis,
+            config: receiver,
+        }
+    }
+
+    pub fn with_receiver(redis: RedisClient, config: watch::Receiver<RateLimitConfig>) -> Self {
         Self { redis, config }
     }
 }
@@ -75,18 +84,16 @@ pub async fn rate_limit(
     if is_health_probe_path(&path) {
         return next.run(request).await;
     }
+    // Clone the complete snapshot before any await so one request never mixes
+    // values from two configuration revisions.
+    let config = state.config.borrow().clone();
     let actor = client_key(&request);
-    let key = state.redis.key(
-        &state.config.namespace,
-        format!("{}:{}:{}", actor, method, path),
-    );
-
-    match state
+    let key = state
         .redis
-        .increment_with_ttl(&key, state.config.window)
-        .await
-    {
-        Ok(count) if count > state.config.max_requests => {
+        .key(&config.namespace, format!("{}:{}:{}", actor, method, path));
+
+    match state.redis.increment_with_ttl(&key, config.window).await {
+        Ok(count) if count > config.max_requests => {
             let body = ApiResponse {
                 code: 429,
                 data: (),

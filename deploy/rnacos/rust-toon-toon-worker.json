@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "dispatcherIntervalMillis": 500,
+  "schedulerIntervalMillis": 1000,
+  "reaperIntervalSeconds": 5,
+  "cleanupIntervalSeconds": 5
+}

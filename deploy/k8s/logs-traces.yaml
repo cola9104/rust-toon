@@ -1,0 +1,291 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-loki-config
+  labels:
+    app.kubernetes.io/name: rust-toon-loki
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: rust-toon
+data:
+  loki.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      path_prefix: /var/loki
+      replication_factor: 1
+      ring:
+        instance_addr: 127.0.0.1
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-04-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: rust_toon_index_
+            period: 24h
+    storage_config:
+      filesystem:
+        directory: /var/loki/chunks
+    compactor:
+      working_directory: /var/loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+    limits_config:
+      retention_period: 168h
+      allow_structured_metadata: true
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rust-toon-loki
+  labels:
+    app.kubernetes.io/name: rust-toon-loki
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  serviceName: rust-toon-loki
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-loki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rust-toon-loki
+        app.kubernetes.io/component: logging
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loki
+          image: grafana/loki:3.5.3
+          args:
+            - -config.file=/etc/loki/loki.yaml
+            - -target=all
+          ports:
+            - name: http
+              containerPort: 3100
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+              readOnly: true
+            - name: data
+              mountPath: /var/loki
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: rust-toon-loki-config
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-toon-loki
+  labels:
+    app.kubernetes.io/name: rust-toon-loki
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  selector:
+    app.kubernetes.io/name: rust-toon-loki
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rust-toon-tempo-config
+  labels:
+    app.kubernetes.io/name: rust-toon-tempo
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: rust-toon
+data:
+  tempo.yaml: |
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+    ingester:
+      max_block_duration: 5m
+    compactor:
+      compaction:
+        block_retention: 168h
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /var/tempo/wal
+        local:
+          path: /var/tempo/blocks
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rust-toon-tempo
+  labels:
+    app.kubernetes.io/name: rust-toon-tempo
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  serviceName: rust-toon-tempo
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rust-toon-tempo
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rust-toon-tempo
+        app.kubernetes.io/component: tracing
+        app.kubernetes.io/part-of: rust-toon
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tempo
+          image: grafana/tempo:2.8.2
+          args:
+            - -config.file=/etc/tempo/tempo.yaml
+          ports:
+            - name: http
+              containerPort: 3200
+            - name: otlp-grpc
+              containerPort: 4317
+            - name: otlp-http
+              containerPort: 4318
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 3
+            failureThreshold: 40
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/tempo
+              readOnly: true
+            - name: data
+              mountPath: /var/tempo
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: rust-toon-tempo-config
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rust-toon-tempo
+  labels:
+    app.kubernetes.io/name: rust-toon-tempo
+    app.kubernetes.io/part-of: rust-toon
+spec:
+  selector:
+    app.kubernetes.io/name: rust-toon-tempo
+  ports:
+    - name: http
+      port: 3200
+      targetPort: http
+    - name: otlp-grpc
+      port: 4317
+      targetPort: otlp-grpc
+    - name: otlp-http
+      port: 4318
+      targetPort: otlp-http

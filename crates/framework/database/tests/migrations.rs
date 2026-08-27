@@ -14,7 +14,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 6);
+    assert_eq!(applied, 7);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"
@@ -50,6 +50,13 @@ async fn applies_all_migrations_to_empty_postgres() {
     .execute(&pool)
     .await
     .expect("login lockout migration is idempotent");
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0007_distributed_scheduler_and_trace_context.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("distributed scheduler migration is idempotent");
 
     for column in ["failed_login_attempts", "locked_until"] {
         let exists: bool = sqlx::query_scalar(
@@ -135,6 +142,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         "task_id",
         "kind",
         "trace_id",
+        "trace_context",
         "payload",
         "state",
         "attempt",
@@ -175,6 +183,46 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("inspect distributed outbox index");
     assert!(durable_dispatch_index);
+
+    for column in ["next_run_at", "last_scheduled_at"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+               SELECT 1 FROM information_schema.columns
+               WHERE table_schema='public'
+                 AND table_name='infra_job'
+                 AND column_name=$1
+             )",
+        )
+        .bind(column)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect scheduler column");
+        assert!(exists, "expected infra_job column {column}");
+    }
+
+    let scheduler_index: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_indexes
+           WHERE schemaname='public' AND tablename='infra_job'
+             AND indexname='idx_infra_job_due'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect scheduler due index");
+    assert!(scheduler_index);
+
+    let trace_constraint: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pg_constraint
+           WHERE conrelid='toonflow.distributed_jobs'::regclass
+             AND conname='distributed_jobs_trace_context_is_object'
+         )",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect trace context constraint");
+    assert!(trace_constraint);
 
     for column in [
         "lease_owner",

@@ -1,3 +1,4 @@
+mod handlers;
 mod job_store;
 
 use std::{
@@ -16,11 +17,17 @@ use axum::{
     response::IntoResponse, routing::get,
 };
 use futures_util::StreamExt;
+use handlers::{
+    HandlerRegistry, JobHandler, ScheduledInfraHandler, TestNoopHandler, VideoExportHandler,
+};
 use job_store::{ClaimResult, CompletionDisposition, FailureDisposition, JobStore};
 use rust_toon_framework_common::ServiceConfig;
 use rust_toon_framework_database::{DatabaseConfig, connect, ping};
+use rust_toon_framework_dynamic_config::{NacosConfig, WorkerRuntimeConfig, subscribe_json};
 use rust_toon_framework_mq::{Broker, JobEnvelope, NatsConfig};
-use rust_toon_framework_telemetry::{Metrics, init_telemetry, record_http_metrics};
+use rust_toon_framework_telemetry::{
+    Metrics, TraceContext, init_telemetry, record_http_metrics, set_parent_from_trace_context,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::{net::TcpListener, sync::watch, task::JoinSet};
@@ -42,6 +49,7 @@ struct WorkerSettings {
     reaper_interval: Duration,
     cleanup_interval: Duration,
     cleanup_timeout: Duration,
+    scheduler_interval: Duration,
     drain_timeout: Duration,
     test_jobs: bool,
 }
@@ -92,6 +100,12 @@ impl WorkerSettings {
             1,
             3_600,
         )?);
+        let scheduler_interval = Duration::from_millis(env_number(
+            "TOON_WORKER_SCHEDULER_INTERVAL_MS",
+            1_000,
+            100,
+            60_000,
+        )?);
         anyhow::ensure!(
             cleanup_timeout < lease,
             "TOON_WORKER_CLEANUP_TIMEOUT_SECONDS must be shorter than TOON_WORKER_LEASE_SECONDS"
@@ -118,6 +132,7 @@ impl WorkerSettings {
             reaper_interval,
             cleanup_interval,
             cleanup_timeout,
+            scheduler_interval,
             drain_timeout,
             test_jobs,
         })
@@ -144,11 +159,35 @@ async fn main() -> anyhow::Result<()> {
     let telemetry = init_telemetry(SERVICE_NAME)?;
     let metrics = telemetry.metrics();
     let settings = WorkerSettings::from_env()?;
+    let worker_dynamic = subscribe_json(
+        NacosConfig::from_env(SERVICE_NAME)?,
+        WorkerRuntimeConfig::new(
+            settings.dispatch_interval,
+            settings.scheduler_interval,
+            settings.reaper_interval,
+            settings.cleanup_interval,
+        ),
+        WorkerRuntimeConfig::validate,
+    )
+    .await?;
+    let runtime_config = worker_dynamic.receiver();
     let pool = connect(&DatabaseConfig::from_env()?).await?;
     // The gateway/deployment migration job owns schema initialization. A
     // worker deliberately fails fast when the durable job schema is absent.
     ping(&pool).await?;
     let store = JobStore::new(pool);
+    let mut handlers = HandlerRegistry::default();
+    handlers
+        .register(VideoExportHandler)
+        .map_err(anyhow::Error::msg)?;
+    handlers
+        .register(ScheduledInfraHandler)
+        .map_err(anyhow::Error::msg)?;
+    if settings.test_jobs {
+        handlers
+            .register(TestNoopHandler)
+            .map_err(anyhow::Error::msg)?;
+    }
 
     let mut nats_config = NatsConfig::from_env()?;
     if env::var_os("NATS_CLIENT_NAME").is_none() {
@@ -202,34 +241,34 @@ async fn main() -> anyhow::Result<()> {
         broker.clone(),
         settings.clone(),
         metrics.clone(),
+        runtime_config.clone(),
         shutdown_rx.clone(),
     ));
     tasks.spawn(run_maintenance(
         store.clone(),
         settings.clone(),
         metrics.clone(),
+        runtime_config.clone(),
         shutdown_rx.clone(),
     ));
     tasks.spawn(run_storage_cleanup(
         store.clone(),
         settings.clone(),
         metrics.clone(),
+        runtime_config.clone(),
         shutdown_rx.clone(),
     ));
-    tasks.spawn(run_consumer(
+    tasks.spawn(run_scheduler(
         store.clone(),
-        broker.clone(),
-        settings.clone(),
-        rust_toon_toon_server::VIDEO_EXPORT_JOB_KIND,
-        metrics.clone(),
+        runtime_config,
         shutdown_rx.clone(),
     ));
-    if settings.test_jobs {
+    for handler in handlers.handlers() {
         tasks.spawn(run_consumer(
             store.clone(),
             broker.clone(),
             settings.clone(),
-            TEST_JOB_KIND,
+            handler,
             metrics.clone(),
             shutdown_rx.clone(),
         ));
@@ -307,6 +346,7 @@ async fn run_dispatcher(
     broker: Broker,
     settings: WorkerSettings,
     metrics: Metrics,
+    mut runtime: watch::Receiver<WorkerRuntimeConfig>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     loop {
@@ -325,6 +365,8 @@ async fn run_dispatcher(
             Ok(jobs) => {
                 for job in jobs {
                     let metric_kind = job.kind.clone();
+                    let trace_context = serde_json::from_value::<TraceContext>(job.trace_context)
+                        .unwrap_or_default();
                     let envelope = match JobEnvelope::new(
                         job.message_id,
                         job.id,
@@ -333,7 +375,9 @@ async fn run_dispatcher(
                         u32::try_from(job.attempt).unwrap_or_default(),
                         job.trace_id,
                         job.payload,
-                    ) {
+                    )
+                    .and_then(|envelope| envelope.with_trace_context(trace_context))
+                    {
                         Ok(envelope) => envelope,
                         Err(error) => {
                             let reason = format!("任务信封无法编码：{error}");
@@ -394,8 +438,14 @@ async fn run_dispatcher(
                 warn!(%error, "outbox dispatch query failed");
             }
         }
+        let interval = runtime.borrow().dispatcher_interval();
         tokio::select! {
-            _ = tokio::time::sleep(settings.dispatch_interval) => {}
+            _ = tokio::time::sleep(interval) => {}
+            changed = runtime.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+            }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
                     return Ok(());
@@ -409,11 +459,12 @@ async fn run_maintenance(
     store: JobStore,
     settings: WorkerSettings,
     metrics: Metrics,
+    mut runtime: watch::Receiver<WorkerRuntimeConfig>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
     let heartbeat_interval = settings.heartbeat.min(Duration::from_secs(10));
     let mut heartbeat_tick = tokio::time::interval(heartbeat_interval);
-    let mut reaper_tick = tokio::time::interval(settings.reaper_interval);
+    let mut next_reaper = tokio::time::Instant::now();
     loop {
         tokio::select! {
             _ = heartbeat_tick.tick() => {
@@ -421,12 +472,19 @@ async fn run_maintenance(
                     anyhow::bail!("worker registration disappeared or is no longer ready");
                 }
             }
-            _ = reaper_tick.tick() => {
+            _ = tokio::time::sleep_until(next_reaper) => {
                 let result = store.reap_expired(100).await?;
                 metrics.record_worker_lease_reaps(result.retried, result.failed);
                 if result.retried > 0 || result.failed > 0 {
                     warn!(retried = result.retried, failed = result.failed, "expired worker leases reaped");
                 }
+                next_reaper = tokio::time::Instant::now() + runtime.borrow().reaper_interval();
+            }
+            changed = runtime.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                next_reaper = tokio::time::Instant::now() + runtime.borrow().reaper_interval();
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -441,12 +499,13 @@ async fn run_storage_cleanup(
     store: JobStore,
     settings: WorkerSettings,
     metrics: Metrics,
+    mut runtime: watch::Receiver<WorkerRuntimeConfig>,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
-    let mut cleanup_tick = tokio::time::interval(settings.cleanup_interval);
+    let mut next_cleanup = tokio::time::Instant::now();
     loop {
         tokio::select! {
-            _ = cleanup_tick.tick() => {
+            _ = tokio::time::sleep_until(next_cleanup) => {
                 match rust_toon_toon_server::process_storage_cleanup_batch(
                     store.pool(),
                     &settings.instance_id,
@@ -473,6 +532,44 @@ async fn run_storage_cleanup(
                         warn!(%error, "storage cleanup batch failed");
                     }
                 }
+                next_cleanup = tokio::time::Instant::now() + runtime.borrow().cleanup_interval();
+            }
+            changed = runtime.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                next_cleanup = tokio::time::Instant::now() + runtime.borrow().cleanup_interval();
+            }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+}
+
+async fn run_scheduler(
+    store: JobStore,
+    mut runtime: watch::Receiver<WorkerRuntimeConfig>,
+    mut shutdown: watch::Receiver<bool>,
+) -> anyhow::Result<()> {
+    let mut next_scan = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(next_scan) => {
+                match store.schedule_due_infra_jobs(100).await {
+                    Ok(count) if count > 0 => info!(count, "scheduled durable infra jobs"),
+                    Ok(_) => {}
+                    Err(error) => warn!(%error, "distributed scheduler scan failed"),
+                }
+                next_scan = tokio::time::Instant::now() + runtime.borrow().scheduler_interval();
+            }
+            changed = runtime.changed() => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                next_scan = tokio::time::Instant::now() + runtime.borrow().scheduler_interval();
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -487,10 +584,11 @@ async fn run_consumer(
     store: JobStore,
     broker: Broker,
     settings: WorkerSettings,
-    kind: &'static str,
+    handler: Arc<dyn JobHandler>,
     metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let kind = handler.kind();
     let durable_name = durable_name(kind);
     let semaphore = Arc::new(tokio::sync::Semaphore::new(settings.concurrency));
     loop {
@@ -551,6 +649,7 @@ async fn run_consumer(
             let task_settings = settings.clone();
             let task_shutdown = shutdown.clone();
             let task_metrics = metrics.clone();
+            let task_handler = handler.clone();
             tokio::spawn(async move {
                 let _permit = permit;
                 let span = info_span!(
@@ -561,12 +660,22 @@ async fn run_consumer(
                     "job.id" = tracing::field::Empty,
                     "job.task_id" = tracing::field::Empty,
                     "job.trace_id" = tracing::field::Empty,
+                    trace_id = tracing::field::Empty,
                     "otel.kind" = "consumer",
                 );
+                if let Some(headers) = &message.message.headers {
+                    let mut carrier = TraceContext::new();
+                    for key in ["traceparent", "tracestate"] {
+                        if let Some(value) = headers.get(key) {
+                            carrier.insert(key.to_string(), value.as_str().to_string());
+                        }
+                    }
+                    set_parent_from_trace_context(&span, &carrier);
+                }
                 if let Err(error) = process_message(
                     task_store,
                     task_settings,
-                    kind,
+                    task_handler,
                     message,
                     task_metrics,
                     task_shutdown,
@@ -589,11 +698,12 @@ async fn run_consumer(
 async fn process_message(
     store: JobStore,
     settings: WorkerSettings,
-    expected_kind: &'static str,
+    handler: Arc<dyn JobHandler>,
     message: Message,
     metrics: Metrics,
     mut shutdown: watch::Receiver<bool>,
 ) -> anyhow::Result<()> {
+    let expected_kind = handler.kind();
     if *shutdown.borrow() {
         acknowledge(&message, AckKind::Nak(Some(settings.heartbeat))).await?;
         return Ok(());
@@ -612,6 +722,7 @@ async fn process_message(
         }
     };
     let current_span = tracing::Span::current();
+    set_parent_from_trace_context(&current_span, &envelope.trace_context);
     current_span.record("messaging.message.id", envelope.message_id.to_string());
     current_span.record("job.id", envelope.job_id);
     current_span.record("job.task_id", envelope.task_id);
@@ -662,7 +773,7 @@ async fn process_message(
     );
     let job_timer = metrics.worker_job_started(expected_kind);
     let (execution, shutdown_requeue) = {
-        let execution = execute_job(&store, &claimed, expected_kind);
+        let execution = handler.execute(&store, &claimed);
         let heartbeat = run_job_heartbeat(
             store.clone(),
             settings.clone(),
@@ -746,7 +857,7 @@ async fn process_message(
                         }
                     }
                 } else {
-                    let retry_after = retry_delay(claimed.attempt);
+                    let retry_after = configured_retry_delay(&claimed);
                     match store
                         .fail(claimed.id, claimed.lease_token, &reason, retry_after)
                         .await?
@@ -812,42 +923,6 @@ async fn run_job_heartbeat(
                 acknowledge(&message, AckKind::Progress).await?;
             }
         }
-    }
-}
-
-async fn execute_job(
-    store: &JobStore,
-    job: &job_store::ClaimedJob,
-    kind: &str,
-) -> Result<Value, String> {
-    match kind {
-        rust_toon_toon_server::VIDEO_EXPORT_JOB_KIND => {
-            rust_toon_toon_server::execute_distributed_export(
-                store.pool(),
-                job.id,
-                job.task_id,
-                job.lease_token,
-                job.payload.clone(),
-            )
-            .await
-        }
-        TEST_JOB_KIND => {
-            let sleep_ms = job
-                .payload
-                .get("sleepMs")
-                .and_then(Value::as_u64)
-                .unwrap_or_default()
-                .min(300_000);
-            if sleep_ms > 0 {
-                tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
-            }
-            Ok(job
-                .payload
-                .get("result")
-                .cloned()
-                .unwrap_or_else(|| json!({"ok": true})))
-        }
-        _ => Err(format!("不支持的分布式任务类型：{kind}")),
     }
 }
 
@@ -973,6 +1048,15 @@ fn retry_delay(attempt: i32) -> Duration {
         .unwrap_or_default()
         .min(7);
     Duration::from_secs(2_u64.saturating_pow(exponent).min(300))
+}
+
+fn configured_retry_delay(job: &job_store::ClaimedJob) -> Duration {
+    job.payload
+        .get("retryIntervalMillis")
+        .and_then(Value::as_u64)
+        .filter(|seconds| *seconds > 0)
+        .map(|millis| Duration::from_millis(millis.min(86_400_000)))
+        .unwrap_or_else(|| retry_delay(job.attempt))
 }
 
 fn default_instance_id() -> String {

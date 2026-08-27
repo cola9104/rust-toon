@@ -7,12 +7,15 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 async-nats.workspace = true
 axum.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 rust-toon-framework-common.workspace = true
 rust-toon-framework-database.workspace = true
+rust-toon-framework-dynamic-config.workspace = true
+rust-toon-framework-jobs.workspace = true
 rust-toon-framework-mq.workspace = true
 rust-toon-framework-telemetry.workspace = true
 rust-toon-toon-server.workspace = true

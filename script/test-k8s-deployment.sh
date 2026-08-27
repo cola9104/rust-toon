@@ -62,6 +62,7 @@ fi
 if command -v ruby >/dev/null 2>&1; then
   ruby - "$manifest_dir" "$rendered_file" <<'RUBY'
 require "yaml"
+require "json"
 
 manifest_dir, rendered_file = ARGV
 
@@ -109,10 +110,19 @@ secret_examples = load_documents(secret_path)
 secret_requirements = {
   "rust-toon-gateway-secrets" => %w[
     DATABASE_URL REDIS_URL JWT_SECRET SECRET_ENCRYPTION_KEY
-    MINIO_ACCESS_KEY MINIO_SECRET_KEY BOOTSTRAP_ADMIN_PASSWORD
+    MINIO_ACCESS_KEY MINIO_SECRET_KEY NACOS_USERNAME NACOS_PASSWORD
+    BOOTSTRAP_ADMIN_PASSWORD
   ],
   "rust-toon-worker-secrets" => %w[
     DATABASE_URL MINIO_ACCESS_KEY MINIO_SECRET_KEY NATS_URL
+    NACOS_USERNAME NACOS_PASSWORD
+  ],
+  "rust-toon-rnacos-secrets" => %w[
+    RNACOS_INIT_ADMIN_USERNAME RNACOS_INIT_ADMIN_PASSWORD
+    RNACOS_CLUSTER_TOKEN RNACOS_BACKUP_TOKEN
+  ],
+  "rust-toon-observability-secrets" => %w[
+    GF_SECURITY_ADMIN_PASSWORD
   ]
 }
 secret_requirements.each do |name, required_keys|
@@ -214,6 +224,9 @@ assert(worker.dig("spec", "replicas").to_i >= 2,
   refs = container.fetch("envFrom")
   assert(refs.any? { |ref| ref.dig("secretRef", "name") == secret_name },
          "#{container_name} must load only its scoped Secret")
+  cache = pod.fetch("volumes").find { |entry| entry["name"] == "dynamic-config-cache" }
+  assert(cache&.dig("emptyDir", "sizeLimit"),
+         "#{container_name} must provide a bounded writable r-nacos SDK cache")
 end
 
 worker_pod = worker.dig("spec", "template", "spec")
@@ -274,14 +287,84 @@ assert(gateway_config.dig("data", "TELEMETRY_LOG_FORMAT") == "json" &&
 assert(gateway_config.dig("data", "TELEMETRY_METRICS_ENABLED") == "true" &&
        worker_config.dig("data", "TELEMETRY_METRICS_ENABLED") == "true",
        "Kubernetes workloads must expose Prometheus metrics")
-assert(!gateway_config.fetch("data").key?("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") &&
-       !worker_config.fetch("data").key?("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"),
-       "OTLP endpoint must be supplied only by an environment overlay")
+otel_endpoint = "http://rust-toon-otel-collector:4317"
+assert(gateway_config.dig("data", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == otel_endpoint &&
+       worker_config.dig("data", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") == otel_endpoint,
+       "Gateway and Worker must export traces through the in-cluster Collector")
 assert(worker_config.dig("data", "TOON_WORKER_ALLOW_HTTP_SOURCES") == "false",
        "Worker HTTP source downloads must stay disabled")
+assert(gateway_config.dig("data", "NACOS_REQUIRED") == "true" &&
+       worker_config.dig("data", "NACOS_REQUIRED") == "true",
+       "Gateway and Worker must require r-nacos in the Kubernetes base")
+assert(gateway_config.dig("data", "NACOS_DATA_ID") == "rust-toon-gateway.json" &&
+       worker_config.dig("data", "NACOS_DATA_ID") == "rust-toon-toon-worker.json",
+       "Gateway and Worker must subscribe to independent dynamic documents")
 
 object!(objects, "Service", "rust-toon-gateway")
 object!(objects, "Service", "rust-toon-worker")
+rnacos = object!(objects, "StatefulSet", "rust-toon-rnacos")
+assert(rnacos.dig("spec", "replicas") == 3,
+       "r-nacos must run as a three-node Raft cluster")
+rnacos_pod = rnacos.dig("spec", "template", "spec")
+rnacos_container = rnacos_pod.fetch("containers").find { |entry| entry["name"] == "rnacos" }
+assert(rnacos_pod.dig("securityContext", "runAsNonRoot") == true,
+       "r-nacos must run as non-root")
+assert(rnacos_container && !rnacos_container.fetch("image").end_with?(":latest"),
+       "r-nacos image must use a pinned version")
+assert(rnacos_container.dig("securityContext", "readOnlyRootFilesystem") == true &&
+       rnacos_container.dig("securityContext", "capabilities", "drop") == ["ALL"],
+       "r-nacos must use a restricted container security context")
+assert(rnacos.dig("spec", "volumeClaimTemplates").to_a.any? { |claim|
+         claim.dig("metadata", "name") == "data"
+       }, "r-nacos must persist each Raft member's data")
+object!(objects, "Service", "rust-toon-rnacos")
+headless_rnacos = object!(objects, "Service", "rust-toon-rnacos-headless")
+assert(headless_rnacos.dig("spec", "clusterIP") == "None",
+       "r-nacos Raft discovery service must be headless")
+worker_metrics = object!(objects, "Service", "rust-toon-worker-metrics")
+assert(worker_metrics.dig("spec", "clusterIP") == "None",
+       "Worker metrics discovery service must be headless")
+otel = object!(objects, "Deployment", "rust-toon-otel-collector")
+object!(objects, "Service", "rust-toon-otel-collector")
+otel_config = object!(objects, "ConfigMap", "rust-toon-otel-collector-config")
+assert(otel_config.dig("data", "collector.yaml").include?("receivers: [otlp]"),
+       "Collector must expose an OTLP trace pipeline")
+assert(otel_config.dig("data", "collector.yaml").include?("otlp/tempo"),
+       "Collector must export traces to the in-cluster Tempo backend")
+otel_container = otel.dig("spec", "template", "spec", "containers").find do |entry|
+  entry["name"] == "collector"
+end
+assert(otel_container && !otel_container.fetch("image").end_with?(":latest"),
+       "Collector image must use a pinned version")
+assert(otel_container.dig("securityContext", "readOnlyRootFilesystem") == true,
+       "Collector must use a read-only root filesystem")
+
+%w[rust-toon-prometheus rust-toon-alertmanager rust-toon-loki rust-toon-tempo].each do |name|
+  workload = object!(objects, "StatefulSet", name)
+  container = workload.dig("spec", "template", "spec", "containers").fetch(0)
+  assert(!container.fetch("image").end_with?(":latest"), "#{name} image must be pinned")
+  assert(container.dig("securityContext", "readOnlyRootFilesystem") == true,
+         "#{name} must use a read-only root filesystem")
+  claims = workload.dig("spec", "volumeClaimTemplates") || []
+  assert(!claims.empty?, "#{name} must persist its operational data")
+  object!(objects, "Service", name)
+end
+grafana = object!(objects, "Deployment", "rust-toon-grafana")
+grafana_container = grafana.dig("spec", "template", "spec", "containers").fetch(0)
+assert(grafana_container.dig("env").any? { |entry|
+         entry["name"] == "GF_SECURITY_ADMIN_PASSWORD" &&
+           entry.dig("valueFrom", "secretKeyRef", "name") == "rust-toon-observability-secrets"
+       }, "Grafana admin password must come from the scoped Secret")
+object!(objects, "Service", "rust-toon-grafana")
+prometheus_config = object!(objects, "ConfigMap", "rust-toon-prometheus-config")
+assert(prometheus_config.dig("data", "prometheus.yml").include?("rust-toon-worker-metrics"),
+       "Prometheus must discover every Worker replica")
+object!(objects, "ConfigMap", "rust-toon-prometheus-rules")
+grafana_provisioning = object!(objects, "ConfigMap", "rust-toon-grafana-provisioning")
+YAML.safe_load(grafana_provisioning.dig("data", "datasources.yaml"), aliases: true)
+YAML.safe_load(grafana_provisioning.dig("data", "dashboards.yaml"), aliases: true)
+grafana_dashboard = object!(objects, "ConfigMap", "rust-toon-grafana-dashboard")
+JSON.parse(grafana_dashboard.dig("data", "rust-toon-overview.json"))
 hpa = object!(objects, "HorizontalPodAutoscaler", "rust-toon-worker")
 assert(hpa["apiVersion"] == "autoscaling/v2", "Worker HPA must use autoscaling/v2")
 assert(hpa.dig("spec", "scaleTargetRef", "name") == "rust-toon-worker",
@@ -298,10 +381,14 @@ assert(pdb.dig("spec", "minAvailable").to_i >= 1,
 gateway_pdb = object!(objects, "PodDisruptionBudget", "rust-toon-gateway")
 assert(gateway_pdb.dig("spec", "minAvailable").to_i == 1,
        "Singleton Gateway PDB must block uncoordinated voluntary eviction")
+rnacos_pdb = object!(objects, "PodDisruptionBudget", "rust-toon-rnacos")
+assert(rnacos_pdb.dig("spec", "minAvailable").to_i == 2,
+       "r-nacos PDB must retain Raft quorum")
 
 %w[
   default-deny allow-dns-egress gateway-ingress worker-ingress
-  gateway-external-egress worker-external-egress
+  otel-collector-ingress rnacos-access gateway-external-egress worker-external-egress
+  prometheus-access alertmanager-access grafana-access loki-access tempo-access
 ].each do |name|
   object!(objects, "NetworkPolicy", name)
 end
@@ -318,12 +405,15 @@ gateway_wait_rule = worker_egress.dig("spec", "egress").find do |rule|
 end
 assert(gateway_wait_rule&.fetch("ports", [])&.any? { |port| port["port"] == 8080 },
        "Worker egress must allow the migration wait request to Gateway port 8080")
-network_policy_ports = objects.filter_map do |(kind, _name), object|
-  next unless kind == "NetworkPolicy"
-  object.dig("spec", "egress")&.flat_map { |rule| rule.fetch("ports", []).map { |port| port["port"] } }
-end.flatten
-assert(!network_policy_ports.include?(4317),
-       "Base NetworkPolicy must not globally expose the optional OTLP port")
+["gateway-external-egress", "worker-external-egress"].each do |name|
+  policy = object!(objects, "NetworkPolicy", name)
+  otlp_rule = policy.dig("spec", "egress").find do |rule|
+    rule.fetch("ports", []).any? { |port| port["port"] == 4317 }
+  end
+  assert(otlp_rule && otlp_rule.fetch("to", []).any? { |peer|
+           peer.dig("podSelector", "matchLabels", "app.kubernetes.io/name") == "rust-toon-otel-collector"
+         }, "#{name} must scope OTLP egress to the in-cluster Collector")
+end
 
 deployment_doc = File.expand_path("../../docs/deployment.md", manifest_dir)
 deployment_text = File.read(deployment_doc)

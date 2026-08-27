@@ -124,12 +124,17 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: dynamic-config-cache
+              mountPath: /var/cache/rust-toon/nacos
       volumes:
         - name: tmp
           emptyDir:
             # The container ephemeral-storage limit is 48 GiB; reserve the
             # remainder for logs and its writable layer.
             sizeLimit: 44Gi
+        - name: dynamic-config-cache
+          emptyDir:
+            sizeLimit: 16Mi
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

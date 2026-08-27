@@ -84,12 +84,12 @@ pnpm --dir apps/web --filter @vben/web-antd run typecheck
 
 ## 3. 数据库迁移管理
 
-- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0006`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
+- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0007`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
 - 变更流程（与根 `AGENTS.md` 一致）：
   1. 新增编号迁移文件，已发布/已应用的迁移不得修改。
   2. 迁移必须幂等，同时支持空库初始化与已有库升级。
   3. 运行 `bash script/test-database-migrations.sh` 验证空库可到达最新结构（脚本用 Docker 起临时 `postgres:18`，端口 `TEST_POSTGRES_PORT`，默认 55432）。
-  4. 可选：对干净参考库导出 `sql/bootstrap/current.sql`（`pg_dump` 快照，仅供查阅，应用从不加载）。
+  4. 对应用全部迁移的干净参考库重新导出 `sql/bootstrap/current.sql`（`pg_dump` 快照，仅供查阅，应用从不加载）。
   5. 更新 `crates/framework/database/tests/migrations.rs` 中的迁移数量与基线断言。
 - 保护机制：若数据库已有业务表但无 `_sqlx_migrations` 历史，启动迁移会拒绝执行，防止误覆盖。
 
@@ -195,7 +195,7 @@ Worker 默认只在 `127.0.0.1:8081` 暴露管理探针；远程节点通过主�
 
 ### 4.5 Docker Compose 分布式部署
 
-`script/docker/docker-compose.distributed.yml` 是独立的单机生产骨架，不继承本地 compose 的固定 `container_name`。业务流量只经 edge 进入；PostgreSQL、MinIO 和 NATS 监控端口仅绑定 loopback，供本机备份/监控使用。先用 `0600` 权限安装密钥文件，再启动 1 个 Gateway 和多个 worker：
+`script/docker/docker-compose.distributed.yml` 是独立的单机生产骨架，不继承本地 compose 的固定 `container_name`。业务流量只经 edge 进入；PostgreSQL、MinIO、r-nacos 控制台和 NATS 监控端口仅绑定 loopback，供本机维护使用。先用 `0600` 权限安装密钥文件，再启动 1 个 Gateway 和多个 worker：
 
 ```bash
 sudo install -d -o root -g root -m 0700 /etc/rust-toon
@@ -239,7 +239,9 @@ docker compose \
 
 扩缩 worker 时重复 `up -d --scale gateway=1 --scale toon-worker=N`。worker 收到 SIGTERM 后立即停止领新任务，取消在途执行并用当前 fencing token 把尝试重新排队；整个过程受 `TOON_WORKER_DRAIN_TIMEOUT_SECONDS` 限制，数据库或网络故障时仍可在租约过期后由其他实例接管。`stop_grace_period` 必须大于 drain deadline，生产若提高它需同步提高容器停止宽限。Gateway 收到 SIGTERM 会先把 `/readyz` 置为不可用并等待 `GATEWAY_DRAIN_DELAY_SECONDS`，但单机 Compose 的 edge 只有被动故障重试；需要无损滚动 Gateway 时应由真正消费 readiness 的编排器/LB 摘流。
 
-该 compose 不包含前端静态站；仍需按第 5 节使用 CDN/独立 Nginx 托管 `dist`，并把 `/api/` 指向 edge。Compose 中的 PostgreSQL、Redis、NATS 和 MinIO 是单机持久化数据面。高可用生产应替换为托管 PostgreSQL/Redis/对象存储及三节点 JetStream 集群。JetStream 卷用于降低恢复延迟，但业务任务真相源是 PostgreSQL outbox，因此不能用 NATS 消息替代数据库备份。
+该 compose 不包含前端静态站；仍需按第 5 节使用 CDN/独立 Nginx 托管 `dist`，并把 `/api/` 指向 edge。Compose 中的 PostgreSQL、Redis、NATS、MinIO 和 r-nacos 都是单机持久化数据面；r-nacos 控制台默认只绑定 `127.0.0.1:10848`。高可用生产应替换为托管 PostgreSQL/Redis/对象存储、三节点 JetStream，并使用下一节的三节点 r-nacos 清单。JetStream 卷用于降低恢复延迟，但业务任务真相源是 PostgreSQL outbox，因此不能用 NATS 消息替代数据库备份。
+
+r-nacos 新数据卷只会创建 `NACOS_USERNAME` / `NACOS_PASSWORD` 指定的初始化管理员。首次登录 `http://127.0.0.1:10848` 后发布 `RUST_TOON` group 下的 `rust-toon-gateway.json` 与 `rust-toon-toon-worker.json`；合法 JSON 见[配置文档](configuration.md#15-r-nacos-动态配置cratesframeworkdynamic-config)。文档不存在时应用使用环境变量默认值并保持订阅，因此可先启动再发布。生产完成引导后应创建单独的应用账号、轮换 Gateway/Worker 的 r-nacos 凭据，并把管理员只留给运维入口。
 
 ### 4.6 Kubernetes：1 Gateway + N Worker
 
@@ -247,15 +249,17 @@ docker compose \
 
 - 固定单副本且使用 `Recreate` 更新策略的 Gateway Deployment/Service。Agent/Workflow 实时运行表仍有进程内状态，因此不能为 Gateway 配置 HPA，也不能把副本数改为 2；`Recreate` 会带来短暂升级窗口，并避免正常 Deployment 更新期间两个 revision 重叠。它不是分布式 leader lease，节点网络分区等极端场景仍需运维隔离故障节点。Gateway PDB 以 `minAvailable: 1` 阻止未协调的自愿驱逐，但不能消除节点故障或版本升级的单副本停机窗口；执行 node drain 前必须先安排维护窗口并临时调整/移除 PDB。
 - 默认 2 副本的 Worker Deployment/Service、CPU HPA（2–8 副本）与 PDB。Worker 通过 PostgreSQL lease/fencing 和共享 JetStream durable consumer 横向扩容。
+- 固定版本 `v0.8.6` 的三节点 r-nacos StatefulSet、每节点独立 10 GiB PVC、headless Raft 发现 Service、客户端/控制台 Service 与 `minAvailable: 2` PDB。OpenAPI 鉴权默认开启，控制台不对业务入口开放。
 - `/livez`、`/readyz` 与启动探针、SIGTERM 宽限、non-root、只读根文件系统、默认 seccomp、移除 Linux capabilities、资源 request/limit 和临时盘上限。
 - 默认拒绝入站/出站的 NetworkPolicy，以及 DNS、Gateway 入口、监控与外部依赖所需的最小端口规则。
 - Gateway/Worker 临时目录使用有 `sizeLimit` 的 `emptyDir`；上传、生成片段和最终成片都写到共享 MinIO/S3，因此基础清单不创建无消费者的本地上传 PVC。
+- Prometheus、Alertmanager、Grafana、Loki、Tempo 与 OpenTelemetry Collector。Prometheus/Loki/Tempo/Alertmanager 使用 PVC 保存运行数据，Grafana Dashboard 和数据源由 ConfigMap 声明式装载。
 
-这些清单**不部署 PostgreSQL、Redis、NATS 或 MinIO**。部署前准备外部服务、支持 NetworkPolicy 的 CNI，以及供 HPA 使用的 Metrics Server。基础 HPA 最大 8 个 Worker；按示例连接池计算为 Gateway 12 + Worker 8×8 = 76 个数据库连接，修改上限或副本数时必须重新核算 PostgreSQL 连接预算。生产 JetStream 建议三副本；若外部集群的 replication factor 不同，应同步修改 `NATS_JOB_REPLICAS`。
+这些清单会部署 r-nacos，但**不部署 PostgreSQL、Redis、NATS 或 MinIO**。部署前准备外部服务、默认 StorageClass、支持 NetworkPolicy 的 CNI，以及供 HPA 使用的 Metrics Server。基础 HPA 最大 8 个 Worker；按示例连接池计算为 Gateway 12 + Worker 8×8 = 76 个数据库连接，修改上限或副本数时必须重新核算 PostgreSQL 连接预算。生产 JetStream 建议三副本；若外部集群的 replication factor 不同，应同步修改 `NATS_JOB_REPLICAS`。
 
 先构建并推送 `deploy/docker/Dockerfile.backend`，使用不可变 tag 或 digest，然后修改 `deploy/k8s/kustomization.yaml` 的 `images` 条目。不要部署示例中的 `.invalid` 镜像/endpoint。修改两个 ConfigMap 中的 MinIO endpoint、桶和容量参数；敏感连接信息不要写入 ConfigMap 或 Git。
 
-`deploy/k8s/secret.example.yaml` 仅列出 Secret key，故意不在 Kustomize resources 中，所有值都是不可用的 `REPLACE_ME`。它把 Gateway 的 JWT/Redis/管理员密钥与 Worker 的 NATS 密钥拆成两个最小权限 Secret，只有 PostgreSQL/MinIO 连接值需要分别写入两份。建议从权限为 `0600`、位于仓库外的文件或 External Secrets/Sealed Secrets 创建 `rust-toon-gateway-secrets` 和 `rust-toon-worker-secrets`。以下是文件方式的安装顺序：
+`deploy/k8s/secret.example.yaml` 仅列出 Secret key，故意不在 Kustomize resources 中，所有值都是不可用的 `REPLACE_ME`。它把 Gateway、Worker、r-nacos 和 Grafana 管理员凭据拆成四个 scoped Secret，只有 PostgreSQL/MinIO 连接值需要分别写入前两份。首次安装时 Gateway/Worker 的 `NACOS_USERNAME` / `NACOS_PASSWORD` 必须与 r-nacos 初始化管理员匹配；集群建立后再创建应用账号并轮换。建议从权限为 `0600`、位于仓库外的文件或 External Secrets/Sealed Secrets 创建四份 Secret。以下是文件方式的安装顺序：
 
 ```bash
 kubectl apply -f deploy/k8s/namespace.yaml
@@ -267,9 +271,12 @@ kubectl apply -f /secure/path/rust-toon-secret.yaml
 
 # 确认已修改 image、MINIO_ENDPOINT 和 NATS_JOB_REPLICAS 后再安装。
 kubectl apply -k deploy/k8s
+# Vector 需要读取节点上的容器日志，因此独立部署在 baseline
+# Pod Security namespace，而不是 restricted 的应用 namespace。
+kubectl apply -k deploy/logging-agent
 ```
 
-`DATABASE_URL`、`REDIS_URL` 与 `NATS_URL` 均放在 Secret 中；URI 密码的保留字符必须 percent-encode，生产 Redis/NATS 应使用 TLS。`BOOTSTRAP_ADMIN_PASSWORD` 只用于首次启动：第一次成功登录并修改密码后，从 Secret 来源中删除该 key 并重新应用。基础清单使用固定名称的 ConfigMap/Secret，修改或轮换后必须显式执行 `kubectl -n rust-toon rollout restart deployment/rust-toon-gateway`，Worker 配置/密钥变更则重启 `deployment/rust-toon-worker`；等待对应 `rollout status` 成功后再结束变更。Gateway 使用 Recreate，重启期间会短暂不可用，需要在维护窗口执行。环境 overlay 也可以改用带内容哈希的 generator 或受控 reloader。更严格的生产集群应通过外部 Secret 控制器注入密钥，并对 Secret 启用静态加密与最小 RBAC。
+`DATABASE_URL`、`REDIS_URL`、`NATS_URL` 与 r-nacos 凭据均放在 Secret 中；URI 密码的保留字符必须 percent-encode，生产 Redis/NATS 应使用 TLS。`BOOTSTRAP_ADMIN_PASSWORD` 只用于首次启动：第一次成功登录并修改密码后，从 Secret 来源中删除该 key 并重新应用。r-nacos JSON 中列出的六类运行参数通过长连接热推送，不需要 rollout；其他 ConfigMap/Secret、连接凭据、端口、并发和 lease 仍是启动参数，修改后必须显式重启对应 Deployment。Gateway 使用 Recreate，重启期间会短暂不可用，需要在维护窗口执行。环境 overlay 也可以改用带内容哈希的 generator 或受控 reloader。更严格的生产集群应通过外部 Secret 控制器注入密钥，并对 Secret 启用静态加密与最小 RBAC。
 
 全新数据库也可以一次性应用全部资源：Gateway 启动时先执行 SQLx 迁移；每个 Worker 的受限 init container 会持续访问 `rust-toon-gateway:8080/readyz`，只有迁移、管理员校验及 Gateway 必需依赖全部就绪后才启动 Worker。不要删除这个等待条件，也不要让 Worker 自行执行迁移。
 
@@ -278,19 +285,33 @@ kubectl apply -k deploy/k8s
 ```bash
 kubectl label namespace ingress-nginx rust-toon.io/gateway-access=true
 kubectl label namespace monitoring rust-toon.io/monitoring-access=true
+kubectl label namespace config-admin rust-toon.io/config-admin-access=true
 ```
+
+r-nacos 控制台 Service 的 10848 端口只接受带 `rust-toon.io/config-admin-access=true` 标签的 namespace。临时维护也可通过受控的 `kubectl -n rust-toon port-forward service/rust-toon-rnacos 10848:10848` 访问。每次发布前保留 JSON schemaVersion 并由第二人复核；发布后在应用日志中确认 `dynamic configuration update applied`。若新值异常，直接在 r-nacos 的配置历史中恢复上一版本；恢复会被长连接当作新 revision 推送，应用校验通过后立即生效。
 
 集群入口、TLS 证书和前端静态站依赖各环境的 Ingress/Gateway API 与证书控制器，因此基础清单不内置。将业务 `/api/` 流量转发到 `Service/rust-toon-gateway:8080`，保持 SSE/WebSocket 超时及关闭代理缓冲等要求。若集群 DNS Pod 不使用 `k8s-app=kube-dns` 标签，应在 overlay 中调整 DNS egress selector。
 
-Gateway 与 Worker 默认输出 JSON 结构化日志并在各自管理 HTTP 端口开放 `/metrics`。Gateway 的 `/metrics` 与业务 API 同在 8080：标准 NetworkPolicy 只能按 IP/端口过滤，**不能按 URL path 阻断**，因此面向公网的 Ingress/Nginx 必须显式拒绝精确路径 `/metrics`（例如 Nginx `location = /metrics { return 404; }`），不得把它随 `/api/` 或 `/` 暴露。Pod 模板已经带有 `prometheus.io/*` 抓取注解；Prometheus 应通过 Kubernetes Pod/EndpointSlice 服务发现逐 Pod 抓取，不能把多副本 Worker 的 ClusterIP 当成单一静态目标，否则每次请求只会随机落到一个副本而漏掉其余进程内指标。Worker 8081 Service 只供集群内探针或监控发现使用。若使用 Prometheus Operator，可在环境 overlay 中按相同标签创建 PodMonitor。若启用注释示例 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`，还必须仅向实际 Collector namespace/CIDR 放行其 4317 端口，不能在基础 egress 中全局开放该端口。
+Gateway 与 Worker 默认输出 JSON 结构化日志并在各自管理 HTTP 端口开放 `/metrics`。Gateway 的 `/metrics` 与业务 API 同在 8080：标准 NetworkPolicy 只能按 IP/端口过滤，**不能按 URL path 阻断**，因此面向公网的 Ingress/Nginx 必须显式拒绝精确路径 `/metrics`（例如 Nginx `location = /metrics { return 404; }`），不得把它随 `/api/` 或 `/` 暴露。内置 Prometheus 通过 `rust-toon-worker-metrics` headless Service 的 DNS A 记录逐 Pod 抓取所有 Worker，不会把多副本指标随机采样成一个进程。`rust-toon-prometheus-rules` 提供 Gateway/Worker 可用性、5xx、任务失败、租约恢复与对象清理告警；Alertmanager 的默认 receiver 只保留告警，不向外发送，生产必须在 Secret-backed overlay 中接入企业 webhook、邮件或 PagerDuty。
+
+基础清单同时部署 `rust-toon-otel-collector` 和 Tempo，Gateway/Worker 通过 OTLP gRPC 4317 上报，Collector 批处理后写入 Tempo；Grafana 已预置 Prometheus、Loki、Tempo 数据源和 Rust Toon 总览面板。Loki 默认保留七天日志，Tempo 默认保留七天 trace，Prometheus 默认保留十五天或最多 18GB；按生产容量调整 PVC 与保留参数。若已有 SkyWalking、Jaeger、Grafana Cloud 或托管平台，可在 overlay 中替换 Collector exporter 和 Grafana datasource，不需要修改 Rust 应用。
+
+`deploy/logging-agent` 使用 Rust 编写的 Vector DaemonSet 读取节点 `/var/log/pods`，只保留 `rust-toon` namespace 的容器日志并写入 Loki。其 ClusterRole 只有 `get/list/watch`，日志目录只读；由于 Kubernetes 日志采集必须使用 hostPath，它独立位于 `rust-toon-logging` baseline namespace。托管集群已有 Fluent Bit、Vector 或 OTel 日志 Agent 时不要重复安装该 DaemonSet，只需把现有采集器的 Rust Toon 日志输出到内置或托管 Loki。
 
 部署后检查：
 
 ```bash
 kubectl -n rust-toon rollout status deployment/rust-toon-gateway --timeout=10m
 kubectl -n rust-toon rollout status deployment/rust-toon-worker --timeout=15m
+kubectl -n rust-toon rollout status statefulset/rust-toon-rnacos --timeout=10m
+kubectl -n rust-toon rollout status deployment/rust-toon-otel-collector --timeout=5m
+kubectl -n rust-toon rollout status statefulset/rust-toon-prometheus --timeout=10m
+kubectl -n rust-toon rollout status statefulset/rust-toon-loki --timeout=10m
+kubectl -n rust-toon rollout status statefulset/rust-toon-tempo --timeout=10m
+kubectl -n rust-toon-logging rollout status daemonset/rust-toon-vector --timeout=10m
 kubectl -n rust-toon get pods,service,hpa,pdb,networkpolicy
 kubectl -n rust-toon port-forward service/rust-toon-gateway 8080:8080
+kubectl -n rust-toon port-forward service/rust-toon-grafana 3000:3000
 curl -fsS http://127.0.0.1:8080/readyz
 ```
 
@@ -300,6 +321,8 @@ Gateway 在收到 SIGTERM 后先关闭 readiness 并等待 10 秒摘流，Pod �
 
 ```bash
 bash script/test-k8s-deployment.sh
+bash script/test-observability-deployment.sh
+bash script/test-rnacos-dynamic-config.sh
 ```
 
 脚本优先使用本机 `kubectl kustomize` 或 `kustomize build`；没有这两个工具时使用 Ruby YAML/语义检查，最后还有 POSIX 工具的最小 fallback。CI 会执行同一检查。
@@ -318,6 +341,8 @@ Kubernetes 环境的 PostgreSQL/对象备份优先使用托管服务 PITR、CSI 
 - `script/database/backup-minio.sh`：一致性协调器使用的对象组件，使用 MinIO Client `mc` 镜像对象桶并生成逐对象 SHA-256 清单；配置 `MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET` 和 `MINIO_BACKUP_DIR`，宿主机还需提供 `jq`。
 - `script/database/restore-minio.sh`：严格校验 manifest 版本、bucket、普通文件全集和 SHA-256 清单后恢复对象；跨 bucket 恢复必须额外传入 `--allow-bucket-mismatch`。默认保留目标端额外对象，只有显式传入 `--delete-extra --confirm` 才执行镜像删除。
 - `deploy/systemd/rust-toon-consistent-backup.service` + `.timer`：每日 03:15 触发唯一的一致性恢复集；旧的两个错峰 timer 已移除。单组件 service 仅供已人工停写后的诊断/补备份使用，不能把不同时间的组件产物拼成生产恢复集。
+
+r-nacos 的 Raft 数据不属于 PostgreSQL + MinIO 业务一致性恢复集。Compose 部署应通过带 `RNACOS_BACKUP_TOKEN` 的 r-nacos 备份接口另存配置中心备份；Kubernetes 优先对三份 PVC 做协调快照或使用 r-nacos 备份接口，并定期演练配置历史恢复。即使配置中心备份暂时不可用，Gateway/Worker 仍保留 SDK 磁盘缓存和环境变量默认值，但这不能替代配置历史备份。
 
 systemd 样例以 `rust-toon` 用户运行，启用前需安装 `mc`、创建可写目录并保护包含凭据的环境文件。以下示例为 Linux amd64；其他架构请从 MinIO 官方下载目录选择对应二进制：
 
@@ -376,7 +401,13 @@ location /api/ {
 
 ## 6. 持续集成
 
-根目录 `.github/workflows/ci.yml`（GitHub）和 `.gitcode/workflows/ci.yml`（GitCode/AtomGit）是等价仓库门禁，覆盖 Rust fmt/Clippy/workspace tests、空库迁移、本地 mock AI Provider E2E、前端 typecheck/unit/build、启动真实 PostgreSQL、Redis、MinIO 和 gateway 的 HTTP/WebSocket 黑盒 E2E、FFmpeg 最终成片归档 E2E、两个 worker 对 JetStream/数据库租约的竞争与故障恢复，以及 MinIO 备份/恢复回环。仅供应商付费生成测试保持显式运行，不进入默认 CI。
+根目录 `.github/workflows/ci.yml`（GitHub）和 `.gitcode/workflows/ci.yml`（GitCode/AtomGit）是仓库门禁，覆盖 Rust fmt/Clippy/workspace tests、空库迁移、本地 mock AI Provider E2E、前端 typecheck/unit/build、真实依赖黑盒 E2E、分布式故障恢复、备份恢复，以及应用/可观测 Kustomize 的严格 schema 和安全策略验证。仅供应商付费生成测试保持显式运行，不进入默认 CI。
+
+`.github/workflows/delivery.yml` 在 main/master 的 CI 成功后构建并推送后端镜像到 GHCR，生成 SBOM/provenance、用 Sigstore keyless 签名镜像 digest，再把这个不可变 digest 自动部署到 `staging` GitHub Environment。手动运行 workflow 可选择 `production`；应为 production Environment 配置 required reviewers，形成受控审批。每个环境都必须设置 base64 编码的 `KUBECONFIG_B64` Secret，并提前创建三个业务 Secret。发布失败会对 Gateway/Worker 请求 `rollout undo`，且流水线逐一等待应用、监控和 Vector rollout 成功后才结束。
+
+基础 Kustomize 固定使用 `rust-toon` / `rust-toon-logging` namespace；staging 与 production 的 `KUBECONFIG_B64` 应指向相互隔离的集群。若必须共用集群，应先增加带 `namePrefix`、独立 namespace 和独立 ClusterRole 名称的环境 overlay，不能让两个 Environment 互相覆盖。
+
+Gateway 仍是单副本 `Recreate`，所以自动发布包含一个明确的短暂停机窗口；流水线不会擅自把它扩成双副本。Worker、日志 Agent 与数据面任务已支持多副本/故障接管。要实现 Gateway 无停机高可用，必须先把 Agent/Workflow 活跃运行和取消控制迁到 durable Worker/共享协调层，再改滚动策略与副本数。
 
 ## 7. 常见问题
 

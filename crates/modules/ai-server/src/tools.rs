@@ -5,6 +5,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use rust_toon_framework_common::ApiResponse;
+use rust_toon_framework_resilience::inject_trace_context;
 use rust_toon_framework_security::CurrentUser;
 use rust_toon_framework_web::AppError;
 use serde::Deserialize;
@@ -56,12 +57,14 @@ pub(crate) async fn execute(
                 .get("location")
                 .and_then(Value::as_str)
                 .ok_or("location 不能为空")?;
-            let response = reqwest::Client::new()
-                .get("https://wttr.in/")
-                .query(&[("format", "j1"), ("q", location)])
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+            let response = inject_trace_context(
+                reqwest::Client::new()
+                    .get("https://wttr.in/")
+                    .query(&[("format", "j1"), ("q", location)]),
+            )
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
             if !response.status().is_success() {
                 return Err(format!("天气服务返回 {}", response.status()));
             }

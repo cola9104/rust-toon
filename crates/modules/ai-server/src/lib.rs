@@ -379,20 +379,20 @@ async fn discover_models(
         return Err(AppError::bad_request("API 地址不能为空"));
     }
     let client = reqwest::Client::new();
-    let response = if platform == AiPlatform::Gemini {
+    let builder = if platform == AiPlatform::Gemini {
         client
             .get(format!("{}/models", request.url.trim_end_matches('/')))
             .query(&[("key", request.api_key.as_str())])
-            .send()
-            .await
     } else {
         let mut builder = client.get(format!("{}/models", request.url.trim_end_matches('/')));
         if !request.api_key.is_empty() {
             builder = builder.bearer_auth(request.api_key.trim_start_matches("Bearer "));
         }
-        builder.send().await
-    }
-    .map_err(|error| AppError::bad_request(format!("获取模型列表失败：{error}")))?;
+        builder
+    };
+    let response = provider::send_with_retry(builder)
+        .await
+        .map_err(|error| AppError::bad_request(format!("获取模型列表失败：{error}")))?;
     let status = response.status();
     let value: Value = response
         .json()

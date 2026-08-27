@@ -36,6 +36,17 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
+  rnacos-e2e:
+    name: r-nacos authenticated hot-update E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify authenticated initial publish and gRPC push
+        run: bash script/test-rnacos-dynamic-config.sh
+
   migrations:
     name: Empty database migration chain
     runs-on: ubuntu-latest
@@ -61,7 +72,9 @@ jobs:
       - name: Validate Kubernetes manifests
         env:
           CI: "true"
-        run: bash script/test-k8s-deployment.sh
+        run: |
+          bash script/test-k8s-deployment.sh
+          bash script/test-observability-deployment.sh
 
   backend-image:
     name: Backend image build and runtime smoke

@@ -8,7 +8,7 @@ This file is the handoff guide for AI coding agents working in this repository. 
 - Frontend: Vben Admin app at `apps/web`, main app package `@vben/web-antd`.
 - Database migrations: `sql/postgresql`, executed automatically by the Rust gateway on startup. `0001_initial.sql` is the consolidated schema and baseline data.
 - Bootstrap reference: `sql/bootstrap/current.sql` is a reference-only `pg_dump` snapshot and is never loaded by the application. The migration chain is sufficient to initialize a new server without `current.sql`.
-- Local infrastructure: PostgreSQL, Redis, NATS, and MinIO via `script/docker/docker-compose.yml`.
+- Local infrastructure: PostgreSQL, Redis, NATS, MinIO, and r-nacos via `script/docker/docker-compose.yml`.
 
 The durable worker is horizontally scalable. Keep the current Gateway at one production replica: Toon Agent/Workflow live-run registries are still process-local even though video export and cleanup jobs are distributed. Do not advertise or configure Gateway horizontal scaling until those realtime runtimes are migrated to durable workers.
 
@@ -42,6 +42,11 @@ export REDIS_URL='redis://127.0.0.1:6379'
 export JWT_SECRET='local-development-jwt-secret-change-me-32bytes'
 export BOOTSTRAP_ADMIN_USERNAME='admin'
 export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
+export NACOS_ENABLED='true'
+export NACOS_REQUIRED='true'
+export NACOS_SERVER_ADDR='127.0.0.1:8848'
+export NACOS_USERNAME='rust_toon'
+export NACOS_PASSWORD='rust_toon_nacos_password'
 export RUST_LOG='info'
 cargo run -p rust-toon-gateway
 ```
@@ -54,6 +59,11 @@ export NATS_URL='nats://127.0.0.1:4222'
 export MINIO_ENDPOINT='http://127.0.0.1:9000'
 export MINIO_ACCESS_KEY='rust_toon'
 export MINIO_SECRET_KEY='rust_toon_password'
+export NACOS_ENABLED='true'
+export NACOS_REQUIRED='true'
+export NACOS_SERVER_ADDR='127.0.0.1:8848'
+export NACOS_USERNAME='rust_toon'
+export NACOS_PASSWORD='rust_toon_nacos_password'
 cargo run -p rust-toon-worker
 ```
 
@@ -76,11 +86,14 @@ Open:
 - Worker liveness/readiness: `http://127.0.0.1:8081/livez`, `http://127.0.0.1:8081/readyz`
 - OpenAPI: `http://127.0.0.1:8080/openapi.json`
 - MinIO console: `http://127.0.0.1:9001`
+- r-nacos console: `http://127.0.0.1:10848`
 
 Default local bootstrap account:
 
 - Username: `admin`
 - Password: `Admin#123456`
+
+Default local r-nacos account: `rust_toon` / `rust_toon_nacos_password`.
 
 `BOOTSTRAP_ADMIN_PASSWORD` is only used to create the initial admin when it does not exist. If the database already has admins, startup skips creating another one.
 
@@ -95,6 +108,7 @@ bash script/test-database-migrations.sh
 bash script/test-gateway-e2e.sh
 bash script/test-production-e2e.sh
 bash script/test-distributed-jobs-e2e.sh
+bash script/test-rnacos-dynamic-config.sh
 bash script/test-minio-backup.sh
 pnpm --dir apps/web run test:unit
 pnpm --dir apps/web --filter @vben/web-antd run typecheck
@@ -142,6 +156,14 @@ MINIO_ENDPOINT=http://127.0.0.1:9000
 MINIO_ACCESS_KEY=rust_toon
 MINIO_SECRET_KEY=replace-with-a-strong-object-storage-secret
 MINIO_BUCKET=rust-toon
+NACOS_ENABLED=true
+NACOS_REQUIRED=true
+NACOS_SERVER_ADDR=127.0.0.1:8848
+NACOS_GROUP=RUST_TOON
+NACOS_DATA_ID=rust-toon-gateway.json
+NACOS_USERNAME=replace-with-a-config-read-user
+NACOS_PASSWORD=replace-with-a-strong-config-user-password
+NACOS_CACHE_DIR=/var/cache/rust-toon/nacos
 GATEWAY_HOST=0.0.0.0
 GATEWAY_PORT=8080
 RUST_LOG=info
@@ -169,7 +191,7 @@ set +a
 
 After the first successful login, remove `BOOTSTRAP_ADMIN_PASSWORD` from `/etc/rust-toon/gateway.env` and restart the service.
 
-Create `/etc/rust-toon/toon-worker.env` from `deploy/env/toon-worker.env.example`, using the same PostgreSQL, NATS, and MinIO endpoints as the gateway. Start `rust-toon-worker` only after the gateway has completed migrations. Multiple worker replicas share the same JetStream durable consumer and PostgreSQL leases; use a unique `TOON_WORKER_INSTANCE_ID` per static systemd instance or leave it unset for an automatically generated ID.
+Create `/etc/rust-toon/toon-worker.env` from `deploy/env/toon-worker.env.example`, using the same PostgreSQL, NATS, MinIO, and r-nacos endpoints as the gateway. Start `rust-toon-worker` only after the gateway has completed migrations. Multiple worker replicas share the same JetStream durable consumer and PostgreSQL leases; use a unique `TOON_WORKER_INSTANCE_ID` per static systemd instance or leave it unset for an automatically generated ID.
 
 Scale media capacity by adding worker replicas, not Gateway replicas. The current production topology is Gateway `1` + Toon Worker `N`; this preserves existing Toonflow HTTP/WebSocket behavior while long-running media work remains durable across worker failures.
 

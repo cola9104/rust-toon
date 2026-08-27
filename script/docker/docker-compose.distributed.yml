@@ -22,6 +22,15 @@ x-backend-environment: &backend-environment
   TOON_PROVIDER_VIDEO_MAX_BYTES: ${TOON_PROVIDER_VIDEO_MAX_BYTES:-2147483648}
   TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES: ${TOON_PROVIDER_VIDEO_TEMP_QUOTA_BYTES:-4294967296}
   TOON_WORKFLOW_STALE_SECONDS: ${TOON_WORKFLOW_STALE_SECONDS:-7200}
+  NACOS_ENABLED: "true"
+  NACOS_REQUIRED: "true"
+  NACOS_SERVER_ADDR: rnacos:8848
+  NACOS_NAMESPACE: ${NACOS_NAMESPACE:-}
+  NACOS_GROUP: ${NACOS_GROUP:-RUST_TOON}
+  NACOS_USERNAME: ${NACOS_USERNAME:?set NACOS_USERNAME}
+  NACOS_PASSWORD: ${NACOS_PASSWORD:?set NACOS_PASSWORD}
+  NACOS_CACHE_DIR: /tmp/rust-toon-nacos-cache
+  NACOS_CONNECT_TIMEOUT_SECONDS: ${NACOS_CONNECT_TIMEOUT_SECONDS:-15}
   RUST_ENV: production
   RUST_LOG: ${RUST_LOG:-info}
 
@@ -31,6 +40,8 @@ x-gateway-dependencies: &gateway-dependencies
   redis:
     condition: service_healthy
   minio:
+    condition: service_healthy
+  rnacos:
     condition: service_healthy
 
 x-worker-dependencies: &worker-dependencies
@@ -43,6 +54,8 @@ x-worker-dependencies: &worker-dependencies
   nats:
     condition: service_healthy
   minio:
+    condition: service_healthy
+  rnacos:
     condition: service_healthy
 
 services:
@@ -118,6 +131,33 @@ services:
     restart: unless-stopped
     networks: [backend]
 
+  rnacos:
+    image: qingpan/rnacos:v0.8.6
+    environment:
+      RNACOS_DATA_DIR: /io/nacos_db
+      RNACOS_SDK_HOST: 0.0.0.0
+      RNACOS_CONSOLE_HOST: 0.0.0.0
+      RNACOS_ENABLE_OPEN_API_AUTH: "true"
+      RNACOS_ENABLE_NO_AUTH_CONSOLE: "false"
+      RNACOS_INIT_ADMIN_USERNAME: ${NACOS_USERNAME:?set NACOS_USERNAME}
+      RNACOS_INIT_ADMIN_PASSWORD: ${NACOS_PASSWORD:?set NACOS_PASSWORD}
+      RNACOS_CLUSTER_TOKEN: ${RNACOS_CLUSTER_TOKEN:?set RNACOS_CLUSTER_TOKEN}
+      RNACOS_BACKUP_TOKEN: ${RNACOS_BACKUP_TOKEN:?set RNACOS_BACKUP_TOKEN to at least 32 bytes}
+      RNACOS_GMT_OFFSET_HOURS: "8"
+      RUST_LOG: warn
+    volumes:
+      - rnacos-data:/io/nacos_db
+    ports:
+      - "${MAINTENANCE_BIND_ADDRESS:-127.0.0.1}:${RNACOS_CONSOLE_PORT:-10848}:10848"
+    healthcheck:
+      test: ["CMD", "/usr/bin/bash", "-ec", "exec 3<>/dev/tcp/127.0.0.1/9848"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    networks: [backend]
+
   gateway:
     <<: *backend-image
     command: ["/usr/local/bin/rust-toon-gateway"]
@@ -133,6 +173,7 @@ services:
       READINESS_REQUIRE_REDIS: "true"
       READINESS_REQUIRE_MINIO: "true"
       READINESS_REQUIRE_FFMPEG: "false"
+      NACOS_DATA_ID: rust-toon-gateway.json
     expose: ["8080"]
     depends_on: *gateway-dependencies
     healthcheck:
@@ -169,6 +210,7 @@ services:
       TOON_WORKER_LEASE_SECONDS: ${TOON_WORKER_LEASE_SECONDS:-60}
       TOON_WORKER_HEARTBEAT_SECONDS: ${TOON_WORKER_HEARTBEAT_SECONDS:-15}
       TOON_WORKER_DISPATCH_INTERVAL_MS: ${TOON_WORKER_DISPATCH_INTERVAL_MS:-500}
+      TOON_WORKER_SCHEDULER_INTERVAL_MS: ${TOON_WORKER_SCHEDULER_INTERVAL_MS:-1000}
       TOON_WORKER_PUBLISH_CLAIM_SECONDS: ${TOON_WORKER_PUBLISH_CLAIM_SECONDS:-15}
       TOON_WORKER_REPUBLISH_AFTER_SECONDS: ${TOON_WORKER_REPUBLISH_AFTER_SECONDS:-300}
       TOON_WORKER_REAPER_INTERVAL_SECONDS: ${TOON_WORKER_REAPER_INTERVAL_SECONDS:-5}
@@ -187,6 +229,7 @@ services:
       NATS_JOB_ACK_WAIT_SECONDS: ${NATS_JOB_ACK_WAIT_SECONDS:-120}
       NATS_JOB_MAX_DELIVER: ${NATS_JOB_MAX_DELIVER:-20}
       NATS_JOB_MAX_ACK_PENDING: ${NATS_JOB_MAX_ACK_PENDING:-32}
+      NACOS_DATA_ID: rust-toon-toon-worker.json
     expose: ["8081"]
     depends_on: *worker-dependencies
     healthcheck:
@@ -222,6 +265,7 @@ volumes:
   redis-data:
   nats-data:
   minio-data:
+  rnacos-data:
 
 networks:
   backend:

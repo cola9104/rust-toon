@@ -91,15 +91,15 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 当前部署单元是“模块化 Gateway + 持久媒体 Worker”，而不是把每个 CRUD 模块拆成独立进程。认证、文件、字典和配置作为 workspace 内的公共模块复用；只有需要独立扩缩和故障隔离的长耗时媒体任务进入 Worker。这样保持 Toonflow 的 API 与操作方式不变，也避免在没有独立数据所有权前形成共享数据库的伪微服务。
 
-- **发现与配置**：Kubernetes 部署使用 Service/DNS 发现，进程配置使用 Rust typed config + ConfigMap/Secret；当前拓扑没有引入 Nacos/Apollo。需要动态刷新的业务配置仍应通过带版本的 PostgreSQL 配置和通知机制实现，而不是把密钥写入普通配置表。
-- **容错**：AI/媒体外部调用已有超时、有限重试和并发信号量；Worker 有 lease、heartbeat、fencing、重试、接管与优雅排空。统一 circuit breaker/load-shed 尚未覆盖全部外部适配器，不应宣传为完整服务治理平台。
+- **发现与配置**：Kubernetes 服务发现继续使用 Service/DNS；静态参数和密钥继续由 typed env + ConfigMap/Secret 管理。运行时非敏感参数由三节点 r-nacos Raft 集群保存并通过官方 Rust `nacos-sdk` 长连接推送，SDK 启动时加载磁盘缓存、断线后持续重连；应用对 JSON schema 和数值边界校验后才原子替换当前快照，非法版本保留 last-known-good。Gateway 限流额度/窗口以及 Worker dispatcher、scheduler、reaper、cleanup 周期已接入热更新，数据库地址、JWT、密钥、端口和并发/租约等结构性参数仍要求重启。
+- **容错**：AI、对象存储、媒体下载和 NATS 发布统一经过 Tower bulkhead/circuit breaker/timeout；只有 GET/PUT/DELETE 等幂等 HTTP 方法允许退避重试，POST/PATCH 不会被隐式重放。Worker 另有 lease、heartbeat、fencing、任务级重试、接管与优雅排空。
 - **事务一致性**：视频任务采用本地 PostgreSQL 事务 + outbox、JetStream 至少一次投递、幂等/围栏提交和对象清理补偿；不使用 XA/2PC。PostgreSQL 始终是任务真相源。
-- **观测**：Gateway 与 Worker 支持 JSON stdout（由 Fluent Bit/Vector 等采集到 Loki/ELK）、OpenMetrics `/metrics`（Prometheus/Grafana）以及可选 OTLP gRPC trace（Collector 可转发到 SkyWalking/Tempo/Jaeger）。HTTP 会提取 W3C `traceparent`；NATS 信封目前只有业务 `trace_id`，完整的跨消息父子 trace 仍是后续项。
+- **观测**：Gateway 与 Worker 支持 JSON stdout、OpenMetrics `/metrics` 和 OTLP gRPC trace。HTTP 入站提取、HTTP 出站注入 W3C `traceparent`/`tracestate`；上下文同时持久化到 PostgreSQL Outbox、NATS header/信封并由 Worker 恢复父 span。`deploy/k8s` 内置 Prometheus/Alertmanager/Grafana/Loki/Tempo/Collector，`deploy/logging-agent` 用 Vector 逐节点采集日志；已有托管平台时可只替换 exporter/datasource。
 - **副本边界**：媒体 Worker 可以水平扩容；Agent/Workflow 活跃运行注册表仍含进程内状态，因此 Gateway 固定单副本。`deploy/k8s` 的 HPA 只作用于 Worker，不能把当前清单描述为 Gateway 高可用。
 
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0006`，依次包含基线、剧集成片归档、分布式任务、投递防护、数据库视频 ID/连续帧约束与持久登录锁定，新数据库由 gateway 自动执行完整迁移链。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0007`，最新迁移加入数据库协调 Cron 与持久 W3C trace carrier，新数据库由 gateway 自动执行完整迁移链。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。
@@ -112,7 +112,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ### 5.2 infra（`crates/modules/infra-server`）
 
-基础设施域：参数配置、数据源配置、文件与文件配置、定时任务目录（job / job-log）、代码生成（codegen）、API 访问日志、监控（`monitor.rs`，上报 `RUST_ENV`）等，路由前缀 `/infra/*`。除能力探针和文件读取外，管理路由全部要求登录，并按现有 `infra:*` 权限码在后端授权。上传有服务端体积上限并使用不可猜对象名；公开 `GET /upload/{*path}` 只允许栅格图片 inline，其余类型强制 attachment，同时返回 CSP 与 `nosniff`。`infra_job` 当前只提供目录和 cron 预览，不是通用分布式执行器；真实媒体调度由 `toon-worker` 承担。
+基础设施域：参数配置、数据源配置、文件与文件配置、分布式定时任务（job / job-log）、代码生成（codegen）、API 访问日志、监控（`monitor.rs`，上报 `RUST_ENV`）等，路由前缀 `/infra/*`。除能力探针和文件读取外，管理路由全部要求登录，并按现有 `infra:*` 权限码在后端授权。上传有服务端体积上限并使用不可猜对象名；公开 `GET /upload/{*path}` 只允许栅格图片 inline，其余类型强制 attachment，同时返回 CSP 与 `nosniff`。`infra_job` 由所有 Worker 通过 PostgreSQL 行锁协调到期触发，再复用 outbox/JetStream/lease/fencing 执行；仓库内置安全诊断 Handler，新增业务 job kind 必须显式注册 Rust Handler。
 
 ### 5.3 ai（`crates/modules/ai-server`）
 
@@ -170,5 +170,9 @@ AI 能力域：
 | Redis | 6379 | 缓存/限流（可选） |
 | NATS | 4222 / 8222 | JetStream 客户端 / 监控端口 |
 | MinIO | 9000 / 9001 | S3 API / 控制台 |
+| Prometheus / Alertmanager | 9090 / 9093 | 指标查询 / 告警聚合（仅集群内） |
+| Grafana | 3000 | 指标、日志与 Trace 查询界面（默认仅集群内） |
+| Loki / Tempo | 3100 / 3200 | 日志查询 / Trace 查询（仅集群内） |
+| OTLP | 4317 / 4318 | Collector 与 Tempo 的 gRPC / HTTP 接收端口 |
 
 compose 定义见 `script/docker/docker-compose.yml` 与 [deployment.md](deployment.md)。

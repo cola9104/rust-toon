@@ -3,6 +3,7 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use hmac::{Hmac, Mac};
 use reqwest::{Method, Url, header};
+use rust_toon_framework_resilience::{HttpResilienceConfig, ResilientHttpClient};
 use rust_toon_framework_web::AppError;
 use sha2::{Digest, Sha256};
 use std::{
@@ -100,9 +101,67 @@ async fn signed_request_with_range(
     };
     signed_request_builder_with_timeout(method, object_key, &payload_hash, range, timeout)?
         .body(body)
-        .send()
+        .pipe_execute(object_storage_client())
         .await
         .map_err(|error| error.to_string())
+}
+
+trait ResilientRequestExt {
+    async fn pipe_execute(
+        self,
+        client: &ResilientHttpClient,
+    ) -> Result<reqwest::Response, rust_toon_framework_resilience::ResilienceError>;
+}
+
+impl ResilientRequestExt for reqwest::RequestBuilder {
+    async fn pipe_execute(
+        self,
+        client: &ResilientHttpClient,
+    ) -> Result<reqwest::Response, rust_toon_framework_resilience::ResilienceError> {
+        client.execute(self).await
+    }
+}
+
+fn object_storage_client() -> &'static ResilientHttpClient {
+    static CLIENT: OnceLock<ResilientHttpClient> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let client = reqwest::Client::builder()
+            .connect_timeout(minio_connect_timeout())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        ResilientHttpClient::new(
+            "object-storage",
+            client,
+            HttpResilienceConfig {
+                timeout: minio_stream_timeout(),
+                max_attempts: 3,
+                max_concurrent_calls: 32,
+                ..HttpResilienceConfig::default()
+            },
+        )
+        .expect("static object storage resilience configuration must be valid")
+    })
+}
+
+fn remote_media_client() -> &'static ResilientHttpClient {
+    static CLIENT: OnceLock<ResilientHttpClient> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        let client = reqwest::Client::builder()
+            .connect_timeout(minio_connect_timeout())
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        ResilientHttpClient::new(
+            "media-download",
+            client,
+            HttpResilienceConfig {
+                timeout: minio_stream_timeout(),
+                max_attempts: 3,
+                max_concurrent_calls: 16,
+                ..HttpResilienceConfig::default()
+            },
+        )
+        .expect("static media download resilience configuration must be valid")
+    })
 }
 
 fn signed_request_builder_with_timeout(
@@ -201,13 +260,15 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(url.to_string());
     }
-    let response = reqwest::Client::builder()
-        .connect_timeout(minio_connect_timeout())
-        .timeout(minio_stream_timeout())
-        .build()
-        .map_err(|error| format!("创建图片下载客户端失败：{error}"))?
-        .get(url)
-        .send()
+    let response = remote_media_client()
+        .execute(
+            reqwest::Client::builder()
+                .connect_timeout(minio_connect_timeout())
+                .timeout(minio_stream_timeout())
+                .build()
+                .map_err(|error| format!("创建图片下载客户端失败：{error}"))?
+                .get(url),
+        )
         .await
         .map_err(|error| format!("下载生成图片失败：{error}"))?;
     if !response.status().is_success() {
@@ -554,7 +615,7 @@ pub(crate) async fn persist_asset_file_named(
     )?
     .header(header::CONTENT_LENGTH, metadata.len())
     .body(body)
-    .send()
+    .pipe_execute(object_storage_client())
     .await
     .map_err(|error| format!("上传资产到 MinIO 失败：{error}"))?;
     if !upload.status().is_success() {

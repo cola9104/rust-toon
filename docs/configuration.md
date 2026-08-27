@@ -4,7 +4,7 @@
 
 ## 1. 后端环境变量
 
-后端通过环境变量配置，无配置文件。生产环境建议将网关配置写入 `/etc/rust-toon/gateway.env`，worker 配置写入 `/etc/rust-toon/toon-worker.env`，并由 systemd `EnvironmentFile` 加载（样例见 `deploy/env/`）。
+后端的启动参数通过环境变量配置；少量非敏感运行参数可由 r-nacos 在进程运行期间热更新。生产环境建议将网关配置写入 `/etc/rust-toon/gateway.env`，worker 配置写入 `/etc/rust-toon/toon-worker.env`，并由 systemd `EnvironmentFile` 加载（样例见 `deploy/env/`）。
 
 ### 1.1 服务监听（`crates/framework/common/src/config.rs`）
 
@@ -49,7 +49,49 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `RATE_LIMIT_MAX_REQUESTS` | `300` | 窗口内最大请求数（按 IP+方法+路径） |
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | 限流窗口（秒） |
 
-### 1.5 Web / CORS（`crates/framework/web/src/middleware.rs`）
+### 1.5 r-nacos 动态配置（`crates/framework/dynamic-config`）
+
+Gateway 和 Worker 使用 Rust `nacos-sdk` 订阅各自的 JSON 文档。初次读取和每次推送都会先反序列化并检查 schema、未知字段与数值边界，通过后才用 `tokio::watch` 原子替换当前快照；校验失败不会污染运行值，而是继续使用 last-known-good。SDK 开启本地缓存并在运行期断线后持续重连。r-nacos 只承载非敏感可调参数，数据库 URL、JWT、API key、对象存储/NATS 凭据和 r-nacos 自身账号必须继续放在环境变量或 Secret 中。
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `NACOS_ENABLED` | 设置了 `NACOS_SERVER_ADDR` 时为 `true` | 是否启用动态配置；仅接受 `true/false/1/0` |
+| `NACOS_REQUIRED` | `false` | 为 `true` 时，SDK 无法建立连接、初始文档无效或无法注册 listener 会令服务启动失败；文档尚未创建不算失败，服务用环境变量默认值启动并等待首次推送 |
+| `NACOS_SERVER_ADDR` | 无 | SDK HTTP 地址，不带协议，例如 `127.0.0.1:8848` 或 `rust-toon-rnacos:8848`；SDK 同时连接对应 gRPC 端口 9848 |
+| `NACOS_NAMESPACE` | 空（public） | r-nacos namespace ID；基础清单使用 public，若改为自定义 namespace，必须先在控制台创建 |
+| `NACOS_GROUP` | `RUST_TOON` | 配置分组 |
+| `NACOS_DATA_ID` | `rust-toon-{service}.json` | Gateway 默认为 `rust-toon-gateway.json`，Worker 默认为 `rust-toon-toon-worker.json` |
+| `NACOS_USERNAME` / `NACOS_PASSWORD` | 无 | OpenAPI 客户端账号，必须成对设置；不得写入 ConfigMap |
+| `NACOS_CACHE_DIR` | `/tmp/rust-toon-nacos-cache` | SDK last-known-good 磁盘缓存根目录；只读根文件系统需挂载可写 `emptyDir` 或持久目录 |
+| `NACOS_CONNECT_TIMEOUT_SECONDS` | `15` | 启动建连、初次读取和注册 listener 超时，范围 1～120 秒 |
+
+Gateway 文档只允许动态调整限流额度和窗口：
+
+```json
+{
+  "schemaVersion": 1,
+  "rateLimit": {
+    "maxRequests": 300,
+    "windowSeconds": 60
+  }
+}
+```
+
+Worker 文档只允许调整四个后台扫描周期，不会动态改变任务并发、lease、heartbeat 或 drain deadline：
+
+```json
+{
+  "schemaVersion": 1,
+  "dispatcherIntervalMillis": 500,
+  "schedulerIntervalMillis": 1000,
+  "reaperIntervalSeconds": 5,
+  "cleanupIntervalSeconds": 5
+}
+```
+
+可直接从 `deploy/rnacos/rust-toon-gateway.json` 和 `deploy/rnacos/rust-toon-toon-worker.json` 复制初始模板。未发布文档时，字段值来自已有 `RATE_LIMIT_*` / `TOON_WORKER_*` 环境变量。通过 r-nacos 控制台发布后，无需重启 Gateway/Worker；控制台历史版本执行回滚会产生一次普通推送，同样经过应用校验后生效。不要删除 `schemaVersion`，也不要把完整环境文件或 Secret 复制到动态文档。
+
+### 1.6 Web / CORS（`crates/framework/web/src/middleware.rs`）
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -57,7 +99,7 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 
 无论是否开启，网关都会写入/透传 `x-request-id` 并输出访问日志（tower-http Trace）。
 
-### 1.6 文件存储
+### 1.7 文件存储
 
 | 变量 | 默认值 | 说明 | 来源 |
 | --- | --- | --- | --- |
@@ -65,7 +107,7 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 
 当前应用运行时文件统一存入 MinIO/S3；`INFRA_UPLOAD_DIR` 只由旧本地文件迁移脚本读取，不再是 Gateway 运行参数。FFmpeg/供应商下载的中间文件使用系统临时目录并在完成或恢复时清理。
 
-### 1.7 MinIO 对象存储（`crates/modules/toon-server/src/toonflow_storage.rs`）
+### 1.8 MinIO 对象存储（`crates/modules/toon-server/src/toonflow_storage.rs`）
 
 网关以自实现的 AWS SigV4 签名直连 MinIO/S3：
 
@@ -77,7 +119,7 @@ Redis 为**可选**：`REDIS_URL` 未设置或连接失败时，缓存与限流�
 | `MINIO_BUCKET` | `rust-toon` | 桶名 |
 | `MINIO_REGION` | `us-east-1` | 签名区域 |
 
-### 1.8 可观测性（`crates/framework/telemetry`）
+### 1.9 可观测性（`crates/framework/telemetry`）
 
 Gateway 与 Toon Worker 默认在各自监听端口暴露 `GET /metrics`，使用 OpenMetrics 文本格式，包含按路由模板聚合的 HTTP 请求量、耗时、在途请求，以及 Worker 的任务结果、执行耗时、在途任务、outbox 投递、租约回收和对象清理指标。指标标签不会写入原始 URL、查询串、项目 ID 或视频 ID，避免泄露令牌和产生无界基数。
 
@@ -94,9 +136,9 @@ Gateway 与 Toon Worker 默认在各自监听端口暴露 `GET /metrics`，使�
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | 通用单批导出超时（毫秒），范围 100～300000 |
 | `OTEL_SDK_DISABLED` | `false` | 设为 `true` 时即使配置了 endpoint 也禁用 OTLP trace 导出 |
 
-启用 OTLP 后，HTTP `traceparent` / `tracestate` 会被提取并设置为 `http_request` server span 的父上下文，可发送到 OpenTelemetry Collector、开启 OTLP receiver 的 SkyWalking 或 Tempo。当前 NATS durable job envelope 仍保留既有业务 `trace_id` 字符串，尚未注入 W3C trace context，因此 HTTP 到 Worker 的跨消息完整父子链路仍是后续项；Worker span 会携带 `job.trace_id`、job ID 和 NATS destination 供检索关联，不应把它宣称为完整分布式 trace。
+启用 OTLP 后，HTTP `traceparent` / `tracestate` 会被提取并设置为 `http_request` server span 的父上下文，可发送到 OpenTelemetry Collector、开启 OTLP receiver 的 SkyWalking 或 Tempo。W3C carrier 会随 PostgreSQL outbox 和 NATS job envelope 持久化，Worker 消费时恢复父上下文，因此 Gateway → outbox → JetStream → Worker 保持同一条分布式 trace；业务 `trace_id` 仍作为便于检索的字段保留。
 
-### 1.9 其他
+### 1.10 其他
 
 | 变量 | 默认值 | 说明 | 来源 |
 | --- | --- | --- | --- |
@@ -112,7 +154,7 @@ Gateway 与 Toon Worker 默认在各自监听端口暴露 `GET /metrics`，使�
 | `AI_VIDEO_POLL_INTERVAL_SECONDS` | `5` | 异步视频任务轮询间隔 | `toon-server/src/ai_client.rs` |
 | `AI_VIDEO_POLL_TIMEOUT_SECONDS` | `600` | 异步视频任务最长等待时间 | `toon-server/src/ai_client.rs` |
 
-### 1.10 分布式任务与 Toon Worker
+### 1.11 分布式任务与 Toon Worker
 
 最终成片等长任务不在 HTTP 网关进程中执行。网关在同一个 PostgreSQL 事务中写入业务任务和 `toonflow.distributed_jobs`，worker 的 dispatcher 再把任务引用投递到 NATS JetStream。PostgreSQL 是任务真相源，JetStream 使用显式 ACK 和至少一次投递；worker 通过数据库租约、心跳和 fencing token 保证多个实例竞争时只有租约持有者能够提交结果。
 
@@ -131,6 +173,7 @@ Gateway 与 Toon Worker 默认在各自监听端口暴露 `GET /metrics`，使�
 | `TOON_WORKER_LEASE_SECONDS` | `300` | 数据库任务租约时长 |
 | `TOON_WORKER_HEARTBEAT_SECONDS` | `30` | 执行中任务续租与 JetStream progress ACK 周期，必须小于租约时长 |
 | `TOON_WORKER_DISPATCH_INTERVAL_MS` | `500` | PostgreSQL outbox 扫描和 JetStream 发布周期 |
+| `TOON_WORKER_SCHEDULER_INTERVAL_MS` | `1000` | `infra_job` 到期扫描周期；多 Worker 通过数据库行锁协调 |
 | `TOON_WORKER_PUBLISH_CLAIM_SECONDS` | `15` | dispatcher 发布前持有的短 PostgreSQL claim；实例崩溃后由其他 dispatcher 接管 |
 | `TOON_WORKER_REPUBLISH_AFTER_SECONDS` | `300` | 数据库仍为非终态但 JetStream 消息丢失或超过 MaxDeliver 时，轮换 `message_id` 并重新发布的等待时间 |
 | `TOON_WORKER_REAPER_INTERVAL_SECONDS` | `15` | 过期租约扫描与重试调度周期 |
@@ -162,7 +205,7 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 
 模型能力矩阵写入 `ai.model_configs.config.capabilities`，支持 `videoModes`、`durationResolutionMap`、`thinkLevels` 和 `multiReference`。视频调用会在请求上游前校验模式以及时长/分辨率组合；未配置能力矩阵的旧模型保持兼容。
 
-### 1.11 启动账号说明
+### 1.12 启动账号说明
 
 根 `AGENTS.md` 与 `deploy/env/gateway.env.example` 约定了 `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` 两个变量用于首次启动的初始管理员。请以代码实际行为为准理解当前版本：`system-server` 的启动引导（`bootstrap.rs`）是**校验**数据库中必须存在启用状态的 `super_admin` 用户，否则拒绝启动；基线迁移 `sql/postgresql/0001_initial.sql` 已内置 `admin` 用户（bcrypt 密码散列）与 `super_admin` 角色，空库初始化后可直接使用。前端开发环境默认填充的登录口令见 `apps/web/apps/web-antd/.env.development`（`VITE_APP_DEFAULT_USERNAME=admin` / `VITE_APP_DEFAULT_PASSWORD=admin123`）。首次登录后请立即修改密码。
 

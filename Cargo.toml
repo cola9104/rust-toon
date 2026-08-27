@@ -2,9 +2,12 @@
 resolver = "3"
 members = [
     "crates/framework/common",
+    "crates/framework/dynamic-config",
     "crates/framework/database",
+    "crates/framework/jobs",
     "crates/framework/mq",
     "crates/framework/redis",
+    "crates/framework/resilience",
     "crates/framework/security",
     "crates/framework/telemetry",
     "crates/framework/tenant",
@@ -39,7 +42,9 @@ bcrypt = "0.17"
 axum = { version = "0.8", features = ["multipart"] }
 calamine = "0.36"
 chrono = { version = "0.4", features = ["serde"] }
+croner = "3.0.1"
 jsonwebtoken = "9.3"
+nacos-sdk = { version = "0.8.1", default-features = false, features = ["auth-by-http", "config"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 futures-util = "0.3"
 hex = "0.4"
@@ -53,9 +58,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 redis = { version = "0.32", default-features = false, features = ["aio", "tokio-comp"] }
 rust_xlsxwriter = "0.96"
 rust-toon-framework-common = { path = "crates/framework/common" }
+rust-toon-framework-dynamic-config = { path = "crates/framework/dynamic-config" }
 rust-toon-framework-database = { path = "crates/framework/database" }
+rust-toon-framework-jobs = { path = "crates/framework/jobs" }
 rust-toon-framework-mq = { path = "crates/framework/mq" }
 rust-toon-framework-redis = { path = "crates/framework/redis" }
+rust-toon-framework-resilience = { path = "crates/framework/resilience" }
 rust-toon-framework-security = { path = "crates/framework/security" }
 rust-toon-framework-telemetry = { path = "crates/framework/telemetry" }
 rust-toon-framework-tenant = { path = "crates/framework/tenant" }
@@ -76,7 +84,8 @@ sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["chrono", "macros", "migrate", "postgres", "runtime-tokio-rustls", "uuid"] }
 tokio = { version = "1.44", features = ["macros", "rt-multi-thread", "signal", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
+tower-resilience = { version = "0.13.0", default-features = false, features = ["bulkhead", "circuitbreaker", "tracing"] }
 tower-http = { version = "0.6", features = ["cors", "request-id", "trace"] }
 tracing = "0.1"
 tracing-opentelemetry = { version = "0.33", default-features = false, features = ["tracing-log"] }
