@@ -1,3 +1,5 @@
+import type { PlannedScene } from './scene-consistency-planning';
+
 import type { ToonflowApi } from '#/api/toonflow';
 
 export interface SceneConsistencyIssues {
@@ -33,39 +35,26 @@ export function isValidSceneKey(value?: string) {
   return SCENE_KEY_PATTERN.test(normalizeSceneKey(value));
 }
 
-function sceneKeySequence(sceneKey: string) {
-  return Number(sceneKey.slice(2));
-}
-
-function sceneDisplayName(scene: ToonflowApi.SceneMaster | undefined) {
-  if (!scene) return undefined;
-  const sceneKey = normalizeSceneKey(scene.sceneKey);
-  return [scene.name, scene.sceneAssetName]
-    .map((value) => value?.trim())
-    .find((value) => value && normalizeSceneKey(value) !== sceneKey);
-}
-
-/** Builds the scene picker from persisted storyboard bindings and scene masters. */
+/**
+ * Builds the scene picker exclusively from the director plan. Persisted
+ * masters neither add scenes nor rename what the director planned.
+ */
 export function buildSceneKeyOptions(
-  sceneKeys: string[],
-  catalog: ToonflowApi.SceneConsistencyCatalog | undefined,
+  plannedScenes: PlannedScene[],
 ): SceneKeyOption[] {
-  const scenesByKey = new Map(
-    (catalog?.scenes ?? []).map((scene) => [
-      normalizeSceneKey(scene.sceneKey),
-      scene,
-    ]),
-  );
-  const keys = new Set(
-    [...sceneKeys, ...scenesByKey.keys()]
-      .map(normalizeSceneKey)
-      .filter(isValidSceneKey),
-  );
-
-  return [...keys]
-    .sort((left, right) => sceneKeySequence(left) - sceneKeySequence(right))
-    .map((value) => {
-      const displayName = sceneDisplayName(scenesByKey.get(value));
+  const seen = new Set<string>();
+  return plannedScenes
+    .map((plannedScene) => ({
+      ...plannedScene,
+      sceneKey: normalizeSceneKey(plannedScene.sceneKey),
+    }))
+    .filter(({ sceneKey }) => {
+      if (!isValidSceneKey(sceneKey) || seen.has(sceneKey)) return false;
+      seen.add(sceneKey);
+      return true;
+    })
+    .map(({ name, sceneKey: value }) => {
+      const displayName = name.trim();
       return {
         label: `${value.toUpperCase()}${displayName ? ` · ${displayName}` : ''}`,
         value,

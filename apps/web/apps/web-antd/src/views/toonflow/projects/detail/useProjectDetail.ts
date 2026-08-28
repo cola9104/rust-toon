@@ -123,6 +123,8 @@ const selectedScript = computed(() =>
   scripts.value.find((item) => item.id === selectedScriptId.value),
 );
 const flowText = ref('{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}');
+const loadedFlowProjectId = ref<number>();
+const loadedFlowScriptId = ref<number>();
 
 const flowImageModalOpen = ref(false);
 const imageFlowId = ref<number>();
@@ -435,6 +437,8 @@ async function performLoadFlow() {
   const targetProjectId = projectId.value;
   const targetScriptId = selectedScriptId.value;
   if (!targetScriptId) {
+    loadedFlowProjectId.value = undefined;
+    loadedFlowScriptId.value = undefined;
     flowText.value =
       '{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}';
     storyboards.value = [];
@@ -464,6 +468,8 @@ async function performLoadFlow() {
   productionAssets.value = Array.isArray(flow.assets) ? flow.assets : [];
   videoTracks.value = workbench.trackList ?? [];
   storyboards.value = nextStoryboards;
+  loadedFlowProjectId.value = targetProjectId;
+  loadedFlowScriptId.value = targetScriptId;
   for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
   latestRuns.forEach((run, index) => {
     if (run) workflowNodeRuns[workflow.nodes[index]!.id] = run;
@@ -887,8 +893,17 @@ function openScriptGeneration() {
 }
 
 async function saveFlowText() {
-  if (!selectedScriptId.value) {
+  const targetProjectId = projectId.value;
+  const targetScriptId = selectedScriptId.value;
+  if (!targetScriptId) {
     message.warning('请先选择剧本');
+    return;
+  }
+  if (
+    loadedFlowProjectId.value !== targetProjectId ||
+    loadedFlowScriptId.value !== targetScriptId
+  ) {
+    message.warning('当前剧本的制作数据仍在加载，请稍后再保存');
     return;
   }
   let data: Record<string, any>;
@@ -898,22 +913,40 @@ async function saveFlowText() {
     message.error('Flow JSON 格式不正确');
     return;
   }
-  await saveFlowData(projectId.value, selectedScriptId.value, data);
-  message.success('生产工作流已保存');
+  await saveFlowData(targetProjectId, targetScriptId, data);
+  if (
+    projectId.value === targetProjectId &&
+    selectedScriptId.value === targetScriptId
+  ) {
+    message.success('生产工作流已保存');
+  }
 }
 
-let flowCanvasSaveTimer: ReturnType<typeof setTimeout> | undefined;
+const flowCanvasSaveTimers = new Map<
+  string,
+  ReturnType<typeof setTimeout>
+>();
 function flowObject() {
   try { return JSON.parse(flowText.value || '{}') as Record<string, any>; }
   catch { return {}; }
 }
 function persistFlowObject(data: Record<string, any>) {
+  const targetProjectId = projectId.value;
+  const targetScriptId = selectedScriptId.value;
+  if (
+    !targetScriptId ||
+    loadedFlowProjectId.value !== targetProjectId ||
+    loadedFlowScriptId.value !== targetScriptId
+  ) return;
   flowText.value = JSON.stringify(data, null, 2);
-  if (flowCanvasSaveTimer) clearTimeout(flowCanvasSaveTimer);
-  flowCanvasSaveTimer = setTimeout(async () => {
-    if (!selectedScriptId.value) return;
-    await saveFlowData(projectId.value, selectedScriptId.value, data);
+  const targetKey = `${targetProjectId}:${targetScriptId}`;
+  const pendingSave = flowCanvasSaveTimers.get(targetKey);
+  if (pendingSave) clearTimeout(pendingSave);
+  const saveTimer = setTimeout(async () => {
+    flowCanvasSaveTimers.delete(targetKey);
+    await saveFlowData(targetProjectId, targetScriptId, data);
   }, 500);
+  flowCanvasSaveTimers.set(targetKey, saveTimer);
 }
 function saveProductionCanvasPositions(positions: Record<string, { x: number; y: number }>) {
   const data = flowObject();
@@ -1797,7 +1830,7 @@ const panelContext = reactive({
   assets, visibleScripts, scriptAssetGroups, scriptSearch, selectedScriptIds, importScriptFiles,
   toggleAllScripts, batchExportScripts, batchExtractScriptAssets, batchRemoveScripts,
   toggleScript, extractAssetsFromScript, removeScript, scriptExtractLabel, scriptExtractColor,
-  selectedScriptId, scriptOptions, productionAssets, flowText, selectedScript, storyboards,
+  selectedScriptId, loadedFlowProjectId, loadedFlowScriptId, scriptOptions, productionAssets, flowText, selectedScript, storyboards,
   storyboardBusy, storyboardProgressCurrent, storyboardProgressTotal, storyboardNodeRunState,
   videoTracks, workflowNodeRuns, rebuildingStoryboardPanel, productionAgentCollapsed,
   productionAgentActivity, productionChatMessages, trackBindingOpen, trackBindingTarget,
@@ -1831,6 +1864,13 @@ const panelContext = reactive({
 });
 
 watch(selectedScriptId, () => {
+  // The selected episode changes synchronously while its workspace loads
+  // asynchronously. Keep consumers from parsing the previous episode's plan
+  // or assets during that gap.
+  if (loadedFlowScriptId.value !== selectedScriptId.value) {
+    loadedFlowProjectId.value = undefined;
+    loadedFlowScriptId.value = undefined;
+  }
   if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   workflowRunPollTimer = undefined;
   observedWorkflowRunId = undefined;
@@ -1868,7 +1908,11 @@ onBeforeUnmount(() => {
   if (videoPollTimer) clearTimeout(videoPollTimer);
   stopProductionAgentSync();
 });
-watch(projectId, () => loadAll());
+watch(projectId, () => {
+  loadedFlowProjectId.value = undefined;
+  loadedFlowScriptId.value = undefined;
+  void loadAll();
+});
 
 return reactive({ activeTab, stages, activePanelComponent, loading, project, statistics, router, loadAll, panelContext });
 }

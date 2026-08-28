@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { PlannedScene } from './scene-consistency-planning';
+
 import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, reactive, ref, watch } from 'vue';
@@ -33,13 +35,16 @@ import {
   sceneMasterForKey,
 } from './scene-consistency';
 
-const props = defineProps<{
-  assets: ToonflowApi.Asset[];
-  open: boolean;
-  projectId: number;
-  sceneKeys: string[];
-  scriptId?: number;
-}>();
+const props = withDefaults(
+  defineProps<{
+    assets: ToonflowApi.Asset[];
+    open: boolean;
+    plannedScenes?: PlannedScene[];
+    projectId: number;
+    scriptId?: number;
+  }>(),
+  { plannedScenes: () => [], scriptId: undefined },
+);
 
 const emit = defineEmits<{
   changed: [catalog: ToonflowApi.SceneConsistencyCatalog];
@@ -51,7 +56,7 @@ const autoConfiguring = ref(false);
 const savingMaster = ref(false);
 const savingState = ref(false);
 const catalog = ref<ToonflowApi.SceneConsistencyCatalog>({ scenes: [] });
-const selectedSceneKey = ref('sc1');
+const selectedSceneKey = ref('');
 const stateModalOpen = ref(false);
 let catalogRequestVersion = 0;
 
@@ -75,11 +80,17 @@ const stateForm = reactive({
 });
 
 const sceneKeyOptions = computed(() => {
-  const options = buildSceneKeyOptions(props.sceneKeys, catalog.value);
-  return options.length > 0
-    ? options
-    : [{ label: 'SC1 · 待配置', value: 'sc1' }];
+  return buildSceneKeyOptions(props.plannedScenes);
 });
+const plannedSceneKeySignature = computed(() =>
+  sceneKeyOptions.value.map((option) => option.value).join('|'),
+);
+
+const currentPlannedScene = computed(() =>
+  props.plannedScenes.find(
+    (scene) => scene.sceneKey === selectedSceneKey.value,
+  ),
+);
 
 const currentMaster = computed(() =>
   sceneMasterForKey(catalog.value, selectedSceneKey.value),
@@ -93,6 +104,25 @@ const masterPreviewUrl = computed(() => {
     return currentMaster.value?.referenceUrl ?? selectedAsset?.imageFilePath;
   }
   return selectedAsset?.imageFilePath;
+});
+
+const plannedAssetHint = computed(() => {
+  const plannedScene = currentPlannedScene.value;
+  if (!plannedScene) return '';
+  if (currentMaster.value) {
+    return currentMaster.value.sceneAssetId
+      ? '当前使用已保存并锁定的场景母版。'
+      : '当前母版未绑定场景资产，请选择后保存。';
+  }
+  if (plannedScene.assetMatch === 'unique') {
+    const asset = props.assets.find(
+      (candidate) => candidate.id === plannedScene.defaultSceneAssetId,
+    );
+    return `已按分镜表引用自动带入${asset?.name ? `“${asset.name}”` : '场景资产'}。`;
+  }
+  return plannedScene.assetMatch === 'ambiguous'
+    ? '该场引用了多个场景资产，系统不会猜测，请人工确认一个母版。'
+    : '该场尚未引用可用的场景资产，请先补充分镜表或人工选择。';
 });
 
 const sceneAssetOptions = computed(() =>
@@ -129,10 +159,19 @@ const parentStateOptions = computed(() =>
 
 function fillMasterForm() {
   const master = currentMaster.value;
+  const plannedScene = currentPlannedScene.value;
   Object.assign(masterForm, {
     layoutSpec: master?.layoutSpec ?? {},
-    name: master?.name ?? selectedSceneKey.value.toUpperCase(),
-    sceneAssetId: master?.sceneAssetId,
+    name:
+      master?.name ??
+      plannedScene?.name ??
+      selectedSceneKey.value.toUpperCase(),
+    // A persisted master is an explicit user/system decision, including an
+    // intentionally empty asset. Only an unconfigured scene receives the
+    // deterministic storyboard-table default.
+    sceneAssetId: master
+      ? master.sceneAssetId
+      : plannedScene?.defaultSceneAssetId,
     spatialPrompt: master?.spatialPrompt ?? '',
   });
 }
@@ -149,10 +188,9 @@ async function loadCatalog() {
     catalog.value = nextCatalog;
     const available = sceneKeyOptions.value.map((option) => option.value);
     if (!available.includes(selectedSceneKey.value)) {
-      selectedSceneKey.value = available[0] ?? 'sc1';
+      selectedSceneKey.value = available[0] ?? '';
     }
     fillMasterForm();
-    emit('changed', catalog.value);
   } finally {
     if (requestVersion === catalogRequestVersion) loading.value = false;
   }
@@ -160,6 +198,9 @@ async function loadCatalog() {
 
 async function autoConfigure() {
   if (!props.scriptId) return message.warning('请先选择制作剧本');
+  if (props.plannedScenes.length === 0) {
+    return message.warning('当前集导演规划中还没有可用场次');
+  }
   if (autoConfiguring.value) return;
   if (loading.value || savingMaster.value || savingState.value) {
     return message.warning('请等待当前场景操作完成');
@@ -171,11 +212,15 @@ async function autoConfigure() {
     const result = await autoConfigureSceneConsistency(projectId, scriptId);
     if (props.projectId !== projectId || props.scriptId !== scriptId) return;
     await loadCatalog();
+    emit('changed', catalog.value);
     const stateSummary = result.statesCreated
-      ? `，创建 ${result.statesCreated} 个场景状态`
+      ? `，补充 ${result.statesCreated} 个持续状态`
+      : '';
+    const bindingSummary = result.storyboardsBound
+      ? `；系统同步绑定 ${result.storyboardsBound} 条分镜`
       : '';
     message.success(
-      `AI 已配置 ${result.sceneCount} 个场次，绑定 ${result.storyboardsBound} 条分镜${stateSummary}`,
+      `AI 已优化 ${result.sceneCount} 个场次的空间布局${stateSummary}${bindingSummary}`,
     );
     if (result.storyboardsBound > 0) {
       message.info('已有分镜图会标记为待重生成，新图片将执行统一场景约束');
@@ -201,17 +246,32 @@ watch(
     // selected script so an older response cannot repopulate this picker.
     catalogRequestVersion += 1;
     loading.value = false;
-    selectedSceneKey.value = 'sc1';
+    selectedSceneKey.value = props.plannedScenes[0]?.sceneKey ?? '';
     catalog.value = { scenes: [] };
     fillMasterForm();
     if (props.open && props.scriptId) void loadCatalog();
   },
 );
+watch(
+  plannedSceneKeySignature,
+  () => {
+    const available = sceneKeyOptions.value.map((scene) => scene.value);
+    if (!available.includes(selectedSceneKey.value)) {
+      selectedSceneKey.value = available[0] ?? '';
+    } else if (!props.open) {
+      // Refresh a closed form so the next open starts from the latest plan.
+      // Never overwrite in-progress edits merely because assets/flow refreshed.
+      fillMasterForm();
+    }
+  },
+  { immediate: true },
+);
 watch(selectedSceneKey, fillMasterForm);
 
 async function submitMaster() {
   if (!props.scriptId) return;
-  if (autoConfiguring.value) return message.warning('AI 自动配置完成后再保存母版');
+  if (autoConfiguring.value) return message.warning('AI 优化完成后再保存母版');
+  if (!selectedSceneKey.value) return message.warning('导演规划中没有可保存的场次');
   if (!isValidSceneKey(selectedSceneKey.value)) {
     return message.warning('场次编号请使用 SC 加正整数，例如 SC2');
   }
@@ -229,6 +289,7 @@ async function submitMaster() {
       scriptId: props.scriptId,
     });
     await loadCatalog();
+    emit('changed', catalog.value);
     message.success('场景母版已锁定');
   } finally {
     savingMaster.value = false;
@@ -236,7 +297,7 @@ async function submitMaster() {
 }
 
 function openStateEditor(state?: ToonflowApi.SceneState) {
-  if (autoConfiguring.value) return message.warning('AI 自动配置完成后再编辑状态');
+  if (autoConfiguring.value) return message.warning('AI 优化完成后再编辑状态');
   const states = currentMaster.value?.states ?? [];
   Object.assign(stateForm, {
     changeSummary: state?.changeSummary ?? '',
@@ -256,7 +317,7 @@ function openStateEditor(state?: ToonflowApi.SceneState) {
 }
 
 async function submitState() {
-  if (autoConfiguring.value) return message.warning('AI 自动配置完成后再保存状态');
+  if (autoConfiguring.value) return message.warning('AI 优化完成后再保存状态');
   const master = currentMaster.value;
   if (!master) return message.warning('请先保存场景母版');
   const stateKey = stateForm.stateKey.trim().toLowerCase();
@@ -297,6 +358,7 @@ async function submitState() {
     });
     stateModalOpen.value = false;
     await loadCatalog();
+    emit('changed', catalog.value);
     message.success('场景状态已保存');
   } finally {
     savingState.value = false;
@@ -319,11 +381,16 @@ async function submitState() {
             <Button
               data-testid="auto-configure-scenes"
               type="primary"
-              :disabled="loading || savingMaster || savingState"
+              :disabled="
+                loading ||
+                savingMaster ||
+                savingState ||
+                plannedScenes.length === 0
+              "
               :loading="autoConfiguring"
               @click="autoConfigure"
             >
-              AI 自动识别并配置
+              AI 优化布局与状态
             </Button>
           </template>
           <Select
@@ -331,13 +398,20 @@ async function submitState() {
             :disabled="autoConfiguring"
             :options="sceneKeyOptions"
             option-filter-prop="label"
+            placeholder="导演规划尚未生成场次"
             show-search
             style="width: 100%"
           />
           <p class="scene-help">
             SC1 表示第 1
             个场次，不是分镜或轨道编号。同一时间、同一地点仍属于同一场次；换地点或时间才新增
-            SC2、SC3。AI 会优先按剧本场标题和分镜已关联的场景资产完成识别，人工新增仅用于修正例外。
+            SC2、SC3。这里会直接显示当前集导演规划中的全部场次；场次不是由 AI
+            新增的。
+          </p>
+          <p class="scene-help">
+            场景资产会从该场分镜表引用中直接匹配：只有一个 scene
+            资产时自动带入；没有或同时引用多个时会留空，请人工确认。AI
+            只优化空间布局约束和持续场景状态，不选择场次、资产或母版图片。
           </p>
         </Card>
 
@@ -374,8 +448,11 @@ async function submitState() {
                   :options="sceneAssetOptions"
                   placeholder="选择一张稳定的场景资产图"
                 />
+                <p class="scene-help" data-testid="scene-asset-binding-hint">
+                  {{ plannedAssetHint }}
+                </p>
               </Form.Item>
-              <Form.Item label="空间布局约束（可选，AI 可自动识别）">
+              <Form.Item label="空间布局约束（可选，AI 可优化）">
                 <Input.TextArea
                   v-model:value="masterForm.spatialPrompt"
                   :rows="4"
@@ -383,7 +460,7 @@ async function submitState() {
                 />
                 <p class="scene-help">
                   AI
-                  会优先从母版图识别空间。这里用于补充画外区域、门窗方向或必须保持的固定摆放，不需要重复描述图片中已经清楚的内容。
+                  只分析已绑定的母版图和分镜内容，用于补充画外区域、门窗方向或必须保持的固定摆放；它不会更换场景资产或母版图片。
                 </p>
               </Form.Item>
               <Button
@@ -435,8 +512,9 @@ async function submitState() {
                   :disabled="autoConfiguring"
                   size="small"
                   @click="openStateEditor(state)"
-                  >编辑</Button
                 >
+                  编辑
+                </Button>
               </div>
               <p>
                 {{
@@ -522,7 +600,7 @@ async function submitState() {
         <Input.TextArea
           v-model:value="stateForm.objectStatesText"
           :rows="4"
-          placeholder='{"door":"broken","table":"intact"}'
+          placeholder="{&quot;door&quot;:&quot;broken&quot;,&quot;table&quot;:&quot;intact&quot;}"
         />
       </Form.Item>
     </Form>

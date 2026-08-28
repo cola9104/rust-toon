@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildSceneKeyOptions,
   defaultSceneStateId,
-  isValidSceneKey,
   isStateValidForScene,
+  isValidSceneKey,
   sceneConsistencyIssues,
   sceneStateOptions,
   sceneStateTimelineViolation,
@@ -46,25 +46,28 @@ const catalog = {
 } as any;
 
 describe('scene consistency helpers', () => {
-  it('builds numeric scene options from bindings and catalog names', () => {
+  it('keeps director-planned membership, order, and display names', () => {
     expect(
       buildSceneKeyOptions(
-        ['SC10', 'sc1'],
-        {
-          scenes: [
-            {
-              name: 'SC1',
-              sceneAssetName: '老宅客厅 · 夜',
-              sceneKey: 'sc1',
-            },
-            { name: '医院走廊 · 白天', sceneKey: 'sc2' },
-          ],
-        } as any,
+        [
+          {
+            assetMatch: 'missing',
+            name: '导演规划天台',
+            order: 0,
+            sceneKey: 'SC10',
+          },
+          {
+            assetMatch: 'unique',
+            defaultSceneAssetId: 101,
+            name: '导演规划病房',
+            order: 1,
+            sceneKey: 'sc1',
+          },
+        ],
       ),
     ).toEqual([
-      { label: 'SC1 · 老宅客厅 · 夜', value: 'sc1' },
-      { label: 'SC2 · 医院走廊 · 白天', value: 'sc2' },
-      { label: 'SC10', value: 'sc10' },
+      { label: 'SC10 · 导演规划天台', value: 'sc10' },
+      { label: 'SC1 · 导演规划病房', value: 'sc1' },
     ]);
   });
 
