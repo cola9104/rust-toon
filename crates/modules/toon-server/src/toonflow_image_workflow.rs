@@ -457,8 +457,35 @@ async fn generate_storyboard_job(
     .await
     {
         Ok(url) => {
-            let _=sqlx::query("UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL WHERE id=$1").bind(job.id).bind(url).execute(&pool).await;
-            true
+            let object_name = format!("storyboard-{}-{}", job.id, uuid::Uuid::new_v4());
+            match crate::toonflow_storage::persist_remote_project_image(
+                &url,
+                project_id,
+                "storyboards",
+                &object_name,
+            )
+            .await
+            {
+                Ok(file_path) => sqlx::query(
+                    "UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL WHERE id=$1 AND state='生成中'",
+                )
+                .bind(job.id)
+                .bind(file_path)
+                .execute(&pool)
+                .await
+                .is_ok_and(|result| result.rows_affected() == 1),
+                Err(reason) => {
+                    let reason = format!("分镜图片持久化失败：{reason}");
+                    let _ = sqlx::query(
+                        "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+                    )
+                    .bind(job.id)
+                    .bind(reason)
+                    .execute(&pool)
+                    .await;
+                    false
+                }
+            }
         }
         Err(reason) => {
             let _ = sqlx::query(

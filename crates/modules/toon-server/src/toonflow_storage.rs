@@ -260,6 +260,43 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Ok(url.to_string());
     }
+    let (extension, bytes) = download_remote_image(url).await?;
+    ensure_bucket().await?;
+    let key = format!(
+        "toonflow/assets/{asset_id}/{}.{}",
+        uuid::Uuid::new_v4(),
+        extension
+    );
+    let upload = signed_request(Method::PUT, Some(&key), bytes).await?;
+    if !upload.status().is_success() {
+        return Err(format!(
+            "上传生成图片到 MinIO 失败：HTTP {}",
+            upload.status()
+        ));
+    }
+    Ok(format!("/toonflow/assets/files/{key}"))
+}
+
+pub(crate) async fn persist_remote_project_image(
+    url: &str,
+    project_id: i64,
+    category: &str,
+    object_name: &str,
+) -> Result<String, String> {
+    if let Some(key) = asset_image_key(url) {
+        if key.starts_with(&format!("toonflow/{project_id}/assets/")) {
+            return Ok(url.to_string());
+        }
+        return Err("生成图片返回了其他项目的对象路径".to_string());
+    }
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("生成图片返回了不受支持的非 HTTP 地址".to_string());
+    }
+    let (extension, bytes) = download_remote_image(url).await?;
+    persist_asset_bytes_named(project_id, category, object_name, &extension, bytes).await
+}
+
+async fn download_remote_image(url: &str) -> Result<(String, Vec<u8>), String> {
     let response = remote_media_client()
         .execute(
             reqwest::Client::builder()
@@ -289,19 +326,7 @@ pub async fn persist_remote_image(url: &str, asset_id: i64) -> Result<String, St
     } else {
         "jpg"
     };
-    let key = format!(
-        "toonflow/assets/{asset_id}/{}.{}",
-        uuid::Uuid::new_v4(),
-        extension
-    );
-    let upload = signed_request(Method::PUT, Some(&key), bytes.to_vec()).await?;
-    if !upload.status().is_success() {
-        return Err(format!(
-            "上传生成图片到 MinIO 失败：HTTP {}",
-            upload.status()
-        ));
-    }
-    Ok(format!("/toonflow/assets/files/{key}"))
+    Ok((extension.to_string(), bytes.to_vec()))
 }
 
 fn existing_project_video_path(url: &str, project_id: i64) -> Result<Option<String>, String> {
@@ -635,11 +660,7 @@ async fn read_image(key: &str) -> Result<(String, Vec<u8>), String> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    if content_type.split(';').next().is_some_and(|value| {
-        value
-            .trim()
-            .eq_ignore_ascii_case("application/octet-stream")
-    }) {
+    if is_generic_binary_content_type(&content_type) {
         content_type = stored_content_type_for_key(key).to_string();
     }
     let bytes = response.bytes().await.map_err(|error| error.to_string())?;
@@ -669,6 +690,15 @@ fn stored_content_type_for_key(key: &str) -> &'static str {
         "ogv" => "video/ogg",
         _ => "application/octet-stream",
     }
+}
+
+fn is_generic_binary_content_type(content_type: &str) -> bool {
+    content_type.split(';').next().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "application/octet-stream" | "binary/octet-stream"
+        )
+    })
 }
 
 pub async fn image_data_url(file_path: &str) -> Result<String, String> {
@@ -918,12 +948,7 @@ pub async fn serve_image(
     let content_type = upstream_headers
         .get(http_header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
-        .filter(|value| {
-            !value
-                .split(';')
-                .next()
-                .is_some_and(|part| part.trim().eq_ignore_ascii_case("application/octet-stream"))
-        })
+        .filter(|value| !is_generic_binary_content_type(value))
         .map(str::to_string)
         .unwrap_or_else(|| stored_content_type_for_key(&key).to_string());
     let mut response = Response::builder()
@@ -1022,6 +1047,16 @@ mod tests {
             stored_content_type_for_key("toonflow/assets/1/video.webm"),
             "video/webm"
         );
+    }
+
+    #[test]
+    fn treats_minio_generic_binary_types_as_missing_metadata() {
+        assert!(is_generic_binary_content_type("application/octet-stream"));
+        assert!(is_generic_binary_content_type("binary/octet-stream"));
+        assert!(is_generic_binary_content_type(
+            "Binary/Octet-Stream; charset=binary"
+        ));
+        assert!(!is_generic_binary_content_type("image/jpeg"));
     }
 
     #[test]
