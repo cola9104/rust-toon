@@ -61,7 +61,7 @@ describe('SceneConsistencyManager', () => {
     vi.clearAllMocks();
   });
 
-  it('explains the AI-first master flow and allows adding another SC scene', async () => {
+  it('explains the AI-first master flow without a manual scene entry', async () => {
     const open = ref(false);
     const host = document.createElement('div');
     document.body.append(host);
@@ -94,25 +94,10 @@ describe('SceneConsistencyManager', () => {
       '持续性的破坏识别为同一场景的后续状态',
     );
     expect(document.body.textContent).toContain('AI 自动识别并配置');
-
-    const sceneKeyInput = document.querySelector<HTMLInputElement>(
-      '[data-testid="new-scene-key-input"]',
-    );
-    expect(sceneKeyInput).not.toBeNull();
-    sceneKeyInput!.value = 'SC3';
-    sceneKeyInput!.dispatchEvent(new Event('input', { bubbles: true }));
-    await flushUi();
-
-    document
-      .querySelector<HTMLButtonElement>('[data-testid="add-scene-key"]')
-      ?.click();
-    await flushUi();
-
     expect(
-      document.querySelector<HTMLInputElement>(
-        '[data-testid="scene-master-name"]',
-      )?.value,
-    ).toBe('SC3');
+      document.querySelector('[data-testid="new-scene-key-input"]'),
+    ).toBeNull();
+    expect(document.querySelector('[data-testid="add-scene-key"]')).toBeNull();
   });
 
   it('runs automatic scene planning for the selected script', async () => {
@@ -248,10 +233,6 @@ describe('SceneConsistencyManager', () => {
     await nextTick();
 
     expect(
-      document.querySelector<HTMLButtonElement>('[data-testid="add-scene-key"]')
-        ?.disabled,
-    ).toBe(true);
-    expect(
       document.querySelector<HTMLInputElement>('[data-testid="scene-master-name"]')
         ?.disabled,
     ).toBe(true);
@@ -269,7 +250,7 @@ describe('SceneConsistencyManager', () => {
     await flushUi();
   });
 
-  it('clears unsaved scene keys when switching scripts', async () => {
+  it('loads the correct scene catalog when switching scripts', async () => {
     const scriptId = ref(34);
     sceneConsistencyApi.getCatalog.mockImplementation(
       (_projectId: number, currentScriptId: number) =>
@@ -309,25 +290,9 @@ describe('SceneConsistencyManager', () => {
     unmount = () => app.unmount();
     await flushUi();
 
-    const sceneKeyInput = document.querySelector<HTMLInputElement>(
-      '[data-testid="new-scene-key-input"]',
-    );
-    sceneKeyInput!.value = 'SC3';
-    sceneKeyInput!.dispatchEvent(new Event('input', { bubbles: true }));
-    await nextTick();
-    document
-      .querySelector<HTMLButtonElement>('[data-testid="add-scene-key"]')
-      ?.click();
-    await flushUi();
-    expect(
-      document.querySelector<HTMLInputElement>('[data-testid="scene-master-name"]')
-        ?.value,
-    ).toBe('SC3');
-
     scriptId.value = 35;
     await flushUi();
 
-    expect(sceneKeyInput!.value).toBe('');
     expect(
       document.querySelector<HTMLInputElement>('[data-testid="scene-master-name"]')
         ?.value,

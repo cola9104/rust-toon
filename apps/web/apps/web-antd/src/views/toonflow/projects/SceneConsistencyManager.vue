@@ -30,8 +30,6 @@ import { assetFileUrl } from '../assets/asset-types';
 import {
   buildSceneKeyOptions,
   isValidSceneKey,
-  nextSceneKey,
-  normalizeSceneKey,
   sceneMasterForKey,
 } from './scene-consistency';
 
@@ -55,8 +53,6 @@ const savingState = ref(false);
 const catalog = ref<ToonflowApi.SceneConsistencyCatalog>({ scenes: [] });
 const selectedSceneKey = ref('sc1');
 const stateModalOpen = ref(false);
-const newSceneKey = ref('');
-const pendingSceneKeys = ref<string[]>([]);
 let catalogRequestVersion = 0;
 
 const masterForm = reactive({
@@ -79,19 +75,11 @@ const stateForm = reactive({
 });
 
 const sceneKeyOptions = computed(() => {
-  const options = buildSceneKeyOptions(
-    props.sceneKeys,
-    catalog.value,
-    pendingSceneKeys.value,
-  );
+  const options = buildSceneKeyOptions(props.sceneKeys, catalog.value);
   return options.length > 0
     ? options
     : [{ label: 'SC1 · 待配置', value: 'sc1' }];
 });
-
-const suggestedSceneKey = computed(() =>
-  nextSceneKey(sceneKeyOptions.value.map((option) => option.value)),
-);
 
 const currentMaster = computed(() =>
   sceneMasterForKey(catalog.value, selectedSceneKey.value),
@@ -209,12 +197,10 @@ watch(
 watch(
   () => props.scriptId,
   () => {
-    // Pending keys are editor-local drafts and must never leak into another
-    // episode when the shared production panel changes scripts.
+    // Invalidate the previous episode's catalog request before loading the
+    // selected script so an older response cannot repopulate this picker.
     catalogRequestVersion += 1;
     loading.value = false;
-    pendingSceneKeys.value = [];
-    newSceneKey.value = '';
     selectedSceneKey.value = 'sc1';
     catalog.value = { scenes: [] };
     fillMasterForm();
@@ -222,21 +208,6 @@ watch(
   },
 );
 watch(selectedSceneKey, fillMasterForm);
-
-function addSceneKey() {
-  if (autoConfiguring.value) return message.warning('AI 自动配置完成后再编辑场次');
-  const sceneKey = normalizeSceneKey(
-    newSceneKey.value || suggestedSceneKey.value,
-  );
-  if (!isValidSceneKey(sceneKey)) {
-    return message.warning('场次编号请使用 SC 加正整数，例如 SC2');
-  }
-  if (!sceneKeyOptions.value.some((option) => option.value === sceneKey)) {
-    pendingSceneKeys.value = [...pendingSceneKeys.value, sceneKey];
-  }
-  selectedSceneKey.value = sceneKey;
-  newSceneKey.value = '';
-}
 
 async function submitMaster() {
   if (!props.scriptId) return;
@@ -363,22 +334,6 @@ async function submitState() {
             show-search
             style="width: 100%"
           />
-          <div class="scene-key-add">
-            <Input
-              v-model:value="newSceneKey"
-              data-testid="new-scene-key-input"
-              :disabled="autoConfiguring"
-              :placeholder="`输入场次编号，建议 ${suggestedSceneKey.toUpperCase()}`"
-              @press-enter="addSceneKey"
-            />
-            <Button
-              data-testid="add-scene-key"
-              :disabled="autoConfiguring"
-              @click="addSceneKey"
-            >
-              新增场次
-            </Button>
-          </div>
           <p class="scene-help">
             SC1 表示第 1
             个场次，不是分镜或轨道编号。同一时间、同一地点仍属于同一场次；换地点或时间才新增
@@ -587,13 +542,6 @@ async function submitState() {
   font-size: 12px;
 }
 
-.scene-key-add {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  margin-top: 10px;
-}
-
 .master-help {
   padding: 10px 12px;
   margin: 0 0 16px;
@@ -631,10 +579,6 @@ async function submitState() {
 @media (max-width: 720px) {
   .master-grid,
   .state-form-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .scene-key-add {
     grid-template-columns: 1fr;
   }
 }

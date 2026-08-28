@@ -45,14 +45,10 @@ function sceneDisplayName(scene: ToonflowApi.SceneMaster | undefined) {
     .find((value) => value && normalizeSceneKey(value) !== sceneKey);
 }
 
-/**
- * Builds the scene picker independently from persistence. This lets the UI offer a new scN key
- * before saveMaster creates its catalog entry, while existing masters keep human-readable names.
- */
+/** Builds the scene picker from persisted storyboard bindings and scene masters. */
 export function buildSceneKeyOptions(
   sceneKeys: string[],
   catalog: ToonflowApi.SceneConsistencyCatalog | undefined,
-  pendingSceneKeys: string[] = [],
 ): SceneKeyOption[] {
   const scenesByKey = new Map(
     (catalog?.scenes ?? []).map((scene) => [
@@ -61,7 +57,7 @@ export function buildSceneKeyOptions(
     ]),
   );
   const keys = new Set(
-    [...sceneKeys, ...scenesByKey.keys(), ...pendingSceneKeys]
+    [...sceneKeys, ...scenesByKey.keys()]
       .map(normalizeSceneKey)
       .filter(isValidSceneKey),
   );
@@ -75,17 +71,6 @@ export function buildSceneKeyOptions(
         value,
       };
     });
-}
-
-export function nextSceneKey(sceneKeys: string[]) {
-  const maxSequence = sceneKeys
-    .map(normalizeSceneKey)
-    .filter(isValidSceneKey)
-    .reduce(
-      (maximum, sceneKey) => Math.max(maximum, sceneKeySequence(sceneKey)),
-      0,
-    );
-  return `sc${maxSequence + 1}`;
 }
 
 export function sceneMasterForKey(

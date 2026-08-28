@@ -5,7 +5,6 @@ import {
   defaultSceneStateId,
   isValidSceneKey,
   isStateValidForScene,
-  nextSceneKey,
   sceneConsistencyIssues,
   sceneStateOptions,
   sceneStateTimelineViolation,
@@ -47,7 +46,7 @@ const catalog = {
 } as any;
 
 describe('scene consistency helpers', () => {
-  it('builds numeric scene options with catalog names and pending scenes', () => {
+  it('builds numeric scene options from bindings and catalog names', () => {
     expect(
       buildSceneKeyOptions(
         ['SC10', 'sc1'],
@@ -61,22 +60,18 @@ describe('scene consistency helpers', () => {
             { name: '医院走廊 · 白天', sceneKey: 'sc2' },
           ],
         } as any,
-        ['SC3', 'not-a-scene'],
       ),
     ).toEqual([
       { label: 'SC1 · 老宅客厅 · 夜', value: 'sc1' },
       { label: 'SC2 · 医院走廊 · 白天', value: 'sc2' },
-      { label: 'SC3', value: 'sc3' },
       { label: 'SC10', value: 'sc10' },
     ]);
   });
 
-  it('validates scene numbers and suggests the next available number', () => {
+  it('validates scene numbers', () => {
     expect(isValidSceneKey(' SC12 ')).toBe(true);
     expect(isValidSceneKey('sc0')).toBe(false);
     expect(isValidSceneKey('scene2')).toBe(false);
-    expect(nextSceneKey(['sc1', 'SC3', 'invalid'])).toBe('sc4');
-    expect(nextSceneKey([])).toBe('sc1');
   });
 
   it('filters states by scene and resolves the base state', () => {
