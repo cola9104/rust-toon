@@ -20,66 +20,28 @@ Rust Toon 是面向动漫/短剧生产的 AI 工作台。后端使用 Rust，前
 
 ## 五分钟本地启动
 
-也可以直接执行：
+从仓库根目录直接执行：
 
 ```bash
 bash script/start-local.sh all
 ```
 
-`infra` 仅启动基础设施，`backend` 启动基础设施并在前台运行网关，`all` 同时运行网关和前端。
+完整栈模式会依次启动 PostgreSQL、Redis、JetStream、MinIO、r-nacos、Gateway、Toon Worker 和前端，并等待网关迁移完成后才启动 Worker。其他模式：
 
-### 1. 启动基础设施
+- `infra`：只启动基础设施。
+- `gateway` / `worker`：启动基础设施后，在前台运行指定服务；单独使用 `worker` 前必须已有就绪的 Gateway 完成迁移。
+- `backend`：启动 Gateway 和 Worker。
+- `all`：启动完整本地开发栈。
 
-```bash
-docker compose -f script/docker/docker-compose.yml up -d
-```
+访问入口：
 
-启动 PostgreSQL、Redis、NATS、MinIO 和 r-nacos。容器只创建空数据库 `rust_toon`，
-数据库结构统一由 Rust 网关的 SQLx Migrator 自动管理。
+- 前端：`http://127.0.0.1:5666`
+- Gateway 就绪：`http://127.0.0.1:8080/readyz`
+- Worker 就绪：`http://127.0.0.1:8081/readyz`
+- MinIO：`http://127.0.0.1:9001`
+- r-nacos：`http://127.0.0.1:10848`
 
-### 2. 启动 Rust 网关
-
-```bash
-export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
-export REDIS_URL='redis://127.0.0.1:6379'
-export JWT_SECRET='replace-with-at-least-32-random-bytes'
-export BOOTSTRAP_ADMIN_USERNAME='admin'
-export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
-export NACOS_ENABLED='true'
-export NACOS_REQUIRED='true'
-export NACOS_SERVER_ADDR='127.0.0.1:8848'
-export NACOS_USERNAME='rust_toon'
-export NACOS_PASSWORD='rust_toon_nacos_password'
-cargo run -p rust-toon-gateway
-```
-
-网关启动时自动执行 SQLx 迁移。`0001_initial.sql` 是已合并的当前完整表结构
-和基准数据，因此部署时不需要
-`sql/bootstrap/current.sql`。`current.sql` 仅作为人工核对用的快照，不会被应用加载。
-
-后续修改数据库时，必须在当前最高版本之后新增迁移文件（当前最高为 `0007`），并在干净数据库
-完成全量迁移后重新导出 `current.sql` 参考快照。合并后的 `0001` 一旦发布就不能再修改。
-
-可选环境变量：
-- `DATABASE_MIN_CONNECTIONS`（默认 1）
-- `DATABASE_MAX_CONNECTIONS`（默认 20）
-- `DATABASE_ACQUIRE_TIMEOUT_SECONDS`（默认 5）
-- `GATEWAY_HOST`（默认 `0.0.0.0`）
-- `GATEWAY_PORT`（默认 `8080`）
-- `RUST_LOG`（推荐 `info`）
-
-### 3. 启动 Vben 前端
-
-```bash
-cd apps/web
-corepack enable
-pnpm install
-pnpm dev:antd
-```
-
-访问 `http://127.0.0.1:5666`，默认后端为 `http://127.0.0.1:8080`。
-
-> 生产环境必须替换示例密码和 JWT 密钥。
+本地应用账号为 `admin` / `admin123`。该账号由数据库基线迁移创建，启动环境变量不会创建或重置管理员；首次登录后请立即修改密码。端口冲突、保留已有数据或手动分终端启动时，按[部署文档的本地开发章节](docs/deployment.md#2-本地开发)操作。
 
 ## 验证
 
@@ -109,6 +71,7 @@ bash script/test-real-ai-providers.sh
 
 ## 文档
 
+- [文档导航与维护规则](docs/README.md)
 - [AI 启动交接指南](AGENTS.md)
 - [技术架构](docs/technical-solution.md)
 - [配置与模型接入](docs/configuration.md)
@@ -117,19 +80,4 @@ bash script/test-real-ai-providers.sh
 
 ## 数据库备份
 
-```bash
-DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon' \
-BACKUP_DIR="$PWD/backups/postgresql" \
-bash script/database/backup-postgres.sh
-```
-
-备份采用 PostgreSQL custom format，并生成 SHA-256 校验文件。生产环境建议安装仓库中的 systemd timer，详细恢复与演练流程见[部署文档](docs/deployment.md#47-备份与恢复)。
-
-项目图片、视频、音频和成片存放在 MinIO，必须和数据库一起备份：
-
-```bash
-MINIO_ACCESS_KEY='rust_toon' \
-MINIO_SECRET_KEY='replace-me' \
-MINIO_BACKUP_DIR="$PWD/backups/minio" \
-bash script/database/backup-minio.sh
-```
+PostgreSQL 与 MinIO 必须作为同一个恢复集备份。生产入口是 `script/database/backup-consistent-set.sh`；恢复命令、保留策略和 systemd timer 见[部署文档](docs/deployment.md#47-备份与恢复)。

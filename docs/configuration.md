@@ -207,7 +207,11 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 
 ### 1.12 启动账号说明
 
-根 `AGENTS.md` 与 `deploy/env/gateway.env.example` 约定了 `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD` 两个变量用于首次启动的初始管理员。请以代码实际行为为准理解当前版本：`system-server` 的启动引导（`bootstrap.rs`）是**校验**数据库中必须存在启用状态的 `super_admin` 用户，否则拒绝启动；基线迁移 `sql/postgresql/0001_initial.sql` 已内置 `admin` 用户（bcrypt 密码散列）与 `super_admin` 角色，空库初始化后可直接使用。前端开发环境默认填充的登录口令见 `apps/web/apps/web-antd/.env.development`（`VITE_APP_DEFAULT_USERNAME=admin` / `VITE_APP_DEFAULT_PASSWORD=admin123`）。首次登录后请立即修改密码。
+`sql/postgresql/0001_initial.sql` 的基线数据创建启用的 `super_admin` 用户 `admin`，本地初始密码为 `admin123`。`system-server/src/bootstrap.rs` 在启动时只校验至少存在一个启用的超级管理员；它不会创建用户，也不会重置现有密码。
+
+当前 Gateway **不读取** `BOOTSTRAP_ADMIN_USERNAME` 或 `BOOTSTRAP_ADMIN_PASSWORD`。这些历史样例变量已经从启动脚本、环境样例和 Kubernetes 清单中移除，不应继续配置。已有数据库始终保留数据库中当前的密码；环境变量不会覆盖它。
+
+前端开发环境的 `VITE_APP_DEFAULT_USERNAME` / `VITE_APP_DEFAULT_PASSWORD` 只是登录表单预填值，不是凭据来源。连续五次密码错误会触发数据库持久化的临时锁定。生产首次迁移完成后，应通过受控入口立即修改基线密码，并清理浏览器中遗留的本地令牌；不要把本地默认凭据写入生产 Secret。
 
 ## 2. 前端环境变量（`apps/web/apps/web-antd/`）
 
@@ -217,11 +221,13 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 | --- | --- | --- |
 | `VITE_PORT` | `5666` | dev server 端口 |
 | `VITE_BASE` | `/` | 部署基础路径 |
-| `VITE_BASE_URL` | `http://127.0.0.1:8080` | 后端地址 |
-| `VITE_GLOB_API_URL` | `/api` | 接口前缀 |
+| `VITE_BASE_URL` | `http://127.0.0.1:8080` | 后端绝对地址，也是 Vite 开发环境的 `/api` 代理目标 |
+| `VITE_GLOB_API_URL` | `/api` | REST 与 Agent WebSocket 的浏览器侧 API 基础地址 |
 | `VITE_UPLOAD_TYPE` | `server` | 上传方式（server=经后端） |
 | `VITE_DEVTOOLS` / `VITE_INJECT_APP_LOADING` | `false` / `true` | 开发工具 / 全局 loading |
-| `VITE_APP_DEFAULT_USERNAME` / `VITE_APP_DEFAULT_PASSWORD` | `admin` / `admin123` | 登录页默认填充 |
+| `VITE_APP_DEFAULT_USERNAME` / `VITE_APP_DEFAULT_PASSWORD` | `admin` / `admin123` | 仅登录页默认填充；不创建账号或修改数据库密码 |
+
+`VITE_GLOB_API_URL=/api` 表示浏览器请求路径；开发环境中的 HTTP 与 WebSocket 请求由 Vite 代理到 `VITE_BASE_URL`。Gateway 改用其他端口时，只需同步修改 `VITE_BASE_URL`。也可以把 `VITE_GLOB_API_URL` 设置为完整后端地址直接连接，此时本地开发需要启用 `WEB_PERMISSIVE_CORS=true`。生产环境应使用同源反向代理，不要启用宽松 CORS。
 
 ### 2.2 生产（`.env.production`）
 
@@ -239,5 +245,6 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 | redis | `redis:8` | `6379` | 无认证 |
 | nats | `nats:2` | `4222`、`8222` | 已启用 JetStream，文件存储卷 `rust-toon-nats`；8222 为监控端口 |
 | minio | `minio/minio:RELEASE.2025-04-22T22-12-26Z` | `9000`（S3）、`9001`（控制台） | root 账号 `rust_toon` / `rust_toon_password`，数据卷 `rust-toon-minio` |
+| rnacos | `qingpan/rnacos:v0.8.6` | `8848`（SDK）、`9848`（gRPC）、`10848`（控制台） | 本地账号 `rust_toon` / `rust_toon_nacos_password`，数据卷 `rust-toon-rnacos` |
 
 启动：`docker compose -f script/docker/docker-compose.yml up -d`。注意不要把 `sql/postgresql` 挂载进 PostgreSQL 初始化目录——数据库初始化由网关的 SQLx 迁移负责。

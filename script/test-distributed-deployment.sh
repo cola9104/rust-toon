@@ -34,6 +34,10 @@ export POSTGRES_PASSWORD="p@ss:word"
 export DATABASE_URL="postgres://rust_toon:p%40ss%3Aword@postgres:5432/rust_toon"
 export JWT_SECRET="distributed-compose-test-secret-at-least-32-bytes"
 export MINIO_SECRET_KEY="distributed-compose-object-secret"
+export NACOS_USERNAME="distributed-compose-config-admin"
+export NACOS_PASSWORD="distributed-compose-config-secret"
+export RNACOS_CLUSTER_TOKEN="distributed-compose-cluster-token"
+export RNACOS_BACKUP_TOKEN="distributed-compose-backup-token-at-least-32-bytes"
 "${compose[@]}" -f script/docker/docker-compose.distributed.yml config \
   >"$work_dir/compose.yml"
 

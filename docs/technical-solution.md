@@ -99,7 +99,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 
 ## 4. 数据库与迁移
 
-- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加；当前为 `0001`–`0007`，最新迁移加入数据库协调 Cron 与持久 W3C trace carrier，新数据库由 gateway 自动执行完整迁移链。
+- 迁移目录 `sql/postgresql/` 在编译期由 `sqlx::migrate!("../../../sql/postgresql")` 嵌入 `framework-database`（`database/src/postgres.rs`）。`0001_initial.sql` 是完整基线，后续变更以只增不改的编号迁移追加，新数据库由 Gateway 自动执行完整迁移链；当前迁移清单以目录内容和迁移测试为准，不在架构文档中重复维护版本上限。
 - `migrate()` 启动时自动执行；执行前有保护：若数据库里已有业务表但没有 `_sqlx_migrations` 历史表，则拒绝运行，避免覆盖未知数据库。
 - `sql/bootstrap/current.sql` 仅是参考快照，应用从不加载。
 - 迁移变更流程（新增编号迁移、保持幂等、跑 `script/test-database-migrations.sh`、更新 `crates/framework/database/tests/migrations.rs` 断言）见根 `AGENTS.md` 与 [deployment.md](deployment.md)。
@@ -152,7 +152,7 @@ AI 能力域：
 
 ## 6. 前端
 
-`apps/web` 为 pnpm + turbo monorepo（Vben Admin 5.7.0，`packageManager: pnpm@11.13.0`），主应用 `apps/web/apps/web-antd`：
+`apps/web` 为 pnpm + turbo monorepo（Vben Admin 5.7.0，仓库不锁定 pnpm 版本），主应用 `apps/web/apps/web-antd`：
 
 - 开发：`pnpm dev:antd`，端口 `5666`（`.env.development` 的 `VITE_PORT`），API 前缀 `/api`，指向 `http://127.0.0.1:8080`。
 - 构建产物：`apps/web/apps/web-antd/dist`（`VITE_ARCHIVER=true` 时额外生成 `dist.zip`）。

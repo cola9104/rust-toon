@@ -1,12 +1,12 @@
 # 部署文档
 
-本文档给出本地开发与生产部署的操作步骤。配置项的含义与默认值见 [configuration.md](configuration.md)，架构说明见 [technical-solution.md](technical-solution.md)。根目录 `AGENTS.md` 是启动命令的权威参考，本文与之保持一致。
+本文档是本地开发与生产运维步骤的权威来源。配置项的含义与默认值见 [configuration.md](configuration.md)，架构说明见 [technical-solution.md](technical-solution.md)，完整文档分工见[文档导航](README.md)。根目录 `AGENTS.md` 只保留 AI 编码代理必须遵守的安全约束，不再复制完整部署流程。
 
 ## 1. 前置要求
 
 - Rust stable（支持 Rust 2024 edition）。
 - Docker 与 Docker Compose（本地基础设施）。
-- Node.js `22.18+`，pnpm `11+`（`apps/web/package.json` 锁定 `pnpm@11.13.0`）。Node.js 25 起不再内置 Corepack，如系统没有 `corepack` 命令，需要先单独安装 Corepack 或 pnpm。
+- Node.js `22.18+` 与 pnpm；仓库不锁定 pnpm 版本。Node.js 25 起不再内置 Corepack，如系统没有 `corepack` 命令，需要先单独安装 Corepack 或 pnpm。
 - 生产环境另需 Nginx 或其他反向代理。
 
 ## 2. 本地开发
@@ -17,7 +17,7 @@
 docker compose -f script/docker/docker-compose.yml up -d
 ```
 
-包含 PostgreSQL（5432）、Redis（6379）、启用持久化 JetStream 的 NATS（4222/8222）、MinIO（9000/9001）。也可以使用便捷脚本 `script/start-local.sh [infra|gateway|worker|backend|all]`：它会先起 compose，再按模式启动服务（自动导出本地默认环境变量）。`backend` 同时启动网关与 worker，`all` 再加上前端；单独调试时可用 `gateway` 或 `worker`。
+包含 PostgreSQL（5432）、Redis（6379）、启用持久化 JetStream 的 NATS（4222/8222）、MinIO（9000/9001）和 r-nacos（8848/9848/10848）。也可以使用便捷脚本 `script/start-local.sh [infra|gateway|worker|backend|all]`：它会先起 compose，再按模式启动服务（自动导出本地默认环境变量）。`backend` 同时启动网关与 worker，`all` 再加上前端；这两个模式会等待 Gateway 就绪后再启动 Worker。单独调试可用 `gateway` 或 `worker`，但 `worker` 模式要求已有就绪的 Gateway 完成迁移。
 
 ### 2.2 启动后端网关
 
@@ -25,8 +25,14 @@ docker compose -f script/docker/docker-compose.yml up -d
 export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
 export REDIS_URL='redis://127.0.0.1:6379'
 export JWT_SECRET='local-development-jwt-secret-change-me-32bytes'
-export BOOTSTRAP_ADMIN_USERNAME='admin'
-export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
+export MINIO_ENDPOINT='http://127.0.0.1:9000'
+export MINIO_ACCESS_KEY='rust_toon'
+export MINIO_SECRET_KEY='rust_toon_password'
+export NACOS_ENABLED='true'
+export NACOS_REQUIRED='true'
+export NACOS_SERVER_ADDR='127.0.0.1:8848'
+export NACOS_USERNAME='rust_toon'
+export NACOS_PASSWORD='rust_toon_nacos_password'
 export RUST_LOG='info'
 cargo run -p rust-toon-gateway
 ```
@@ -41,6 +47,11 @@ export NATS_URL='nats://127.0.0.1:4222'
 export MINIO_ENDPOINT='http://127.0.0.1:9000'
 export MINIO_ACCESS_KEY='rust_toon'
 export MINIO_SECRET_KEY='rust_toon_password'
+export NACOS_ENABLED='true'
+export NACOS_REQUIRED='true'
+export NACOS_SERVER_ADDR='127.0.0.1:8848'
+export NACOS_USERNAME='rust_toon'
+export NACOS_PASSWORD='rust_toon_nacos_password'
 cargo run -p rust-toon-worker
 ```
 
@@ -58,10 +69,12 @@ pnpm dev:antd
 - 前端：`http://127.0.0.1:5666`
 - 后端兼容存活检查：`http://127.0.0.1:8080/health`（固定 200，保留旧响应字段）
 - 存活/就绪探针：`http://127.0.0.1:8080/livez`、`http://127.0.0.1:8080/readyz`
+- Worker 存活/就绪探针：`http://127.0.0.1:8081/livez`、`http://127.0.0.1:8081/readyz`
 - OpenAPI 文档：`http://127.0.0.1:8080/openapi.json`
 - MinIO 控制台：`http://127.0.0.1:9001`（`rust_toon` / `rust_toon_password`）
+- r-nacos 控制台：`http://127.0.0.1:10848`（`rust_toon` / `rust_toon_nacos_password`）
 
-默认本地账号：`admin`（基线迁移内置；开发前端默认填充密码 `admin123`，首次登录后请修改）。
+默认本地应用账号：`admin` / `admin123`。账号由基线迁移创建，Gateway 启动不会创建账号或重置密码；完整行为见[启动账号说明](configuration.md#112-启动账号说明)。首次登录后请立即修改密码。
 
 ### 2.5 本地验证
 
@@ -84,7 +97,7 @@ pnpm --dir apps/web --filter @vben/web-antd run typecheck
 
 ## 3. 数据库迁移管理
 
-- 迁移由网关启动时自动执行，迁移目录 `sql/postgresql`（当前 `0001`–`0007`）在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
+- 迁移由网关启动时自动执行，`sql/postgresql` 下的全部编号迁移在编译期嵌入二进制；**不要**把该目录挂载到 PostgreSQL 的 initdb 目录。
 - 变更流程（与根 `AGENTS.md` 一致）：
   1. 新增编号迁移文件，已发布/已应用的迁移不得修改。
   2. 迁移必须幂等，同时支持空库初始化与已有库升级。
@@ -126,11 +139,9 @@ RUST_LOG=info
 RUST_ENV=production
 READINESS_REQUIRE_REDIS=true
 READINESS_REQUIRE_MINIO=true
-BOOTSTRAP_ADMIN_USERNAME=admin
-BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
 ```
 
-`JWT_SECRET` 必须 ≥ 32 字节，否则启动失败。首次登录成功后将 `BOOTSTRAP_ADMIN_PASSWORD` 从环境文件中移除并重启服务。当前上传、生成片段和最终成片统一进入 MinIO/S3；旧版本遗留的 `storage/uploads` 应先用 `script/migrate-local-uploads-to-minio.sh` 迁移。AI 密钥落库加密可通过 `SECRET_ENCRYPTION_KEY` 独立指定（缺省回退 `JWT_SECRET`）。
+`JWT_SECRET` 必须 ≥ 32 字节，否则启动失败。当前版本不支持 `BOOTSTRAP_ADMIN_USERNAME` / `BOOTSTRAP_ADMIN_PASSWORD`；不要把它们写入环境文件。全新数据库会由基线迁移创建 `admin`，应在首次受控登录后立即修改其密码。当前上传、生成片段和最终成片统一进入 MinIO/S3；旧版本遗留的 `storage/uploads` 应先用 `script/migrate-local-uploads-to-minio.sh` 迁移。AI 密钥落库加密可通过 `SECRET_ENCRYPTION_KEY` 独立指定（缺省回退 `JWT_SECRET`）。
 
 ### 4.3 构建与试运行
 
@@ -276,7 +287,7 @@ kubectl apply -k deploy/k8s
 kubectl apply -k deploy/logging-agent
 ```
 
-`DATABASE_URL`、`REDIS_URL`、`NATS_URL` 与 r-nacos 凭据均放在 Secret 中；URI 密码的保留字符必须 percent-encode，生产 Redis/NATS 应使用 TLS。`BOOTSTRAP_ADMIN_PASSWORD` 只用于首次启动：第一次成功登录并修改密码后，从 Secret 来源中删除该 key 并重新应用。r-nacos JSON 中列出的六类运行参数通过长连接热推送，不需要 rollout；其他 ConfigMap/Secret、连接凭据、端口、并发和 lease 仍是启动参数，修改后必须显式重启对应 Deployment。Gateway 使用 Recreate，重启期间会短暂不可用，需要在维护窗口执行。环境 overlay 也可以改用带内容哈希的 generator 或受控 reloader。更严格的生产集群应通过外部 Secret 控制器注入密钥，并对 Secret 启用静态加密与最小 RBAC。
+`DATABASE_URL`、`REDIS_URL`、`NATS_URL` 与 r-nacos 凭据均放在 Secret 中；URI 密码的保留字符必须 percent-encode，生产 Redis/NATS 应使用 TLS。应用管理员不是由 Secret 引导创建：全新数据库迁移后，应通过仅限运维访问的入口使用基线账号登录并立即修改密码。r-nacos JSON 中列出的六类运行参数通过长连接热推送，不需要 rollout；其他 ConfigMap/Secret、连接凭据、端口、并发和 lease 仍是启动参数，修改后必须显式重启对应 Deployment。Gateway 使用 Recreate，重启期间会短暂不可用，需要在维护窗口执行。环境 overlay 也可以改用带内容哈希的 generator 或受控 reloader。更严格的生产集群应通过外部 Secret 控制器注入密钥，并对 Secret 启用静态加密与最小 RBAC。
 
 全新数据库也可以一次性应用全部资源：Gateway 启动时先执行 SQLx 迁移；每个 Worker 的受限 init container 会持续访问 `rust-toon-gateway:8080/readyz`，只有迁移、管理员校验及 Gateway 必需依赖全部就绪后才启动 Worker。不要删除这个等待条件，也不要让 Worker 自行执行迁移。
 
@@ -414,7 +425,7 @@ Gateway 仍是单副本 `Recreate`，所以自动发布包含一个明确的短�
 - `DATABASE_URL is required`：未导出或未写入环境文件。
 - JWT 启动报错：`JWT_SECRET` 必须至少 32 字节。
 - 启动报 "no enabled super administrator"：数据库缺少基线超级管理员，检查迁移是否完整执行。
-- 没有管理员账号：首次启动参考 `AGENTS.md` 设置 `BOOTSTRAP_ADMIN_PASSWORD`，账号建立后移除该变量。
+- 本地 `admin` 无法登录：确认使用数据库当前密码；空库基线密码为 `admin123`，环境变量不会重置它。连续五次失败会触发持久化临时锁定。
 - 前端 API 404：检查 `VITE_BASE_URL`、`VITE_GLOB_API_URL` 与 Nginx `/api/` 前缀处理。
 - SSE 一次性返回：反代未关缓冲或读超时太短。
 - 端口占用：`ss -ltnp | rg ':(8080|5666|5432|6379)'`。

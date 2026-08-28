@@ -1,6 +1,6 @@
 # AI Startup Guide
 
-This file is the handoff guide for AI coding agents working in this repository. Read it before starting services or changing deployment docs.
+This file contains the repository invariants and safety rules for AI coding agents. Read it before starting services or changing deployment artifacts. Do not duplicate the full operations manual here: use `docs/deployment.md` for commands, `docs/configuration.md` for configuration semantics, and `docs/README.md` for the documentation map.
 
 ## Project Shape
 
@@ -24,59 +24,24 @@ Whenever a database schema or baseline-data change is made:
 4. After applying all migrations to a clean reference database, export a fresh `sql/bootstrap/current.sql` with `pg_dump` for review and comparison. The gateway must remain fully functional when this snapshot is absent.
 5. Update the expected migration count and relevant baseline assertions in `crates/framework/database/tests/migrations.rs`.
 
-The migration history was intentionally reset to the consolidated `0001_initial.sql`; existing databases must be recreated once. After this reset is released, do not rewrite `0001` or any subsequently applied migration.
+The migration history was intentionally reset to the consolidated `0001_initial.sql`. A database from the older, pre-consolidation lineage needs an explicit backup-and-migration decision; never infer that a current database should be deleted. Databases already carrying the current `_sqlx_migrations` history must be upgraded in place. Do not rewrite `0001` or any subsequently applied migration.
 
 ## Local Development Startup
 
-From the repository root:
+The canonical local procedure is `docs/deployment.md#2-本地开发`. For the default ports, run from the repository root:
 
 ```bash
-docker compose -f script/docker/docker-compose.yml up -d
+bash script/start-local.sh all
 ```
 
-Start the backend gateway:
+Available modes are `infra`, `gateway`, `worker`, `backend`, and `all`. The `backend` and `all` modes wait for Gateway readiness before starting the Worker; standalone `worker` mode assumes a ready Gateway has already completed migrations. When ports or existing local data may conflict, inspect containers, named volumes, and listeners before starting. Never run `docker compose down -v`, remove a named volume, or recreate PostgreSQL merely to resolve a port conflict.
 
-```bash
-export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
-export REDIS_URL='redis://127.0.0.1:6379'
-export JWT_SECRET='local-development-jwt-secret-change-me-32bytes'
-export BOOTSTRAP_ADMIN_USERNAME='admin'
-export BOOTSTRAP_ADMIN_PASSWORD='Admin#123456'
-export NACOS_ENABLED='true'
-export NACOS_REQUIRED='true'
-export NACOS_SERVER_ADDR='127.0.0.1:8848'
-export NACOS_USERNAME='rust_toon'
-export NACOS_PASSWORD='rust_toon_nacos_password'
-export RUST_LOG='info'
-cargo run -p rust-toon-gateway
-```
+For manual debugging, start services in this order:
 
-After the gateway has applied migrations, start the durable worker in a second terminal:
-
-```bash
-export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'
-export NATS_URL='nats://127.0.0.1:4222'
-export MINIO_ENDPOINT='http://127.0.0.1:9000'
-export MINIO_ACCESS_KEY='rust_toon'
-export MINIO_SECRET_KEY='rust_toon_password'
-export NACOS_ENABLED='true'
-export NACOS_REQUIRED='true'
-export NACOS_SERVER_ADDR='127.0.0.1:8848'
-export NACOS_USERNAME='rust_toon'
-export NACOS_PASSWORD='rust_toon_nacos_password'
-cargo run -p rust-toon-worker
-```
-
-The gateway owns migrations; on a clean database, do not start the worker until gateway `/readyz` succeeds. The worker owns FFmpeg execution, durable task dispatch, expired-lease recovery, and object cleanup. It exposes `/livez` and `/readyz` on port `8081` by default.
-
-In a third terminal, start the frontend:
-
-```bash
-cd apps/web
-corepack enable
-pnpm install
-pnpm dev:antd
-```
+1. PostgreSQL, Redis, NATS with JetStream, MinIO, and r-nacos.
+2. Gateway; wait for `/readyz` so migrations have committed.
+3. Toon Worker.
+4. Vben frontend.
 
 Open:
 
@@ -88,14 +53,14 @@ Open:
 - MinIO console: `http://127.0.0.1:9001`
 - r-nacos console: `http://127.0.0.1:10848`
 
-Default local bootstrap account:
+Default local application account:
 
 - Username: `admin`
-- Password: `Admin#123456`
+- Password: `admin123`
 
 Default local r-nacos account: `rust_toon` / `rust_toon_nacos_password`.
 
-`BOOTSTRAP_ADMIN_PASSWORD` is only used to create the initial admin when it does not exist. If the database already has admins, startup skips creating another one.
+The application account is baseline data from `sql/postgresql/0001_initial.sql`. Gateway startup only verifies that an enabled `super_admin` exists; it does not create users and does not read `BOOTSTRAP_ADMIN_USERNAME` or `BOOTSTRAP_ADMIN_PASSWORD`. Existing passwords are never reset at startup. Change the development password after first login and never expose the baseline credential in production.
 
 ## Local Verification
 
@@ -120,172 +85,35 @@ Frontend production build check:
 pnpm --dir apps/web --filter @vben/web-antd run build
 ```
 
-## New Server Startup
+## Production Deployment
 
-Install prerequisites:
+Use `docs/deployment.md#4-新服务器生产部署` as the canonical production runbook and `docs/configuration.md` as the configuration reference. The local `script/docker/docker-compose.yml` contains development credentials and exposed host ports; it is not a production manifest. Use the hardened distributed Compose skeleton, systemd examples, Kubernetes base, or managed dependencies described in the deployment guide.
 
-- Rust stable with Rust 2024 edition support.
-- Docker and Docker Compose.
-- Node.js `22.18+`.
-- pnpm `11+` through Corepack.
-- Nginx or another reverse proxy for production frontend/API routing.
-- FFmpeg and FFprobe on media worker nodes (the gateway does not execute video merges).
+Production invariants:
 
-Clone and enter the repository:
-
-```bash
-git clone <repo-url> rust-toon
-cd rust-toon
-```
-
-Start infrastructure. For a single-server deployment, the repository compose file is enough:
-
-```bash
-docker compose -f script/docker/docker-compose.yml up -d
-```
-
-For managed PostgreSQL or Redis, skip those compose services and set `DATABASE_URL` / `REDIS_URL` to the managed endpoints.
-
-Create a backend environment file outside git, for example `/etc/rust-toon/gateway.env`:
-
-```bash
-DATABASE_URL=postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon
-REDIS_URL=redis://127.0.0.1:6379
-JWT_SECRET=replace-with-a-strong-random-secret-at-least-32-bytes
-MINIO_ENDPOINT=http://127.0.0.1:9000
-MINIO_ACCESS_KEY=rust_toon
-MINIO_SECRET_KEY=replace-with-a-strong-object-storage-secret
-MINIO_BUCKET=rust-toon
-NACOS_ENABLED=true
-NACOS_REQUIRED=true
-NACOS_SERVER_ADDR=127.0.0.1:8848
-NACOS_GROUP=RUST_TOON
-NACOS_DATA_ID=rust-toon-gateway.json
-NACOS_USERNAME=replace-with-a-config-read-user
-NACOS_PASSWORD=replace-with-a-strong-config-user-password
-NACOS_CACHE_DIR=/var/cache/rust-toon/nacos
-GATEWAY_HOST=0.0.0.0
-GATEWAY_PORT=8080
-RUST_LOG=info
-RUST_ENV=production
-READINESS_REQUIRE_REDIS=true
-READINESS_REQUIRE_MINIO=true
-BOOTSTRAP_ADMIN_USERNAME=admin
-BOOTSTRAP_ADMIN_PASSWORD=replace-with-a-strong-initial-password
-```
-
-Build the gateway and worker:
-
-```bash
-cargo build --release -p rust-toon-gateway -p rust-toon-worker
-```
-
-Run once manually to verify migrations and initial admin creation:
-
-```bash
-set -a
-. /etc/rust-toon/gateway.env
-set +a
-./target/release/rust-toon-gateway
-```
-
-After the first successful login, remove `BOOTSTRAP_ADMIN_PASSWORD` from `/etc/rust-toon/gateway.env` and restart the service.
-
-Create `/etc/rust-toon/toon-worker.env` from `deploy/env/toon-worker.env.example`, using the same PostgreSQL, NATS, MinIO, and r-nacos endpoints as the gateway. Start `rust-toon-worker` only after the gateway has completed migrations. Multiple worker replicas share the same JetStream durable consumer and PostgreSQL leases; use a unique `TOON_WORKER_INSTANCE_ID` per static systemd instance or leave it unset for an automatically generated ID.
-
-Scale media capacity by adding worker replicas, not Gateway replicas. The current production topology is Gateway `1` + Toon Worker `N`; this preserves existing Toonflow HTTP/WebSocket behavior while long-running media work remains durable across worker failures.
-
-## systemd Service
-
-Use systemd or another process manager in production. Example `/etc/systemd/system/rust-toon-gateway.service`:
-
-```ini
-[Unit]
-Description=Rust Toon Gateway
-After=network-online.target docker.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/rust-toon
-EnvironmentFile=/etc/rust-toon/gateway.env
-ExecStart=/opt/rust-toon/target/release/rust-toon-gateway
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Enable and start:
-
-```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now rust-toon-gateway
-sudo systemctl enable --now rust-toon-worker
-sudo systemctl status rust-toon-gateway
-sudo systemctl status rust-toon-worker
-curl -fsS http://127.0.0.1:8080/health
-curl -fsS http://127.0.0.1:8080/readyz
-curl -fsS http://127.0.0.1:8081/readyz
-```
-
-## Frontend Production
-
-Build the frontend:
-
-```bash
-corepack enable
-pnpm --dir apps/web install --frozen-lockfile
-pnpm --dir apps/web --filter @vben/web-antd run build
-```
-
-Static output:
-
-```text
-apps/web/apps/web-antd/dist
-```
-
-Serve that directory through Nginx or a CDN. Route SPA paths to `index.html`, and reverse proxy API traffic to the gateway.
-
-Minimal Nginx location rules:
-
-```nginx
-location / {
-    try_files $uri $uri/ /index.html;
-}
-
-location = /api/metrics {
-    return 404;
-}
-
-location /api/ {
-    proxy_pass http://127.0.0.1:8080/;
-    proxy_http_version 1.1;
-    proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-}
-```
+- Run exactly one Gateway replica until Agent/Workflow live-run coordination is durable.
+- Scale media capacity through Toon Worker replicas.
+- Start Workers only after Gateway readiness confirms migrations have completed.
+- Keep PostgreSQL, Redis, NATS, MinIO, and r-nacos credentials outside Git.
+- Worker nodes need FFmpeg and FFprobe; Gateway nodes do not execute video merges.
+- Serve frontend static output through a reverse proxy/CDN and keep `/metrics` off public routes.
 
 ## Backups
 
-Back up PostgreSQL and MinIO as one recovery set. The repository provides:
+Back up PostgreSQL and MinIO as one recovery set. The production entrypoint is:
 
 ```bash
 sudo bash script/database/backup-consistent-set.sh
 ```
 
-The coordinator gracefully stops the configured Gateway/Worker systemd units, runs both component backups with the same `BACKUP_SET_ID`, publishes a set manifest, and restarts only units that were active. The matching restore scripts require an explicit `--confirm`. Example systemd units and the single consistent timer are under `deploy/systemd` and use `/etc/rust-toon/backup.env`.
+The coordinator gracefully stops the configured Gateway/Worker systemd units, runs both component backups with the same `BACKUP_SET_ID`, publishes a set manifest, and restarts only units that were active. The matching restore scripts require an explicit `--confirm`. See `docs/deployment.md#47-备份与恢复`; do not reconstruct a recovery set by pairing unrelated PostgreSQL and MinIO backups.
 
 ## Common Problems
 
 - `DATABASE_URL is required`: export it or add it to the systemd environment file.
 - JWT startup error: `JWT_SECRET` must be at least 32 bytes.
-- No admin account: set `BOOTSTRAP_ADMIN_PASSWORD` for the first startup, then remove it after the account exists.
+- `no enabled super administrator`: verify that the complete migration chain and baseline data were applied. Startup does not create an administrator.
+- Repeated local login failures: the baseline account is `admin` / `admin123`; five failures trigger a persistent temporary lockout.
 - Frontend API 404: check `VITE_BASE_URL`, `VITE_GLOB_API_URL`, and Nginx `/api/` proxy prefix handling.
 - SSE responses arrive all at once: disable proxy buffering and increase read timeout.
 - `/readyz` returns 503: inspect the per-dependency checks and verify PostgreSQL plus required Redis/MinIO/FFmpeg endpoints.

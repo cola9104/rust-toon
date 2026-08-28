@@ -37,7 +37,10 @@ pnpm --dir apps/web --filter @vben/web-antd run build
 开发环境配置位于 `apps/web/apps/web-antd/.env.development`。常用变量：
 
 - `VITE_PORT`：前端开发端口，默认 `5666`
-- `VITE_GLOB_API_URL`：API 代理目标，默认本地 Rust 网关
-- `VITE_BASE_URL`：前端部署子路径，通常为 `/`
+- `VITE_BASE`：前端部署子路径，通常为 `/`
+- `VITE_GLOB_API_URL`：浏览器请求使用的 API 基础路径，开发默认 `/api`
+- `VITE_BASE_URL`：后端绝对地址，同时作为 Vite 本地 `/api` 代理目标
 
-后端、数据库和生产部署说明见仓库根目录 [README.md](../../README.md) 与 [docs/deployment.md](../../docs/deployment.md)。
+REST 和 Agent WebSocket 都以 `VITE_GLOB_API_URL` 为基础地址。使用相对值 `/api` 时，Vite 会把 HTTP 与 WebSocket 请求代理到 `VITE_BASE_URL`；使用完整后端地址时，请为本地开发启用 `WEB_PERMISSIVE_CORS=true`。生产环境应继续通过同源反向代理控制跨域。
+
+完整变量语义见 [configuration.md](../../docs/configuration.md#2-前端环境变量appswebappsweb-antd)，后端、数据库和生产部署说明见仓库根目录 [README.md](../../README.md) 与 [deployment.md](../../docs/deployment.md)。
