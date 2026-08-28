@@ -6,6 +6,7 @@ import { Page } from '@vben/common-ui';
 
 import VideoWorkbenchPanel from './VideoWorkbenchPanel.vue';
 import { useProjectDetail } from './detail/useProjectDetail';
+import { normalizeProductionDocument } from './production-flow-document';
 
 import '../styles/toon-theme.css';
 
@@ -17,6 +18,15 @@ const route = useRoute();
 const router = useRouter();
 const view = useProjectDetail();
 const context = view.panelContext;
+
+const storyboardPlan = computed(() => {
+  try {
+    const flow = JSON.parse(String(context.flowText || '{}'));
+    return normalizeProductionDocument(flow.storyboardTable, 'storyboardTable');
+  } catch {
+    return '';
+  }
+});
 
 const initialTab = computed<WorkbenchTab>(() => {
   const tab = String(route.query.tab || '');
@@ -59,6 +69,7 @@ watch(
           :assets="context.productionAssets"
           :initial-tab="initialTab"
           :initial-track-id="initialTrackId"
+          :storyboard-plan="storyboardPlan"
           :storyboards="context.storyboards"
           :tracks="context.videoTracks"
           :video-mode="context.videoMode"

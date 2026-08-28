@@ -528,7 +528,6 @@ onBeforeUnmount(() => {
       :zoom-on-scroll="false"
       :nodes-draggable="!spacePressed"
       :selection-on-drag="true"
-      selection-key-code="Shift"
       multi-selection-key-code="Shift"
       :pan-on-drag="spacePressed ? [0] : true"
       :nodes-connectable="true"
@@ -571,7 +570,7 @@ onBeforeUnmount(() => {
           </header>
           <div v-if="script" class="script-body">
             <h3>{{ script.name }}</h3>
-            <pre>{{ script.content }}</pre>
+            <pre class="nowheel nopan">{{ script.content }}</pre>
           </div>
           <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="请先选择需要制作的剧本" />
           <section class="embedded-assets" :class="{ waiting: !script }">
@@ -599,7 +598,7 @@ onBeforeUnmount(() => {
               <Button size="small" type="link" @click.stop="openEditor('scriptPlan')">编辑</Button>
             </Space>
           </header>
-          <div v-if="directorPlan" class="director-content">
+          <div v-if="directorPlan" class="director-content nowheel nopan">
             <MarkdownView :content="directorPlan" />
           </div>
           <div v-else class="stage-waiting">Agent 将根据剧本和人物资产生成导演规划</div>
@@ -619,7 +618,7 @@ onBeforeUnmount(() => {
               <Button size="small" type="link" @click.stop="openEditor('storyboardTable')">编辑</Button>
             </Space>
           </header>
-          <div v-if="storyboardPlan" class="storyboard-table-content">
+          <div v-if="storyboardPlan" class="storyboard-table-content nowheel nopan">
             <MarkdownView :content="storyboardPlan" />
           </div>
           <div v-else class="stage-waiting">导演规划确认后，Agent 将构建结构化分镜表</div>
@@ -641,6 +640,7 @@ onBeforeUnmount(() => {
             :progress-current="storyboardProgressCurrent"
             :progress-total="storyboardProgressTotal"
             :run-state="storyboardRunState"
+            :storyboard-plan="storyboardPlan"
             :storyboards="storyboards"
             @batch-delete="emit('batchDeleteStoryboards', $event)"
             @cancel="emit('cancelStoryboards')"
@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
             <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
           <div class="workbench-preview" @click.stop="openVideoWorkbench">
-            <video v-if="workbenchCover" :src="workbenchCover" muted preload="metadata" />
+            <video v-if="workbenchCover" :src="workbenchCover" muted preload="none" />
             <div class="workbench-play" aria-hidden="true"><span /></div>
           </div>
         </section>

@@ -48,6 +48,11 @@ export namespace ToonflowApi {
     createTime: number;
   }
 
+  export interface NovelPage {
+    data: NovelChapter[];
+    total: number;
+  }
+
   export interface Script {
     id: number;
     name: string;
@@ -265,6 +270,26 @@ export function getNovelData(projectId: number) {
   return requestClient.post<ToonflowApi.NovelChapter[]>('/toonflow/novel/getNovelData', {
     projectId,
   });
+}
+
+export function getNovelPage(
+  projectId: number,
+  page = 1,
+  limit = 10,
+  search?: string,
+) {
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    return Promise.resolve({ data: [], total: 0 } as ToonflowApi.NovelPage);
+  }
+  return requestClient.post<ToonflowApi.NovelPage>(
+    '/toonflow/novel/getNovel',
+    {
+      limit,
+      page,
+      projectId,
+      ...(search ? { search } : {}),
+    },
+  );
 }
 
 export function updateNovel(data: Partial<ToonflowApi.NovelChapter> & { id: number }) {

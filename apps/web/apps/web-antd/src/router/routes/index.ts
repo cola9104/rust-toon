@@ -22,7 +22,6 @@ const staticRoutes: RouteRecordRaw[] = [
       activePath: '/toonflow/projects',
       hideInMenu: true,
       fullPathKey: false,
-      keepAlive: true,
     },
   },
 ];

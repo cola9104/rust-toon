@@ -358,12 +358,12 @@ onBeforeUnmount(() => {
           : '播放成片'
       "
       width="960px"
+      destroy-on-close
       @cancel="closePreview"
     >
       <video
         v-if="previewRender"
         :key="previewRender.id"
-        autoplay
         class="archive-player"
         controls
         playsinline

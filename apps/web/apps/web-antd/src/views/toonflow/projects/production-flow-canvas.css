@@ -185,8 +185,9 @@
 
 .embedded-assets :deep(.production-assets-canvas) {
   width: 100%;
-  max-height: none;
-  overflow: visible;
+  max-height: 470px;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .stage-director {
@@ -198,8 +199,11 @@
 
 .director-content {
   min-width: 520px;
+  max-height: 620px;
+  overflow: auto;
   margin-top: 8px;
   padding: 0 16px 16px;
+  overscroll-behavior: contain;
   user-select: text;
 }
 
@@ -217,8 +221,11 @@
 
 .storyboard-table-content {
   min-width: 680px;
+  max-height: 620px;
+  overflow: auto;
   margin-top: 8px;
   padding: 0 16px 16px;
+  overscroll-behavior: contain;
   user-select: text;
 }
 
@@ -357,8 +364,8 @@
 }
 
 .script-body pre {
-  max-height: none;
-  overflow: visible;
+  max-height: 360px;
+  overflow: auto;
 }
 
 .script-body h3 {

@@ -6,13 +6,14 @@ import { computed, ref, watch } from 'vue';
 import { Button, Checkbox, Empty, Modal, Popconfirm, Slider, Space, Tag, Tooltip } from 'ant-design-vue';
 
 import { assetFileUrl } from '../assets/asset-types';
-import { groupStoryboardsByTrack } from './storyboard-track-groups';
+import { groupStoryboardsBySceneAndTrack } from './storyboard-scene-groups';
 
 const props = defineProps<{
   busy?: boolean;
   progressCurrent?: number;
   progressTotal?: number;
   runState?: string;
+  storyboardPlan?: string;
   storyboards: ToonflowApi.Storyboard[];
 }>();
 
@@ -34,24 +35,42 @@ const selectedIds = ref<number[]>([]);
 const gridPreviewOpen = ref(false);
 const gridScale = ref(100);
 const draggingId = ref<number>();
+const expandedSceneKeys = ref<Set<string>>(new Set());
 const allSelected = computed(
   () => props.storyboards.length > 0 && selectedIds.value.length === props.storyboards.length,
 );
 const hasGenerating = computed(() => props.storyboards.some((item) => item.state === '生成中'));
-const groups = computed(() => {
-  return groupStoryboardsByTrack(props.storyboards).map(({ key, name, items }) => ({
-    duration: items.reduce((total, item) => total + (item.duration ?? 0), 0),
-    key,
-    items,
-    name,
+const sceneGroups = computed(() => {
+  return groupStoryboardsBySceneAndTrack(props.storyboards, props.storyboardPlan).map((scene) => ({
+    ...scene,
+    duration: scene.items.reduce((total, item) => total + (item.duration ?? 0), 0),
+    tracks: scene.tracks.map((track) => ({
+      ...track,
+      duration: track.items.reduce((total, item) => total + (item.duration ?? 0), 0),
+    })),
   }));
 });
+const storyboardContexts = computed(() => {
+  const contexts = new Map<number, { number: number; sceneName: string; trackName: string }>();
+  for (const scene of sceneGroups.value) {
+    for (const track of scene.tracks) {
+      track.items.forEach((item, index) => {
+        contexts.set(item.id, {
+          number: index + 1,
+          sceneName: scene.name,
+          trackName: track.name,
+        });
+      });
+    }
+  }
+  return contexts;
+});
 function storyboardNumber(item: ToonflowApi.Storyboard) {
-  const group = groups.value.find((candidate) => candidate.items.some((storyboard) => storyboard.id === item.id));
-  return group ? group.items.findIndex((storyboard) => storyboard.id === item.id) + 1 : props.storyboards.findIndex((storyboard) => storyboard.id === item.id) + 1;
+  return storyboardContexts.value.get(item.id)?.number ?? props.storyboards.findIndex((storyboard) => storyboard.id === item.id) + 1;
 }
 function storyboardLabel(item: ToonflowApi.Storyboard) {
-  return `轨道 ${item.track?.trim() || '默认轨道'} · 分镜 ${storyboardNumber(item)}`;
+  const context = storyboardContexts.value.get(item.id);
+  return `${context?.sceneName || '未分场'} · 视频轨道 ${context?.trackName || item.track?.trim() || '默认轨道'} · 分镜 ${storyboardNumber(item)}`;
 }
 const statusAnnouncement = computed(() => {
   const generating = props.storyboards.filter((item) => item.state === '生成中').length;
@@ -71,6 +90,28 @@ watch(
     selectedIds.value = selectedIds.value.filter((id) => ids.includes(id));
   },
 );
+
+watch(
+  () => sceneGroups.value.map((scene) => scene.key),
+  (sceneKeys) => {
+    const validKeys = new Set(sceneKeys);
+    expandedSceneKeys.value = new Set(
+      [...expandedSceneKeys.value].filter((key) => validKeys.has(key)),
+    );
+  },
+  { immediate: true },
+);
+
+function isSceneExpanded(key: string) {
+  return expandedSceneKeys.value.has(key);
+}
+
+function toggleScene(key: string) {
+  const nextKeys = new Set(expandedSceneKeys.value);
+  if (nextKeys.has(key)) nextKeys.delete(key);
+  else nextKeys.add(key);
+  expandedSceneKeys.value = nextKeys;
+}
 
 function toggleAll(checked: boolean) {
   selectedIds.value = checked ? props.storyboards.map((item) => item.id) : [];
@@ -119,7 +160,7 @@ function restoreOrder() {
 </script>
 
 <template>
-  <section class="storyboard-panel" aria-label="分镜面板">
+  <section class="storyboard-panel nopan" aria-label="分镜面板" @click.stop>
     <span class="sr-only" aria-live="polite">{{ statusAnnouncement }}</span>
     <header class="panel-tools">
       <Checkbox
@@ -157,91 +198,121 @@ function restoreOrder() {
       </Space>
     </header>
 
-    <div v-if="storyboards.length" class="storyboard-groups" :aria-busy="hasGenerating">
-      <section v-for="group in groups" :key="group.key" class="storyboard-group">
-        <header class="group-header">
+    <div v-if="storyboards.length" class="storyboard-scenes nowheel" :aria-busy="hasGenerating">
+      <section v-for="scene in sceneGroups" :key="scene.key" class="storyboard-scene">
+        <header class="scene-header">
           <Checkbox
-            :checked="group.items.every((item) => selectedIds.includes(item.id))"
-            @change="toggleGroup(group.items.map((item) => item.id), $event.target.checked)"
+            :checked="scene.items.every((item) => selectedIds.includes(item.id))"
+            @change="toggleGroup(scene.items.map((item) => item.id), $event.target.checked)"
           >
-            {{ group.name }}
+            {{ scene.name }}
           </Checkbox>
-          <span>{{ group.items.length }} 个分镜 · {{ group.duration }}s</span>
+          <span>{{ scene.items.length }} 个分镜 · {{ scene.tracks.length }} 条视频轨道 · {{ scene.duration }}s</span>
           <Button
             size="small"
             :disabled="busy"
-            @click="emit('generate', group.items.map((item) => item.id), false)"
+            @click="emit('generate', scene.items.map((item) => item.id), false)"
           >
-            整组生成
+            整场生成
           </Button>
           <Button
-            v-if="group.items[0]?.trackId"
             size="small"
-            @click="emit('openTrack', group.items[0]!.trackId!)"
+            type="text"
+            :aria-expanded="isSceneExpanded(scene.key)"
+            @click="toggleScene(scene.key)"
           >
-            视频轨道
+            {{ isSceneExpanded(scene.key) ? '收起分镜' : '展开分镜' }}
           </Button>
         </header>
-        <div class="storyboard-grid">
-          <article
-            v-for="item in group.items"
-            :key="item.id"
-            class="storyboard-card"
-            draggable="true"
-            tabindex="0"
-            @dragend="draggingId = undefined"
-            @dragover.prevent
-            @dragstart="draggingId = item.id"
-            @drop.prevent="dropOn(item.id)"
-            @keydown.space.prevent="toggleStoryboard(item.id, !selectedIds.includes(item.id))"
-          >
-        <div class="storyboard-cover">
-          <img
-            v-if="item.filePath || item.src"
-            :src="assetFileUrl(item.filePath || item.src)"
-            :alt="`分镜 ${item.index ?? item.id}`"
-          />
-          <span v-else>{{ item.state === '生成中' ? '生成中…' : '等待图片' }}</span>
-          <Checkbox
-            :checked="selectedIds.includes(item.id)"
-            class="storyboard-check"
-            :aria-label="`选择分镜 ${item.index ?? item.id}`"
-            @change="toggleStoryboard(item.id, $event.target.checked)"
-          />
-          <Tag class="storyboard-index" color="blue">分镜 {{ storyboardNumber(item) }}</Tag>
-        </div>
-        <div class="storyboard-card-body">
-          <div class="storyboard-meta">
-            <b>{{ item.track || '默认轨道' }} · {{ item.duration || 0 }}s</b>
-            <Tag :color="statusColor(item.state)">{{ item.state || '未生成' }}</Tag>
-          </div>
-          <p>{{ item.videoDesc || item.prompt || '等待 Agent 写入描述' }}</p>
-          <p v-if="item.reason" class="storyboard-error" role="alert">{{ item.reason }}</p>
-          <Space size="small" wrap>
-            <Button size="small" @click="emit('edit', item)">编辑</Button>
-            <Button size="small" @click="emit('insertAfter', item)">在后面插入</Button>
-            <Button size="small" @click="emit('editImage', item)">图片生成流</Button>
-            <Button size="small" :loading="item.state === '生成中'" @click="emit('generate', [item.id], false)">
-              {{ item.state === '生成失败' ? '重试' : '生成' }}
-            </Button>
-            <Popconfirm title="确认删除这个分镜？" @confirm="emit('remove', item)">
-              <Button danger size="small">删除</Button>
-            </Popconfirm>
-          </Space>
-          <div v-if="item.associateAssetsIds?.length" class="associated-assets">
-            关联资产：<Tag v-for="assetId in item.associateAssetsIds" :key="assetId">{{ assetId }}</Tag>
-          </div>
-        </div>
-          </article>
+        <div v-if="isSceneExpanded(scene.key)" class="scene-tracks">
+          <section v-for="track in scene.tracks" :key="track.key" class="storyboard-track">
+            <header class="track-header">
+              <Checkbox
+                :checked="track.items.every((item) => selectedIds.includes(item.id))"
+                @change="toggleGroup(track.items.map((item) => item.id), $event.target.checked)"
+              >
+                视频轨道 {{ track.name }}
+              </Checkbox>
+              <span>{{ track.items.length }} 个分镜 · {{ track.duration }}s</span>
+              <Button
+                size="small"
+                :disabled="busy"
+                @click="emit('generate', track.items.map((item) => item.id), false)"
+              >
+                整轨生成
+              </Button>
+              <Button
+                v-if="track.items[0]?.trackId !== undefined && track.items[0]?.trackId !== null"
+                size="small"
+                @click="emit('openTrack', track.items[0]!.trackId!)"
+              >
+                打开视频轨道
+              </Button>
+            </header>
+            <div class="storyboard-grid">
+              <article
+                v-for="item in track.items"
+                :key="item.id"
+                class="storyboard-card"
+                draggable="true"
+                tabindex="0"
+                @dragend="draggingId = undefined"
+                @dragover.prevent
+                @dragstart="draggingId = item.id"
+                @drop.prevent="dropOn(item.id)"
+                @keydown.space.prevent="toggleStoryboard(item.id, !selectedIds.includes(item.id))"
+              >
+                <div class="storyboard-cover">
+                  <img
+                    v-if="item.filePath || item.src"
+                    :src="assetFileUrl(item.filePath || item.src)"
+                    :alt="`分镜 ${item.index ?? item.id}`"
+                    decoding="async"
+                    loading="lazy"
+                  />
+                  <span v-else>{{ item.state === '生成中' ? '生成中…' : '等待图片' }}</span>
+                  <Checkbox
+                    :checked="selectedIds.includes(item.id)"
+                    class="storyboard-check"
+                    :aria-label="`选择分镜 ${item.index ?? item.id}`"
+                    @change="toggleStoryboard(item.id, $event.target.checked)"
+                  />
+                  <Tag class="storyboard-index" color="blue">分镜 {{ storyboardNumber(item) }}</Tag>
+                </div>
+                <div class="storyboard-card-body">
+                  <div class="storyboard-meta">
+                    <b>视频轨道 {{ item.track || '默认轨道' }} · {{ item.duration || 0 }}s</b>
+                    <Tag :color="statusColor(item.state)">{{ item.state || '未生成' }}</Tag>
+                  </div>
+                  <p>{{ item.videoDesc || item.prompt || '等待 Agent 写入描述' }}</p>
+                  <p v-if="item.reason" class="storyboard-error" role="alert">{{ item.reason }}</p>
+                  <Space size="small" wrap>
+                    <Button size="small" @click="emit('edit', item)">编辑</Button>
+                    <Button size="small" @click="emit('insertAfter', item)">在后面插入</Button>
+                    <Button size="small" @click="emit('editImage', item)">图片生成流</Button>
+                    <Button size="small" :loading="item.state === '生成中'" @click="emit('generate', [item.id], false)">
+                      {{ item.state === '生成失败' ? '重试' : '生成' }}
+                    </Button>
+                    <Popconfirm title="确认删除这个分镜？" @confirm="emit('remove', item)">
+                      <Button danger size="small">删除</Button>
+                    </Popconfirm>
+                  </Space>
+                  <div v-if="item.associateAssetsIds?.length" class="associated-assets">
+                    关联资产：<Tag v-for="assetId in item.associateAssetsIds" :key="assetId">{{ assetId }}</Tag>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
         </div>
       </section>
     </div>
     <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="分镜表确认后，Agent 将写入分镜" />
-    <Modal v-model:open="gridPreviewOpen" title="分镜宫格预览" width="92vw" :footer="null">
+    <Modal v-model:open="gridPreviewOpen" title="分镜宫格预览" width="92vw" :footer="null" destroy-on-close>
       <div class="preview-scale"><span>缩放比例 {{ gridScale }}%</span><Slider v-model:value="gridScale" :min="60" :max="160" /></div>
       <div class="preview-grid" :style="{ '--preview-scale': `${gridScale / 100}` }">
         <figure v-for="item in storyboards" :key="item.id">
-          <img v-if="item.filePath || item.src" :src="assetFileUrl(item.filePath || item.src)" :alt="storyboardLabel(item)" />
+          <img v-if="item.filePath || item.src" :src="assetFileUrl(item.filePath || item.src)" :alt="storyboardLabel(item)" decoding="async" loading="lazy" />
           <div v-else>暂无图片</div>
           <figcaption>{{ storyboardLabel(item) }} · {{ item.duration || 0 }}s</figcaption>
         </figure>
@@ -255,12 +326,16 @@ function restoreOrder() {
 .panel-tools { display: flex; align-items: center; gap: 10px; justify-content: space-between; flex-wrap: wrap; }
 .selection-summary { color: var(--ant-color-text-secondary); font-size: 12px; margin-right: auto; }
 .storyboard-grid { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0; }
-.storyboard-groups { display: flex; flex-direction: column; gap: 16px; }
-.storyboard-group { overflow: hidden; border: 1px solid var(--ant-color-border-secondary); border-radius: 10px; }
-.group-header { display: flex; align-items: center; gap: 12px; padding: 8px 10px; background: var(--ant-color-fill-quaternary); }
-.group-header span { flex: 1; color: var(--ant-color-text-secondary); font-size: 12px; }
-.storyboard-group .storyboard-grid { padding: 10px; }
-.storyboard-card { width: 276px; flex: 0 0 276px; overflow: hidden; margin: 4px; border: 1px solid var(--ant-color-border-secondary); border-radius: 8px; background: var(--ant-color-bg-container); }
+.storyboard-scenes { display: flex; max-height: 700px; overflow: auto; flex-direction: column; gap: 16px; overscroll-behavior: contain; contain: layout paint; }
+.storyboard-scene { flex: 0 0 auto; overflow: hidden; border: 1px solid color-mix(in srgb, var(--ant-color-primary) 30%, var(--ant-color-border-secondary)); border-radius: 12px; }
+.scene-header, .track-header { display: flex; align-items: center; gap: 12px; }
+.scene-header { padding: 10px 12px; background: color-mix(in srgb, var(--ant-color-primary) 8%, var(--ant-color-bg-container)); }
+.scene-header > span, .track-header > span { flex: 1; color: var(--ant-color-text-secondary); font-size: 12px; }
+.scene-tracks { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+.storyboard-track { overflow: hidden; border: 1px solid var(--ant-color-border-secondary); border-radius: 9px; background: var(--ant-color-bg-container); }
+.track-header { padding: 8px 10px; background: var(--ant-color-fill-quaternary); }
+.storyboard-track .storyboard-grid { padding: 6px; }
+.storyboard-card { width: 276px; flex: 0 0 276px; overflow: hidden; margin: 4px; border: 1px solid var(--ant-color-border-secondary); border-radius: 8px; background: var(--ant-color-bg-container); content-visibility: auto; contain-intrinsic-size: 300px 360px; }
 .storyboard-card[draggable="true"] { cursor: grab; }
 .storyboard-card[draggable="true"]:active { cursor: grabbing; }
 .storyboard-card:focus-visible { outline: 3px solid color-mix(in srgb, var(--ant-color-primary) 45%, transparent); outline-offset: 2px; }

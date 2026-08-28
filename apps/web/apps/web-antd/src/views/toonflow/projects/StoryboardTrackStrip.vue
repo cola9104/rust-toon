@@ -135,7 +135,7 @@ function dropOn(targetId: number) {
             @change="emit('storyboardToggle', item.id, $event.target.checked)"
           />
           <div class="storyboard-track-shot-media">
-            <img v-if="imageUrl(item)" :src="imageUrl(item)" :alt="storyboardLabel(group, index)" />
+            <img v-if="imageUrl(item)" :src="imageUrl(item)" :alt="storyboardLabel(group, index)" decoding="async" loading="lazy" />
             <span v-else>暂无图片</span>
             <Tag>{{ storyboardLabel(group, index) }}</Tag>
           </div>

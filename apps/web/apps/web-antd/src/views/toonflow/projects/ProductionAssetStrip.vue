@@ -3,7 +3,7 @@ import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed } from 'vue';
 
-import { Empty, Image, Tag } from 'ant-design-vue';
+import { Empty, Tag } from 'ant-design-vue';
 
 import { assetFileUrl, assetTypeLabel } from '../assets/asset-types';
 
@@ -64,7 +64,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
 </script>
 
 <template>
-  <section class="production-assets">
+  <section class="production-assets nopan" @click.stop>
     <header class="production-assets-heading">
       <div>
         <div class="production-assets-title">当前剧本制作资产</div>
@@ -79,18 +79,20 @@ function assetSummary(asset: ToonflowApi.Asset) {
       description="当前剧本暂未关联人物或场景资产"
     />
 
-    <div v-else class="production-assets-canvas">
+    <div v-else class="production-assets-canvas nowheel">
       <div class="production-asset-columns" aria-hidden="true">
         <span>基础资产</span><i>剧情派生</i><span>衍生资产</span>
       </div>
       <div v-for="asset in assetRows" :key="asset.id" class="production-asset-row">
         <article class="production-asset-card origin-card">
           <div class="production-asset-cover">
-            <Image
+            <img
               v-if="asset.imageFilePath"
               :alt="asset.name"
               :src="assetFileUrl(asset.imageFilePath)"
               class="production-asset-image"
+              decoding="async"
+              loading="lazy"
             />
             <div v-else class="production-asset-image-placeholder">
               {{ assetTypeLabel(asset.type) }}
@@ -120,11 +122,13 @@ function assetSummary(asset: ToonflowApi.Asset) {
               :class="{ 'no-image': !derived.imageFilePath }"
             >
               <div class="production-asset-cover">
-                <Image
+                <img
                   v-if="derived.imageFilePath"
                   :alt="derived.name"
                   :src="assetFileUrl(derived.imageFilePath)"
                   class="production-asset-image"
+                  decoding="async"
+                  loading="lazy"
                 />
                 <div v-else class="production-asset-image-placeholder derived-placeholder">
                   {{ generationLabel(derived) }}
@@ -312,13 +316,10 @@ function assetSummary(asset: ToonflowApi.Asset) {
   background: var(--ant-color-fill-quaternary);
 }
 
-.production-asset-cover :deep(.ant-image),
-.production-asset-cover :deep(.ant-image-img) {
+.production-asset-image {
+  display: block;
   width: 100%;
   height: 100%;
-}
-
-.production-asset-cover :deep(.ant-image-img) {
   object-fit: cover;
 }
 

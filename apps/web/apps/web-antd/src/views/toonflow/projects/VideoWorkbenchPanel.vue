@@ -23,6 +23,7 @@ import StoryboardQuickPreview from './StoryboardQuickPreview.vue';
 import StoryboardTrackStrip from './StoryboardTrackStrip.vue';
 import { storyboardsForTrack } from './storyboard-track-groups';
 import { defaultVideoGenerationMode, videoFrameRole } from './video-generation-mode';
+import { groupVideoTracksByScene } from './video-scene-groups';
 
 const props = defineProps<{
   assets: any[];
@@ -30,6 +31,7 @@ const props = defineProps<{
   tracks: any[];
   initialTab?: 'preview' | 'generate' | 'editor';
   initialTrackId?: number;
+  storyboardPlan?: string;
   videoMode?: string;
   videoModel?: number;
   videoRatio?: string;
@@ -73,25 +75,67 @@ const editorSelectionInitialized = ref(false);
 const editorAutoSelectNewClips = ref(false);
 const editorVideoError = ref(false);
 
+const videoSceneGroups = computed(() =>
+  groupVideoTracksByScene(props.tracks, props.storyboards, props.storyboardPlan),
+);
+const generationStoryboardScenes = computed(() =>
+  videoSceneGroups.value.filter((scene) => scene.items.length > 0),
+);
+const orderedTrackEntries = computed(() =>
+  videoSceneGroups.value.flatMap((scene) =>
+    scene.tracks.map((entry) => ({
+      ...entry,
+      sceneKey: scene.key,
+      sceneName: scene.name,
+    })),
+  ),
+);
 const activeTrack = computed(() =>
-  props.tracks.find((track) => Number(track.id) === Number(activeTrackId.value)) ?? props.tracks[0],
+  props.tracks.find((track) => Number(track.id) === Number(activeTrackId.value)) ?? orderedTrackEntries.value[0]?.track,
 );
 const availableClips = computed(() =>
-  props.tracks
-    .map((track, index) => {
+  orderedTrackEntries.value
+    .map((entry, index) => {
+      const track = entry.track;
       const videos = track.videoList ?? [];
       const video =
         videos.find((item: any) => Number(item.id) === Number(track.selectVideoId)) ??
         videos.find((item: any) => ['生成成功', '已完成'].includes(item.state));
       const src = videoUrl(video);
       return src
-        ? { ...video, src, duration: track.duration || 5, index, trackId: track.id }
+        ? {
+            ...video,
+            src,
+            duration: track.duration || 5,
+            index,
+            trackId: entry.trackId,
+            trackName: entry.name,
+            sceneKey: entry.sceneKey,
+            sceneName: entry.sceneName,
+          }
         : undefined;
     })
     .filter(Boolean),
 );
 const selectedClips = computed(() =>
-  availableClips.value.filter((clip: any) => selectedEditorTrackIds.value.includes(clip.trackId)),
+  availableClips.value.filter((clip: any) => selectedEditorTrackIds.value.includes(Number(clip.trackId))),
+);
+const availableClipScenes = computed(() =>
+  videoSceneGroups.value
+    .map((scene) => ({
+      clips: availableClips.value.filter((clip: any) => clip.sceneKey === scene.key),
+      key: scene.key,
+      name: scene.name,
+    }))
+    .filter((scene) => scene.clips.length > 0),
+);
+const selectedClipScenes = computed(() =>
+  availableClipScenes.value
+    .map((scene) => ({
+      ...scene,
+      clips: scene.clips.filter((clip: any) => selectedEditorTrackIds.value.includes(Number(clip.trackId))),
+    }))
+    .filter((scene) => scene.clips.length > 0),
 );
 const selectedEditorVideoIds = computed(() => selectedClips.value.map((clip: any) => Number(clip.id)));
 const totalDuration = computed(() =>
@@ -110,7 +154,8 @@ const timelineContentWidth = computed(() => {
     (sum, clip: any) => sum + timelineClipWidth(clip),
     0,
   );
-  return `${Math.max(560, clipWidth + Math.max(0, selectedClips.value.length - 1) * 2 + 12)}px`;
+  const sceneSpacing = selectedClipScenes.value.length * 12;
+  return `${Math.max(560, clipWidth + Math.max(0, selectedClips.value.length - 1) * 2 + sceneSpacing)}px`;
 });
 const activeEditorClip = computed(() => selectedClips.value[activeEditorIndex.value]);
 const activePreviewVideo = computed(() => {
@@ -144,8 +189,13 @@ function timelineClipStyle(clip: any) {
   return { flex: `0 0 ${timelineClipWidth(clip)}px` };
 }
 
+function timelineSceneStyle(scene: { clips: any[] }) {
+  const width = scene.clips.reduce((sum, clip) => sum + timelineClipWidth(clip), 0);
+  return { flex: `0 0 ${width + Math.max(0, scene.clips.length - 1) * 2 + 8}px` };
+}
+
 function initializeEditorSelection() {
-  selectedEditorTrackIds.value = availableClips.value.map((clip: any) => clip.trackId);
+  selectedEditorTrackIds.value = availableClips.value.map((clip: any) => Number(clip.trackId));
   editorSelectionInitialized.value = true;
   editorAutoSelectNewClips.value = true;
   activeEditorIndex.value = 0;
@@ -159,10 +209,28 @@ function toggleEditorClip(trackId: number, checked: boolean) {
 }
 
 function toggleAllEditorClips() {
-  const allIds = availableClips.value.map((clip: any) => clip.trackId);
+  const allIds = availableClips.value.map((clip: any) => Number(clip.trackId));
   const selectAll = selectedEditorTrackIds.value.length !== allIds.length;
   selectedEditorTrackIds.value = selectAll ? allIds : [];
   editorAutoSelectNewClips.value = selectAll;
+}
+
+function sceneSelectionState(scene: { clips: any[] }) {
+  const selectedCount = scene.clips
+    .map((clip) => Number(clip.trackId))
+    .filter((trackId) => selectedEditorTrackIds.value.includes(trackId)).length;
+  return {
+    checked: selectedCount === scene.clips.length,
+    indeterminate: selectedCount > 0 && selectedCount < scene.clips.length,
+  };
+}
+
+function toggleEditorScene(scene: { clips: any[] }, checked: boolean) {
+  editorAutoSelectNewClips.value = false;
+  const sceneTrackIds = scene.clips.map((clip) => Number(clip.trackId));
+  selectedEditorTrackIds.value = checked
+    ? [...new Set([...selectedEditorTrackIds.value, ...sceneTrackIds])]
+    : selectedEditorTrackIds.value.filter((trackId) => !sceneTrackIds.includes(trackId));
 }
 
 function exportSelectedVideos() {
@@ -171,17 +239,21 @@ function exportSelectedVideos() {
 }
 
 function focusEditorClip(clip: any) {
-  const index = selectedClips.value.findIndex((item: any) => item.trackId === clip.trackId);
+  const index = selectedClips.value.findIndex((item: any) => Number(item.trackId) === Number(clip.trackId));
   selectEditorClip(index);
+}
+
+function editorClipIndex(clip: any) {
+  return selectedClips.value.findIndex((item: any) => Number(item.trackId) === Number(clip.trackId));
 }
 
 function selectEditorClip(index: number) {
   if (index < 0 || index >= selectedClips.value.length) return;
+  if (activeEditorIndex.value === index) return;
   editorPlayer.value?.pause();
   editorPlaying.value = false;
   playingSequence.value = false;
   activeEditorIndex.value = index;
-  restoreEditorPlayer();
 }
 
 function stepEditor(delta: number) {
@@ -406,8 +478,8 @@ function handleEditorError() {
   editorPlaying.value = false;
 }
 
-watch(selectedClips, (clips) => {
-  activeEditorIndex.value = Math.min(activeEditorIndex.value, Math.max(0, clips.length - 1));
+watch(() => selectedClips.value.length, (clipCount) => {
+  activeEditorIndex.value = Math.min(activeEditorIndex.value, Math.max(0, clipCount - 1));
 });
 watch(activeTab, (tab) => {
   if (tab === 'generate' || tab === 'editor') emit('refresh');
@@ -425,23 +497,32 @@ watch(() => props.initialTab, (tab) => {
 watch(() => props.initialTrackId, (trackId) => {
   if (trackId !== undefined) activateTrackById(trackId);
 });
-watch(activeEditorClip, () => {
+watch([
+  () => activeEditorClip.value?.trackId,
+  () => activeEditorClip.value?.src,
+], () => {
   if (activeTab.value === 'editor') restoreEditorPlayer();
 });
-watch(availableClips, (clips) => {
-  const availableIds = new Set(clips.map((clip: any) => clip.trackId));
-  selectedEditorTrackIds.value = editorAutoSelectNewClips.value
-    ? clips.map((clip: any) => clip.trackId)
+watch(() => availableClips.value.map((clip: any) => Number(clip.trackId)), (ids) => {
+  const availableIds = new Set(ids);
+  const nextIds = editorAutoSelectNewClips.value
+    ? ids
     : selectedEditorTrackIds.value.filter((id) => availableIds.has(id));
-}, { deep: true, immediate: true });
+  if (
+    nextIds.length !== selectedEditorTrackIds.value.length ||
+    nextIds.some((id, index) => id !== selectedEditorTrackIds.value[index])
+  ) {
+    selectedEditorTrackIds.value = nextIds;
+  }
+}, { immediate: true });
 watch(selectedTrackIds, (ids) => {
   const normalizedIds = ids.map(Number).filter(Number.isFinite);
   const lastId = normalizedIds.at(-1);
   const nextIds = lastId === undefined ? [] : [lastId];
   if (nextIds.length === ids.length && nextIds.every((id, index) => id === ids[index])) return;
   selectedTrackIds.value = nextIds;
-}, { deep: true, immediate: true });
-watch(() => props.tracks.map((track) => Number(track.id)).filter(Number.isFinite), (ids) => {
+}, { immediate: true });
+watch(() => orderedTrackEntries.value.map((entry) => entry.trackId), (ids) => {
   if (!ids.length) {
     selectedTrackIds.value = [];
     trackSelectionInitialized.value = false;
@@ -462,7 +543,7 @@ watch(() => props.tracks.map((track) => Number(track.id)).filter(Number.isFinite
   if (activeTrackId.value === undefined || !ids.includes(Number(activeTrackId.value))) {
     activeTrackId.value = fallbackTrackId;
   }
-}, { deep: true, immediate: true });
+}, { immediate: true });
 watch(activeTrackId, (id) => {
   const trackId = id === undefined ? undefined : Number(id);
   if (trackId !== undefined && Number.isFinite(trackId)) {
@@ -503,7 +584,7 @@ onMounted(async () => {
       </nav>
       <div class="workbench-nav-status">
         <span class="workbench-status-dot" />
-        <span>{{ tracks.length }} 条轨道</span>
+        <span>{{ videoSceneGroups.length }} 个场次 · {{ tracks.length }} 条轨道</span>
       </div>
     </header>
 
@@ -576,16 +657,24 @@ onMounted(async () => {
 
           <section class="track-filmstrip setting-block">
             <div class="section-heading"><div><b>选择轨道</b><span>{{ selectedTrackCount }} 项已选（单选）</span></div><div class="batch-track-actions"><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.promptGenerating)" :loading="selectedTracks.some((track:any) => track.promptGenerating)" @click="emit('batchGeneratePrompts', selectedTracks)">生成提示词</Button><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.videoGenerating)" :loading="selectedTracks.some((track:any) => track.videoGenerating)" @click="emit('batchGenerateVideos', selectedTracks)">生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">下载视频</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
-            <StoryboardTrackStrip
-              :active-track-id="Number(activeTrack.id)"
-              :preserve-order="true"
-              :selected-track-ids="selectedTrackIds"
-              :show-track-checkbox="true"
-              :storyboards="storyboards"
-              @storyboard-click="activateStoryboardTrack"
-              @track-click="activateTrackById"
-              @track-toggle="toggleTrack"
-            />
+            <div class="generation-scene-strips">
+              <section v-for="scene in generationStoryboardScenes" :key="scene.key" class="generation-scene-strip">
+                <header class="generation-scene-heading">
+                  <b>{{ scene.name }}</b>
+                  <span>{{ scene.items.length }} 个分镜 · {{ scene.tracks.length }} 条视频轨道</span>
+                </header>
+                <StoryboardTrackStrip
+                  :active-track-id="Number(activeTrack.id)"
+                  :preserve-order="true"
+                  :selected-track-ids="selectedTrackIds"
+                  :show-track-checkbox="true"
+                  :storyboards="scene.items"
+                  @storyboard-click="activateStoryboardTrack"
+                  @track-click="activateTrackById"
+                  @track-toggle="toggleTrack"
+                />
+              </section>
+            </div>
           </section>
         </template>
         <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="分镜生成后进入视频工作台" />
@@ -595,18 +684,30 @@ onMounted(async () => {
         <section class="editor-workspace">
           <aside class="editor-media-library">
             <header><div class="editor-panel-title"><b>视频素材</b><small>选择参与合成的片段</small></div><div class="editor-media-header-actions"><Tag>{{ selectedClips.length }} / {{ availableClips.length }}</Tag><Button size="small" type="link" :disabled="!availableClips.length" @click="toggleAllEditorClips">{{ selectedClips.length === availableClips.length ? '取消全选' : '全选' }}</Button></div></header>
-            <button v-for="clip in availableClips" :key="clip.trackId" :class="{ active: activeEditorClip?.trackId === clip.trackId }" @click="focusEditorClip(clip)">
-              <Checkbox class="editor-clip-check" :checked="selectedEditorTrackIds.includes(Number(clip.trackId))" @click.stop @change="toggleEditorClip(Number(clip.trackId), $event.target.checked)" />
-              <video :src="clip.src" muted playsinline autoplay loop preload="auto" disablepictureinpicture /><span>轨道 {{ clip.index + 1 }}.mp4<small>{{ clip.duration }}s</small></span>
-            </button>
+            <section v-for="scene in availableClipScenes" :key="scene.key" class="editor-scene-library">
+              <header>
+                <Checkbox
+                  :checked="sceneSelectionState(scene).checked"
+                  :indeterminate="sceneSelectionState(scene).indeterminate"
+                  @change="toggleEditorScene(scene, $event.target.checked)"
+                >
+                  {{ scene.name }}
+                </Checkbox>
+                <small>{{ scene.clips.length }} 条</small>
+              </header>
+              <button v-for="clip in scene.clips" :key="clip.trackId" :class="{ active: activeEditorClip?.trackId === clip.trackId }" @click="focusEditorClip(clip)">
+                <Checkbox class="editor-clip-check" :checked="selectedEditorTrackIds.includes(Number(clip.trackId))" @click.stop @change="toggleEditorClip(Number(clip.trackId), $event.target.checked)" />
+                <video :src="clip.src" muted playsinline preload="metadata" disablepictureinpicture /><span>视频轨道 {{ clip.trackName }}.mp4<small>{{ clip.duration }}s</small></span>
+              </button>
+            </section>
             <Empty v-if="!availableClips.length" :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无视频素材" />
             <Empty v-else-if="!selectedClips.length" :image="Empty.PRESENTED_IMAGE_SIMPLE" description="请选择要合成的视频" />
           </aside>
 
           <main class="editor-stage">
-            <div class="editor-stage-heading"><div><b>片段预览</b><span v-if="activeEditorClip">当前片段 · {{ activeEditorClip.duration }} 秒</span></div><Tag v-if="activeEditorClip" color="blue">{{ activeEditorIndex + 1 }} / {{ selectedClips.length }}</Tag></div>
+            <div class="editor-stage-heading"><div><b>片段预览</b><span v-if="activeEditorClip">{{ activeEditorClip.sceneName }} · 视频轨道 {{ activeEditorClip.trackName }} · {{ activeEditorClip.duration }} 秒</span></div><Tag v-if="activeEditorClip" color="blue">{{ activeEditorIndex + 1 }} / {{ selectedClips.length }}</Tag></div>
             <div class="editor-canvas">
-              <video v-if="activeEditorClip?.src" :key="activeEditorClip.trackId" ref="editorPlayer" :src="activeEditorClip.src" :autoplay="playingSequence" controls playsinline preload="auto" @ended="handleEditorEnded" @loadeddata="handleEditorLoaded" @error="handleEditorError" @play="handleEditorPlay" @pause="handleEditorPause" />
+              <video v-if="activeEditorClip?.src" :key="activeEditorClip.trackId" ref="editorPlayer" :src="activeEditorClip.src" controls playsinline preload="metadata" @ended="handleEditorEnded" @loadeddata="handleEditorLoaded" @error="handleEditorError" @play="handleEditorPlay" @pause="handleEditorPause" />
               <div v-if="editorVideoError" class="editor-video-error"><span>!</span><p>视频资源加载失败，请稍后重试</p><Button size="small" @click="restoreEditorPlayer">重新加载</Button></div>
               <div v-else-if="!activeEditorClip?.src" class="editor-empty"><span class="editor-play">▶</span><p>请先在轨道生成中选中视频</p><Button type="primary" @click="activeTab = 'generate'">进入轨道生成</Button></div>
             </div>
@@ -617,11 +718,13 @@ onMounted(async () => {
             <header><div class="editor-panel-title"><b>视频属性</b><small>当前片段设置</small></div></header>
             <label><span>画面比例</span><b>{{ videoRatio || '16:9' }}</b></label>
             <label><span>分辨率</span><b>1080p</b></label>
+            <label><span>当前场次</span><b>{{ activeEditorClip?.sceneName || '—' }}</b></label>
             <label><span>当前片段</span><b>{{ activeEditorClip?.duration || 0 }}s</b></label>
             <label><span>成片时长</span><b>{{ totalDuration }}s</b></label>
             <div class="volume-control"><span>音量 {{ editorVolume }}%</span><Slider v-model:value="editorVolume" :min="0" :max="100" /></div>
-            <Button type="primary" :disabled="selectedClips.length < 2" @click="exportSelectedVideos">合并导出视频</Button>
+            <Button type="primary" :disabled="selectedClips.length < 2" @click="exportSelectedVideos">按场次合并导出整集</Button>
             <small v-if="selectedClips.length < 2" class="editor-export-hint">至少选择 2 个视频片段</small>
+            <small v-else class="editor-export-hint">将按场次和场内轨道顺序合并</small>
           </aside>
         </section>
 
@@ -631,8 +734,13 @@ onMounted(async () => {
             <div class="timeline-lane-label">视频</div>
             <div class="timeline-scroll">
               <div class="timeline-ruler" :style="{ width: timelineContentWidth }"><span v-for="tick in timelineTicks" :key="tick">{{ tick }}s</span></div>
-              <div v-if="selectedClips.length" class="clip-track" :style="{ width: timelineContentWidth }">
-                <button v-for="(clip,index) in selectedClips" :key="clip.trackId" class="timeline-clip" :class="{ active: activeEditorIndex === index }" :style="timelineClipStyle(clip)" type="button" @click="selectEditorClip(index)"><video :src="clip.src" muted playsinline autoplay loop preload="metadata" disablepictureinpicture /><span>{{ index + 1 }}. 轨道 {{ clip.index + 1 }} · {{ clip.duration }}s</span></button>
+              <div v-if="selectedClips.length" class="clip-track timeline-scene-track" :style="{ width: timelineContentWidth }">
+                <section v-for="scene in selectedClipScenes" :key="scene.key" class="timeline-scene-group" :style="timelineSceneStyle(scene)">
+                  <header>{{ scene.name }}</header>
+                  <div class="timeline-scene-clips">
+                    <button v-for="clip in scene.clips" :key="clip.trackId" class="timeline-clip" :class="{ active: activeEditorClip?.trackId === clip.trackId }" :style="timelineClipStyle(clip)" type="button" @click="focusEditorClip(clip)"><video :src="clip.src" muted playsinline preload="metadata" disablepictureinpicture /><span>{{ editorClipIndex(clip) + 1 }}. 视频轨道 {{ clip.trackName }} · {{ clip.duration }}s</span></button>
+                  </div>
+                </section>
               </div>
               <div v-else class="empty-track">暂无可拼接视频片段</div>
             </div>
@@ -642,7 +750,7 @@ onMounted(async () => {
     </div>
 
     <Modal v-model:open="previewVideo" width="76vw" :footer="null" title="视频预览" destroy-on-close>
-          <video v-if="videoUrl(previewVideo)" :key="previewVideo?.id" :src="videoUrl(previewVideo)" class="preview-player" controls disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate" preload="metadata" playsinline autoplay />
+          <video v-if="videoUrl(previewVideo)" :key="previewVideo?.id" :src="videoUrl(previewVideo)" class="preview-player" controls disablepictureinpicture disableremoteplayback controlslist="nodownload noplaybackrate" preload="metadata" playsinline />
     </Modal>
     <Modal v-model:open="compareOpen" width="90vw" title="候选版本对比" :footer="null" destroy-on-close>
       <div class="compare-grid">
@@ -653,10 +761,10 @@ onMounted(async () => {
         </article>
       </div>
     </Modal>
-    <Modal v-model:open="addReferenceOpen" :title="`添加项目资产 · 当前为轨道 ${Math.max(0, tracks.findIndex((track) => track.id === activeTrack?.id) + 1)}`" width="760px" :footer="null">
+    <Modal v-model:open="addReferenceOpen" :title="`添加项目资产 · 当前为轨道 ${Math.max(0, tracks.findIndex((track) => track.id === activeTrack?.id) + 1)}`" width="760px" :footer="null" destroy-on-close>
       <div class="asset-picker">
         <button v-for="asset in referenceAssets" :key="asset.id" type="button" @click="addReference(asset)">
-          <img :src="previewUrl(asset)" :alt="asset.name" /><span>{{ asset.name }}</span><b>＋</b>
+          <img :src="previewUrl(asset)" :alt="asset.name" loading="lazy" decoding="async" /><span>{{ asset.name }}</span><b>＋</b>
         </button>
       </div>
     </Modal>
@@ -1285,6 +1393,26 @@ onMounted(async () => {
   box-shadow: 0 4px 10px rgb(15 23 42 / 16%);
   transform: translateY(-1px);
 }
+
+.generation-scene-strips { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.generation-scene-strip { min-width: 0; overflow: hidden; padding: 9px; border: 1px solid var(--ant-color-border-secondary); border-radius: 9px; background: var(--ant-color-bg-layout); }
+.generation-scene-heading { display: flex; min-width: 0; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+.generation-scene-heading b { overflow: hidden; color: var(--ant-color-text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.generation-scene-heading span { flex: none; color: var(--ant-color-text-tertiary); font-size: 10px; }
+.editor-scene-library { min-width: 0; margin-bottom: 10px; padding: 6px; border: 1px solid var(--ant-color-border-secondary); border-radius: 9px; background: var(--ant-color-bg-layout); }
+.editor-media-library .editor-scene-library > header { display: flex; width: 100%; min-width: 0; min-height: 28px; align-items: center; gap: 6px; justify-content: space-between; margin: 0 0 6px; }
+.editor-scene-library > header :deep(.ant-checkbox-wrapper) { min-width: 0; overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.editor-scene-library > header > small { flex: none; color: var(--ant-color-text-tertiary); font-size: 10px; }
+.editor-media-library .editor-scene-library > button { position: relative; display: grid; width: 100%; min-width: 0; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px; border: 1px solid transparent; border-radius: 8px; text-align: left; background: var(--ant-color-fill-tertiary); cursor: pointer; grid-template-columns: 68px minmax(0, 1fr); transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease, transform 160ms ease; }
+.editor-media-library .editor-scene-library > button:last-child { margin-bottom: 0; }
+.editor-media-library .editor-scene-library > button:hover { border-color: var(--ant-color-primary-border); box-shadow: 0 4px 10px rgb(15 23 42 / 7%); transform: translateY(-1px); }
+.editor-media-library .editor-scene-library > button.active { border-color: var(--ant-color-primary); background: var(--ant-color-primary-bg); box-shadow: 0 0 0 2px var(--ant-color-primary-bg), 0 4px 10px rgb(22 119 255 / 9%); }
+.timeline-scene-track { min-height: 102px; align-items: stretch; gap: 6px; }
+.timeline-scene-group { display: flex; min-width: 0; flex-direction: column; gap: 4px; padding: 4px; border: 1px solid color-mix(in srgb, var(--ant-color-primary) 25%, var(--ant-color-border-secondary)); border-radius: 6px; background: var(--ant-color-bg-container); }
+.timeline-scene-group > header { overflow: hidden; color: var(--ant-color-primary); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-scene-clips { display: flex; min-height: 70px; gap: 2px; }
+.timeline-scene-clips .timeline-clip { height: 70px; }
+.editor-timeline .timeline-lane-label { min-height: 102px; }
 
 @media (max-width: 1200px) {
   .editor-workspace {

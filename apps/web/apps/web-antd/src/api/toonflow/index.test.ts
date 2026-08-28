@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const requestClient = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
   request: vi.fn(),
 }));
 
@@ -9,6 +10,7 @@ vi.mock('#/api/request', () => ({ requestClient }));
 
 import {
   getEpisodeRenders,
+  getNovelPage,
   getProjectVideoArchive,
   setEpisodeRenderCurrent,
 } from './index';
@@ -43,5 +45,30 @@ describe('toonflow video archive api', () => {
       '/toonflow/episode-renders/56/current',
       { data: {}, method: 'PATCH' },
     );
+  });
+});
+
+describe('toonflow novel api', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('loads only the requested novel page', async () => {
+    requestClient.post.mockResolvedValue({ data: [], total: 42 });
+
+    await getNovelPage(12, 3, 10);
+
+    expect(requestClient.post).toHaveBeenCalledWith(
+      '/toonflow/novel/getNovel',
+      { limit: 10, page: 3, projectId: 12 },
+    );
+  });
+
+  it('does not request a page for an invalid project id', async () => {
+    await expect(getNovelPage(Number.NaN)).resolves.toEqual({
+      data: [],
+      total: 0,
+    });
+    expect(requestClient.post).not.toHaveBeenCalled();
   });
 });

@@ -4,7 +4,7 @@ import type ProductionFlowCanvas from '../ProductionFlowCanvas.vue';
 
 import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
 
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { downloadFileFromBlob } from '@vben/utils';
@@ -41,6 +41,7 @@ import {
   getImageFlow,
   getLatestWorkflowNodeRun,
   getNovelData,
+  getNovelPage,
   getProject,
   getProjectStatistics,
   getScripts,
@@ -108,7 +109,11 @@ const videoMode = computed(() =>
     : 'startEndRequired',
 );
 const statistics = reactive<ToonflowApi.ProjectStatistics>({ roleCount: 0, scriptCount: 0, videoCount: 0, storyboardCount: 0 });
-const novels = ref<ToonflowApi.NovelChapter[]>([]);
+const novels = shallowRef<ToonflowApi.NovelChapter[]>([]);
+const novelLoading = ref(false);
+const novelPage = ref(1);
+const novelPageSize = ref(10);
+const novelTotal = ref(0);
 const scripts = ref<ToonflowApi.Script[]>([]);
 const assets = ref<ToonflowApi.Asset[]>([]);
 const productionAssets = ref<ToonflowApi.Asset[]>([]);
@@ -131,9 +136,14 @@ const imageFlowEditorKey = ref(0);
 const generatingImageNodeId = ref('');
 const storyboardPreviewOpen = ref(false);
 const storyboardPreview = ref('');
-const productionAgentCollapsed = ref(false);
+const productionAgentCollapsed = ref(true);
 const productionAgentActivity = ref('等待指令');
 let productionAgentSyncTimer: ReturnType<typeof setInterval> | undefined;
+function stopProductionAgentSync() {
+  if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
+  productionAgentSyncTimer = undefined;
+}
+let detailActive = true;
 const videoTracks = ref<any[]>([]);
 const trackBindingOpen = ref(false);
 const trackBindingTarget = ref<any>();
@@ -352,9 +362,47 @@ async function loadProject() {
   Object.assign(statistics, statisticData);
 }
 
-async function loadNovels() {
-  if (!Number.isSafeInteger(projectId.value) || projectId.value <= 0) return;
-  novels.value = await getNovelData(projectId.value);
+let novelLoadVersion = 0;
+async function loadNovels(
+  page = novelPage.value,
+  pageSize = novelPageSize.value,
+) {
+  const targetProjectId = projectId.value;
+  if (!Number.isSafeInteger(targetProjectId) || targetProjectId <= 0) return;
+  const targetPage = Math.max(1, Math.trunc(page));
+  const targetPageSize = Math.max(1, Math.trunc(pageSize));
+  const requestVersion = ++novelLoadVersion;
+  novelLoading.value = true;
+  try {
+    const result = await getNovelPage(
+      targetProjectId,
+      targetPage,
+      targetPageSize,
+    );
+    if (
+      requestVersion !== novelLoadVersion ||
+      targetProjectId !== projectId.value
+    ) return;
+    const lastPage = Math.max(1, Math.ceil(result.total / targetPageSize));
+    if (targetPage > lastPage) {
+      await loadNovels(lastPage, targetPageSize);
+      return;
+    }
+    novels.value = result.data;
+    novelPage.value = targetPage;
+    novelPageSize.value = targetPageSize;
+    novelTotal.value = result.total;
+  } finally {
+    if (requestVersion === novelLoadVersion) novelLoading.value = false;
+  }
+}
+
+function changeNovelPage(page: number, pageSize: number) {
+  const nextPageSize = Math.max(1, Math.trunc(pageSize));
+  const nextPage = nextPageSize === novelPageSize.value
+    ? Math.max(1, Math.trunc(page))
+    : 1;
+  void loadNovels(nextPage, nextPageSize);
 }
 
 async function loadScripts() {
@@ -368,6 +416,8 @@ async function loadScripts() {
     selectedScriptId.value = requestedScript.id;
   } else if (!selectionStillExists && orderedScripts.value.length > 0) {
     selectedScriptId.value = orderedScripts.value[0]!.id;
+  } else if (!selectionStillExists) {
+    selectedScriptId.value = undefined;
   }
 }
 
@@ -375,31 +425,47 @@ async function loadAssets() {
   assets.value = await getAssets(projectId.value);
 }
 
-async function loadFlow() {
-  if (!selectedScriptId.value) {
+function isCurrentFlowTarget(targetProjectId: number, targetScriptId: number) {
+  return detailActive &&
+    projectId.value === targetProjectId &&
+    selectedScriptId.value === targetScriptId;
+}
+
+async function performLoadFlow() {
+  const targetProjectId = projectId.value;
+  const targetScriptId = selectedScriptId.value;
+  if (!targetScriptId) {
     flowText.value =
       '{\n  "script": "",\n  "storyboard": [],\n  "workbench": { "videoList": [] }\n}';
     storyboards.value = [];
     productionAssets.value = [];
+    videoTracks.value = [];
+    for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
     return;
   }
-  const flow = await getFlowData(projectId.value, selectedScriptId.value);
-  flowText.value = JSON.stringify(flow, null, 2);
-  productionAssets.value = Array.isArray(flow.assets) ? flow.assets : [];
+  const flow = await getFlowData(targetProjectId, targetScriptId);
+  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
   // getVideoWorkbench also repairs legacy rows whose storyboards share one
   // logical track label but still point at different video track ids. Load it
   // first so the storyboard list reads the repaired track_id values in the
   // same refresh cycle; otherwise the first image can appear as Track 1/Shot 1
   // and the second image as Track 2/Shot 1 until the next manual refresh.
-  const workbench = await getVideoWorkbench(projectId.value, selectedScriptId.value);
-  videoTracks.value = workbench.trackList ?? [];
-  storyboards.value = await getStoryboards(projectId.value, selectedScriptId.value);
+  const workbench = await getVideoWorkbench(targetProjectId, targetScriptId);
+  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
+  const nextStoryboards = await getStoryboards(targetProjectId, targetScriptId);
+  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
   const workflow = normalizeProductionWorkflow(flow.workflow);
   const latestRuns = await Promise.all(
     workflow.nodes.map((node) =>
-      getLatestWorkflowNodeRun(projectId.value, selectedScriptId.value!, node.id),
+      getLatestWorkflowNodeRun(targetProjectId, targetScriptId, node.id),
     ),
   );
+  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
+  const nextFlowText = JSON.stringify(flow, null, 2);
+  if (flowText.value !== nextFlowText) flowText.value = nextFlowText;
+  productionAssets.value = Array.isArray(flow.assets) ? flow.assets : [];
+  videoTracks.value = workbench.trackList ?? [];
+  storyboards.value = nextStoryboards;
   for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
   latestRuns.forEach((run, index) => {
     if (run) workflowNodeRuns[workflow.nodes[index]!.id] = run;
@@ -424,16 +490,36 @@ async function loadFlow() {
   }
 }
 
+let loadFlowInFlight: Promise<void> | undefined;
+let loadFlowQueued = false;
+function loadFlow(): Promise<void> {
+  if (loadFlowInFlight) {
+    loadFlowQueued = true;
+    return loadFlowInFlight;
+  }
+  loadFlowInFlight = (async () => {
+    do {
+      loadFlowQueued = false;
+      await performLoadFlow();
+    } while (detailActive && loadFlowQueued);
+  })().finally(() => {
+    loadFlowInFlight = undefined;
+  });
+  return loadFlowInFlight;
+}
+
 let productionAssetRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 let productionAssetRefreshAttempts = 0;
 
 function scheduleProductionAssetRefresh() {
+  if (!detailActive) return;
   if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
   productionAssetRefreshAttempts = 0;
   const refresh = async () => {
     await loadFlow();
     productionAssetRefreshAttempts += 1;
     if (
+      detailActive &&
       productionAssetRefreshAttempts < 40 &&
       productionAssets.value.some(
         (asset) =>
@@ -447,13 +533,21 @@ function scheduleProductionAssetRefresh() {
   productionAssetRefreshTimer = setTimeout(refresh, 1500);
 }
 
+let refreshingAll = false;
 async function loadAll() {
   if (!Number.isSafeInteger(projectId.value) || projectId.value <= 0) return;
   loading.value = true;
+  refreshingAll = true;
   try {
-    await Promise.all([loadProject(), loadNovels(), loadScripts(), loadAssets()]);
+    await Promise.all([
+      loadProject(),
+      loadNovels(1, novelPageSize.value),
+      loadScripts(),
+      loadAssets(),
+    ]);
     await loadFlow();
   } finally {
+    refreshingAll = false;
     loading.value = false;
   }
 }
@@ -497,7 +591,8 @@ async function extractNovelEvents(row: any) {
 }
 
 async function extractAllNovelEvents() {
-  const ids = novels.value.filter((chapter) => chapter.eventState !== 1).map((chapter) => chapter.id);
+  const allNovels = await getNovelData(projectId.value);
+  const ids = allNovels.filter((chapter) => chapter.eventState !== 1).map((chapter) => chapter.id);
   if (!ids.length) {
     message.info('没有待提取事件的章节');
     return;
@@ -750,6 +845,13 @@ async function clearProductionAgentMemory(memoryType: 'all' | 'message' | 'summa
   message.success(memoryType === 'message' ? '消息记忆已清除' : memoryType === 'summary' ? '摘要记忆已清除' : '全部记忆已清除');
 }
 
+async function clearScriptAgentMemory(memoryType: 'all' | 'message' | 'summary') {
+  const isolationKey = `scriptAgent:${projectId.value}:project`;
+  await clearAgentMemory('scriptAgent', isolationKey, memoryType);
+  if (memoryType !== 'summary') scriptChatMessages.value = [];
+  message.success(memoryType === 'message' ? '消息记忆已清除' : memoryType === 'summary' ? '摘要记忆已清除' : '全部记忆已清除');
+}
+
 async function saveAgentWorkspace() {
   await saveScriptAgentPlan(projectId.value, {
     ...scriptPlan,
@@ -863,8 +965,7 @@ function onProductionAgentActivity(payload: { status: string; toolName: string }
       }
       productionAgentActivity.value = 'Agent 执行中';
     } else {
-      if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
-      productionAgentSyncTimer = undefined;
+      stopProductionAgentSync();
       void loadFlow();
       productionAgentActivity.value = payload.status === 'error' ? 'Agent 执行失败' : 'Agent 已完成';
     }
@@ -1227,6 +1328,7 @@ let storyboardPollTimer: ReturnType<typeof setTimeout> | undefined;
 let storyboardPollAttempts = 0;
 
 function scheduleStoryboardPolling() {
+  if (!detailActive) return;
   if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
   storyboardPollAttempts = 0;
   const refresh = async () => {
@@ -1272,7 +1374,7 @@ function scheduleStoryboardPolling() {
       }
     } finally {
       storyboardPollAttempts += 1;
-      if (storyboardBusy.value || activeStoryboardNodeRunId.value) {
+      if (detailActive && (storyboardBusy.value || activeStoryboardNodeRunId.value)) {
         storyboardPollTimer = setTimeout(refresh, 2000);
       }
     }
@@ -1341,6 +1443,7 @@ function applyWorkflowRunNodes(nodes: WorkflowNodeRun[]) {
 }
 
 function scheduleWorkflowRunPolling(workflowRunId: number) {
+  if (!detailActive) return;
   if (observedWorkflowRunId === workflowRunId && workflowRunPollTimer) return;
   if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   observedWorkflowRunId = workflowRunId;
@@ -1358,7 +1461,7 @@ function scheduleWorkflowRunPolling(workflowRunId: number) {
     } catch {
       // A transient request failure must not stop the backend workflow.
     }
-    workflowRunPollTimer = setTimeout(refresh, 1500);
+    if (detailActive) workflowRunPollTimer = setTimeout(refresh, 1500);
   };
   workflowRunPollTimer = setTimeout(refresh, 500);
 }
@@ -1575,6 +1678,7 @@ async function createVideoPrompt(track:any) {
 }
 let videoPollTimer: ReturnType<typeof setTimeout> | undefined;
 function startVideoPolling() {
+  if (!detailActive) return;
   if (videoPollTimer) clearTimeout(videoPollTimer);
   const refresh = async () => {
     const project = Number(projectId.value);
@@ -1620,7 +1724,7 @@ function startVideoPolling() {
       }
       // Keep polling; transient status failures should not hide the running task.
     }
-    videoPollTimer = setTimeout(refresh, 2000);
+    if (detailActive) videoPollTimer = setTimeout(refresh, 2000);
   };
   videoPollTimer = setTimeout(refresh, 800);
 }
@@ -1655,9 +1759,11 @@ function openProductionForScript(scriptId: number) {
 }
 
 const panelContext = reactive({
-  projectId, project, imageQuality, videoMode, novels, novelColumns, importNovelFile,
+  projectId, project, imageQuality, videoMode, novels, novelColumns, novelLoading,
+  novelPage, novelPageSize, novelTotal, changeNovelPage, importNovelFile,
   extractAllNovelEvents, formatEventDisplay, extractNovelEvents, removeNovel, reloadNovels: loadNovels,
   scriptChatMessages, onAgentToolResult, resetAgentWorkspace, openScriptGeneration,
+  clearScriptAgentMemory,
   saveAgentWorkspace, workspaceActiveTab, workspaceTabs, renderMarkdown,
   assets, visibleScripts, scriptAssetGroups, scriptSearch, selectedScriptIds, importScriptFiles,
   toggleAllScripts, batchExportScripts, batchExtractScriptAssets, batchRemoveScripts,
@@ -1699,26 +1805,39 @@ watch(selectedScriptId, () => {
   if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   workflowRunPollTimer = undefined;
   observedWorkflowRunId = undefined;
-  if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
-  productionAgentSyncTimer = undefined;
+  stopProductionAgentSync();
   productionAgentActivity.value = '等待指令';
   productionChatMessages.value = [];
-  loadFlow();
+  if (!refreshingAll) void loadFlow();
 });
 
 watch(activeTab, (tab) => {
   if (tab === 'script-agent') agentType.value = 'scriptAgent';
   if (tab === 'production') agentType.value = 'productionAgent';
+  if (tab !== 'production') {
+    productionAgentCollapsed.value = true;
+    stopProductionAgentSync();
+  }
   loadAgentMemory();
 });
 
-onMounted(loadAll);
+watch(productionAgentCollapsed, (collapsed) => {
+  if (collapsed) stopProductionAgentSync();
+});
+
+onMounted(() => {
+  detailActive = true;
+  void loadAll();
+});
 onBeforeUnmount(() => {
+  detailActive = false;
+  loadFlowQueued = false;
+  novelLoadVersion += 1;
   if (workflowRunPollTimer) clearTimeout(workflowRunPollTimer);
   if (productionAssetRefreshTimer) clearTimeout(productionAssetRefreshTimer);
   if (storyboardPollTimer) clearTimeout(storyboardPollTimer);
   if (videoPollTimer) clearTimeout(videoPollTimer);
-  if (productionAgentSyncTimer) clearInterval(productionAgentSyncTimer);
+  stopProductionAgentSync();
 });
 watch(projectId, () => loadAll());
 

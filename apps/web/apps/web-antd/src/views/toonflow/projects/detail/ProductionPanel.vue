@@ -2,16 +2,17 @@
 /* eslint-disable vue/no-mutating-props -- panel context is an intentionally shared reactive view model */
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { reactive, ref } from 'vue';
+import { defineAsyncComponent, reactive, ref } from 'vue';
 
 import { Button, Card, Col, Form, Input, InputNumber, message, Modal, Row, Select, Space, Tag } from 'ant-design-vue';
 
 import { addStoryboard, editStoryboardInfo, getAgentRunEvents } from '#/api/toonflow';
 
-import AgentChat from '../AgentChat.vue';
-import ImageFlowEditor from '../ImageFlowEditor.vue';
 import ProductionFlowCanvas from '../ProductionFlowCanvas.vue';
 import AgentRunEventDrawer from '../../components/AgentRunEventDrawer.vue';
+
+const AgentChat = defineAsyncComponent(() => import('../AgentChat.vue'));
+const ImageFlowEditor = defineAsyncComponent(() => import('../ImageFlowEditor.vue'));
 
 const props = defineProps<{ context: any }>();
 const storyboardModalOpen = ref(false);
