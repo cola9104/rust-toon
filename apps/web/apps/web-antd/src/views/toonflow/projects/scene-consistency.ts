@@ -18,8 +18,74 @@ export interface SceneStateTimelineViolation {
   sceneKey: string;
 }
 
+export interface SceneKeyOption {
+  label: string;
+  value: string;
+}
+
+const SCENE_KEY_PATTERN = /^sc[1-9]\d*$/;
+
 export function normalizeSceneKey(value?: string) {
   return (value ?? '').trim().toLowerCase();
+}
+
+export function isValidSceneKey(value?: string) {
+  return SCENE_KEY_PATTERN.test(normalizeSceneKey(value));
+}
+
+function sceneKeySequence(sceneKey: string) {
+  return Number(sceneKey.slice(2));
+}
+
+function sceneDisplayName(scene: ToonflowApi.SceneMaster | undefined) {
+  if (!scene) return undefined;
+  const sceneKey = normalizeSceneKey(scene.sceneKey);
+  return [scene.name, scene.sceneAssetName]
+    .map((value) => value?.trim())
+    .find((value) => value && normalizeSceneKey(value) !== sceneKey);
+}
+
+/**
+ * Builds the scene picker independently from persistence. This lets the UI offer a new scN key
+ * before saveMaster creates its catalog entry, while existing masters keep human-readable names.
+ */
+export function buildSceneKeyOptions(
+  sceneKeys: string[],
+  catalog: ToonflowApi.SceneConsistencyCatalog | undefined,
+  pendingSceneKeys: string[] = [],
+): SceneKeyOption[] {
+  const scenesByKey = new Map(
+    (catalog?.scenes ?? []).map((scene) => [
+      normalizeSceneKey(scene.sceneKey),
+      scene,
+    ]),
+  );
+  const keys = new Set(
+    [...sceneKeys, ...scenesByKey.keys(), ...pendingSceneKeys]
+      .map(normalizeSceneKey)
+      .filter(isValidSceneKey),
+  );
+
+  return [...keys]
+    .sort((left, right) => sceneKeySequence(left) - sceneKeySequence(right))
+    .map((value) => {
+      const displayName = sceneDisplayName(scenesByKey.get(value));
+      return {
+        label: `${value.toUpperCase()}${displayName ? ` · ${displayName}` : ''}`,
+        value,
+      };
+    });
+}
+
+export function nextSceneKey(sceneKeys: string[]) {
+  const maxSequence = sceneKeys
+    .map(normalizeSceneKey)
+    .filter(isValidSceneKey)
+    .reduce(
+      (maximum, sceneKey) => Math.max(maximum, sceneKeySequence(sceneKey)),
+      0,
+    );
+  return `sc${maxSequence + 1}`;
 }
 
 export function sceneMasterForKey(
@@ -102,10 +168,13 @@ export function sceneStateTimelineViolation(
     ? storyboards.findIndex((storyboard) => storyboard.id === candidate.id)
     : -1;
   const ordered = storyboards.filter(
-    (storyboard) => candidate.id === undefined || storyboard.id !== candidate.id,
+    (storyboard) =>
+      candidate.id === undefined || storyboard.id !== candidate.id,
   );
   const insertAfterIndex = insertAfterStoryboardId
-    ? ordered.findIndex((storyboard) => storyboard.id === insertAfterStoryboardId)
+    ? ordered.findIndex(
+        (storyboard) => storyboard.id === insertAfterStoryboardId,
+      )
     : -1;
   const insertionIndex =
     existingIndex >= 0
@@ -118,7 +187,9 @@ export function sceneStateTimelineViolation(
   const sameScene = ordered.filter(
     (storyboard) => normalizeSceneKey(storyboard.sceneKey) === sceneKey,
   );
-  const candidateIndex = sameScene.indexOf(candidateEntry as ToonflowApi.Storyboard);
+  const candidateIndex = sameScene.indexOf(
+    candidateEntry as ToonflowApi.Storyboard,
+  );
   const boundaries = [
     [sameScene[candidateIndex - 1], candidateEntry],
     [candidateEntry, sameScene[candidateIndex + 1]],
@@ -132,13 +203,7 @@ export function sceneStateTimelineViolation(
     const earlierState = statesById.get(earlierStateId);
     const laterState = statesById.get(laterStateId);
     if (!earlierState || !laterState) continue;
-    if (
-      !isSameOrDescendantState(
-        master.states,
-        laterStateId,
-        earlierStateId,
-      )
-    ) {
+    if (!isSameOrDescendantState(master.states, laterStateId, earlierStateId)) {
       return {
         earlierStateName: earlierState.name || earlierState.stateKey,
         laterStateName: laterState.name || laterState.stateKey,
@@ -154,7 +219,9 @@ export function sceneConsistencyIssues(
   storyboards: ToonflowApi.Storyboard[],
 ): SceneConsistencyIssues {
   const usedSceneKeys = new Set(
-    storyboards.map((storyboard) => normalizeSceneKey(storyboard.sceneKey)).filter(Boolean),
+    storyboards
+      .map((storyboard) => normalizeSceneKey(storyboard.sceneKey))
+      .filter(Boolean),
   );
   let missingMasters = 0;
   for (const sceneKey of usedSceneKeys) {

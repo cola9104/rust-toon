@@ -26,6 +26,12 @@ cargo test -p rust-toon-framework-database --test migrations -- --ignored --noca
 cargo test -p rust-toon-toon-server \
   toonflow_scene_consistency::tests::resolver_locks_master_and_state_contracts_without_noop_revision_churn \
   -- --ignored --nocapture
+cargo test -p rust-toon-toon-server \
+  toonflow_scene_consistency_auto::tests::persists_durable_state_intervals_atomically_and_idempotently \
+  -- --ignored --nocapture
+cargo test -p rust-toon-toon-server \
+  toonflow_scene_transitions::tests::existing_transaction_entry_applies_and_rolls_back_track_defaults \
+  -- --ignored --nocapture
 cargo test -p rust-toon-system-server login_lockout_database_tests -- --ignored --nocapture
 cargo test -p rust-toon-toon-server gateway_repair_database_tests -- --ignored --nocapture
 cargo test -p rust-toon-toon-server agent_memory_database_tests -- --ignored --nocapture

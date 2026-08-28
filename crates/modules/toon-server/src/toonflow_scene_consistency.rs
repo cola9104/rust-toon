@@ -155,6 +155,10 @@ pub struct SaveSceneMasterRequest {
     #[serde(default)]
     name: String,
     scene_asset_id: Option<i64>,
+    /// Keeps an already selected mother-image version stable while the user
+    /// edits metadata. Omitting it intentionally selects the asset's current
+    /// ready image, which is also the behavior for older clients.
+    pinned_image_id: Option<i64>,
     #[serde(default)]
     spatial_prompt: String,
     #[serde(default = "empty_object")]
@@ -319,14 +323,30 @@ pub async fn save_scene_master(
     let asset = load_scene_asset(&state.pool, request.project_id, request.scene_asset_id).await?;
     let (scene_asset_id, pinned_image_id, status) = match asset {
         Some(asset) => {
-            let ready = asset.image_id.is_some() && asset.reference_url.is_some();
+            let pinned_image_id = if let Some(pinned_image_id) = request.pinned_image_id {
+                validate_pinned_scene_image(&state.pool, asset.id, pinned_image_id).await?;
+                Some(pinned_image_id)
+            } else {
+                asset.image_id.filter(|_| asset.reference_url.is_some())
+            };
             (
                 Some(asset.id),
-                asset.image_id.filter(|_| ready),
-                if ready { "ready" } else { "missing_reference" },
+                pinned_image_id,
+                if pinned_image_id.is_some() {
+                    "ready"
+                } else {
+                    "missing_reference"
+                },
             )
         }
-        None => (None, None, "missing_reference"),
+        None => {
+            if request.pinned_image_id.is_some() {
+                return Err(AppError::bad_request(
+                    "未选择场景资产时不能指定母版图片版本",
+                ));
+            }
+            (None, None, "missing_reference")
+        }
     };
     let name = non_empty_or(&request.name, &scene_key);
     let timestamp = now_ms();
@@ -856,6 +876,32 @@ async fn load_scene_asset(
         .ok_or_else(|| AppError::bad_request("场景母版只能选择当前项目的场景资产"))
 }
 
+async fn validate_pinned_scene_image(
+    pool: &PgPool,
+    scene_asset_id: i64,
+    image_id: i64,
+) -> Result<(), AppError> {
+    let ready: bool = sqlx::query_scalar(
+        r#"SELECT EXISTS(
+             SELECT 1 FROM toonflow.images
+             WHERE id=$1 AND assets_id=$2 AND state='已完成'
+               AND coalesce(file_path,'')<>''
+           )"#,
+    )
+    .bind(image_id)
+    .bind(scene_asset_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to validate pinned scene image"))?;
+    if ready {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(
+            "锁定的母版图片版本不可用，请重新选择场景资产图片",
+        ))
+    }
+}
+
 async fn load_reference_assets(
     pool: &PgPool,
     project_id: i64,
@@ -892,7 +938,7 @@ async fn load_reference_assets(
     Ok(rows)
 }
 
-async fn ensure_base_state(
+pub(crate) async fn ensure_base_state(
     connection: &mut PgConnection,
     scene_master_id: i64,
     timestamp: i64,

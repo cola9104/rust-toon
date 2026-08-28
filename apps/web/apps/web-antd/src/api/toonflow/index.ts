@@ -189,6 +189,13 @@ export namespace ToonflowApi {
     scenes: SceneMaster[];
   }
 
+  export interface AutoSceneConsistencyResult {
+    sceneCount: number;
+    statesCreated: number;
+    storyboardsBound: number;
+    warnings: string[];
+  }
+
   export type VideoTransitionType =
     | 'action_bridge'
     | 'audio_bridge'
@@ -621,9 +628,21 @@ export function getSceneConsistencyCatalog(projectId: number, scriptId: number) 
   );
 }
 
+export function autoConfigureSceneConsistency(
+  projectId: number,
+  scriptId: number,
+) {
+  return requestClient.post<ToonflowApi.AutoSceneConsistencyResult>(
+    '/toonflow/production/sceneConsistency/autoConfigure',
+    { projectId, scriptId },
+    { timeout: 300_000 },
+  );
+}
+
 export function saveSceneMaster(data: {
   layoutSpec?: Record<string, unknown>;
   name: string;
+  pinnedImageId?: number;
   projectId: number;
   sceneAssetId?: number;
   sceneKey: string;

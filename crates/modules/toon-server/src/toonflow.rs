@@ -1616,7 +1616,8 @@ pub async fn edit_storyboard_info(
         .await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
     let current: Option<StoryboardEditRow> = sqlx::query_as(
-        "SELECT project_id,script_id,track_id,track,should_generate_image,scene_key,scene_state_id FROM toonflow.storyboards WHERE id=$1",
+        "SELECT project_id,script_id,track_id,track,should_generate_image,scene_key,scene_state_id
+         FROM toonflow.storyboards WHERE id=$1 FOR UPDATE",
     )
     .bind(request.id)
     .fetch_optional(&mut *tx)

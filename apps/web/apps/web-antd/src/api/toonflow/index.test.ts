@@ -9,6 +9,7 @@ const requestClient = vi.hoisted(() => ({
 vi.mock('#/api/request', () => ({ requestClient }));
 
 import {
+  autoConfigureSceneConsistency,
   getEpisodeRenders,
   getNovelPage,
   getProjectVideoArchive,
@@ -68,11 +69,29 @@ describe('toonflow scene consistency api', () => {
     );
   });
 
+  it('asks AI to identify and bind every scene in one script', async () => {
+    requestClient.post.mockResolvedValue({
+      sceneCount: 3,
+      statesCreated: 0,
+      storyboardsBound: 22,
+      warnings: [],
+    });
+
+    await autoConfigureSceneConsistency(12, 34);
+
+    expect(requestClient.post).toHaveBeenCalledWith(
+      '/toonflow/production/sceneConsistency/autoConfigure',
+      { projectId: 12, scriptId: 34 },
+      { timeout: 300_000 },
+    );
+  });
+
   it('pins a master and persists a cumulative damaged state', async () => {
     requestClient.post.mockResolvedValue({ id: 7 });
 
     await saveSceneMaster({
       name: '客厅',
+      pinnedImageId: 89,
       projectId: 12,
       sceneAssetId: 90,
       sceneKey: 'sc1',
@@ -91,7 +110,11 @@ describe('toonflow scene consistency api', () => {
     expect(requestClient.post).toHaveBeenNthCalledWith(
       1,
       '/toonflow/production/sceneConsistency/saveMaster',
-      expect.objectContaining({ sceneAssetId: 90, sceneKey: 'sc1' }),
+      expect.objectContaining({
+        pinnedImageId: 89,
+        sceneAssetId: 90,
+        sceneKey: 'sc1',
+      }),
     );
     expect(requestClient.post).toHaveBeenNthCalledWith(
       2,

@@ -33,7 +33,10 @@ mod toonflow_project_crud;
 mod toonflow_project_helpers;
 mod toonflow_prompt_store;
 mod toonflow_resources;
+mod toonflow_scene_analysis_parse;
 mod toonflow_scene_consistency;
+mod toonflow_scene_consistency_auto;
+mod toonflow_scene_state_plan;
 mod toonflow_scene_transitions;
 mod toonflow_script_ai;
 mod toonflow_status;
@@ -1429,6 +1432,10 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_scene_consistency::list_scene_catalog),
         )
         .route(
+            "/api/production/sceneConsistency/autoConfigure",
+            post(toonflow_scene_consistency_auto::auto_configure_scene_consistency),
+        )
+        .route(
             "/api/production/sceneConsistency/saveMaster",
             post(toonflow_scene_consistency::save_scene_master),
         )
@@ -1656,6 +1663,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/toonflow/production/sceneConsistency/catalog",
             post(toonflow_scene_consistency::list_scene_catalog),
+        )
+        .route(
+            "/toonflow/production/sceneConsistency/autoConfigure",
+            post(toonflow_scene_consistency_auto::auto_configure_scene_consistency),
         )
         .route(
             "/toonflow/production/sceneConsistency/saveMaster",
@@ -1994,6 +2005,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/production/sceneConsistency/catalog",
             post(toonflow_scene_consistency::list_scene_catalog),
+        )
+        .route(
+            "/production/sceneConsistency/autoConfigure",
+            post(toonflow_scene_consistency_auto::auto_configure_scene_consistency),
         )
         .route(
             "/production/sceneConsistency/saveMaster",

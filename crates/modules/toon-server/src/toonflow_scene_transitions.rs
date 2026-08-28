@@ -481,7 +481,7 @@ pub(crate) async fn persist_work_data_with_transition_sync(
             update_time,
         )
         .await?;
-        apply_track_transition_defaults_in_transaction(&mut transaction, project_id, script_id)
+        apply_track_transition_defaults_with_sync_lock(&mut transaction, project_id, script_id)
             .await?;
     }
 
@@ -492,7 +492,7 @@ pub(crate) async fn persist_work_data_with_transition_sync(
     Ok(script_plan_changed)
 }
 
-async fn lock_transition_sync(
+pub(crate) async fn lock_transition_sync(
     transaction: &mut Transaction<'_, Postgres>,
     project_id: i64,
     script_id: i64,
@@ -553,7 +553,6 @@ pub(crate) async fn apply_track_transition_defaults(
         .await
         .map_err(|_| AppError::internal("failed to begin track transition sync"))?;
 
-    lock_transition_sync(&mut transaction, project_id, script_id).await?;
     apply_track_transition_defaults_in_transaction(&mut transaction, project_id, script_id).await?;
 
     transaction
@@ -562,7 +561,22 @@ pub(crate) async fn apply_track_transition_defaults(
         .map_err(|_| AppError::internal("failed to commit track transition sync"))
 }
 
-async fn apply_track_transition_defaults_in_transaction(
+/// Applies director-owned track transition defaults inside an existing
+/// transaction. The transition advisory lock is acquired here so callers
+/// cannot accidentally run the projection without the same episode-level
+/// serialization used by the standalone and workspace-save paths.
+pub(crate) async fn apply_track_transition_defaults_in_transaction(
+    transaction: &mut Transaction<'_, Postgres>,
+    project_id: i64,
+    script_id: i64,
+) -> Result<(), AppError> {
+    lock_transition_sync(transaction, project_id, script_id).await?;
+    apply_track_transition_defaults_with_sync_lock(transaction, project_id, script_id).await
+}
+
+/// Projection core for paths that already acquired `lock_transition_sync` in
+/// order to protect additional transition data in the same critical section.
+pub(crate) async fn apply_track_transition_defaults_with_sync_lock(
     transaction: &mut Transaction<'_, Postgres>,
     project_id: i64,
     script_id: i64,
@@ -863,5 +877,119 @@ mod tests {
                 .iter()
                 .all(|transition| transition.transition_type == "cut")
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn existing_transaction_entry_applies_and_rolls_back_track_defaults() {
+        use std::time::Duration;
+
+        use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let project_id = -9_810_001_i64;
+        let script_id = -9_810_002_i64;
+        let first_track_id = -9_810_003_i64;
+        let second_track_id = -9_810_004_i64;
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.projects(id,name,create_time,update_time)
+             VALUES($1,'transition transaction test',0,0)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.scripts(id,name,project_id,create_time)
+             VALUES($1,'episode',$2,0)",
+        )
+        .bind(script_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.video_tracks(id,project_id,script_id,sort_order)
+             VALUES($1,$3,$4,0),($2,$3,$4,1)",
+        )
+        .bind(first_track_id)
+        .bind(second_track_id)
+        .bind(project_id)
+        .bind(script_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.storyboards(
+               id,script_id,project_id,track_id,scene_key,index,create_time
+             ) VALUES
+               (-9810011,$1,$2,$3,'sc1',0,0),
+               (-9810012,$1,$2,$4,'sc2',1,0)",
+        )
+        .bind(script_id)
+        .bind(project_id)
+        .bind(first_track_id)
+        .bind(second_track_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.scene_transitions(
+               project_id,script_id,from_scene_key,to_scene_key,
+               transition_type,frame_policy
+             ) VALUES($1,$2,'sc1','sc2','continuous','previous_tail')",
+        )
+        .bind(project_id)
+        .bind(script_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut transaction = pool.begin().await.unwrap();
+        apply_track_transition_defaults_in_transaction(&mut transaction, project_id, script_id)
+            .await
+            .unwrap();
+        let projected: (String, String, Option<i64>) = sqlx::query_as(
+            "SELECT transition_type,frame_policy,previous_track_id
+             FROM toonflow.video_tracks WHERE id=$1",
+        )
+        .bind(second_track_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .unwrap();
+        assert_eq!(
+            projected,
+            (
+                "continuous".into(),
+                "previous_tail".into(),
+                Some(first_track_id)
+            )
+        );
+        transaction.rollback().await.unwrap();
+
+        let persisted: (String, String, Option<i64>) = sqlx::query_as(
+            "SELECT transition_type,frame_policy,previous_track_id
+             FROM toonflow.video_tracks WHERE id=$1",
+        )
+        .bind(second_track_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(persisted, ("cut".into(), "own".into(), None));
+
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 }
