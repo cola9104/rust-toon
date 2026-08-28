@@ -117,8 +117,94 @@ export namespace ToonflowApi {
     flowId?: number;
     index?: number;
     reason?: string;
+    sceneKey?: string;
+    sceneMasterId?: number;
+    sceneMasterName?: string;
+    sceneMasterStatus?: 'missing_reference' | 'needs_review' | 'ready';
+    sceneStateId?: number;
+    sceneStateKey?: string;
+    sceneStateParentKey?: string;
+    sceneStateDescription?: string;
+    sceneStateName?: string;
+    generatedSceneStateId?: number;
+    sceneConsistencyStatus?:
+      | 'missing_master'
+      | 'missing_scene_key'
+      | 'ready'
+      | 'stale'
+      | 'unconfigured';
     src?: string;
     trackId?: number;
+  }
+
+  export interface SceneStateReference {
+    assetId: number;
+    assetName: string;
+    imageId: number;
+    promptLabel: string;
+    referenceUrl: string;
+    role: 'master' | 'object_detail' | 'state';
+    sortOrder: number;
+  }
+
+  export interface SceneState {
+    changeSummary: string;
+    createTime: number;
+    id: number;
+    name: string;
+    objectStates: Record<string, string>;
+    parentStateId?: number;
+    references: SceneStateReference[];
+    revision: number;
+    sceneMasterId: number;
+    sequence: number;
+    source: string;
+    stateKey: string;
+    statePrompt: string;
+    storyboardCount: number;
+    updateTime: number;
+  }
+
+  export interface SceneMaster {
+    createTime: number;
+    id: number;
+    layoutSpec: Record<string, unknown>;
+    name: string;
+    pinnedImageId?: number;
+    projectId: number;
+    referenceUrl?: string;
+    revision: number;
+    sceneAssetId?: number;
+    sceneAssetName?: string;
+    sceneKey: string;
+    scriptId: number;
+    source: string;
+    spatialPrompt: string;
+    states: SceneState[];
+    status: 'missing_reference' | 'needs_review' | 'ready';
+    updateTime: number;
+  }
+
+  export interface SceneConsistencyCatalog {
+    scenes: SceneMaster[];
+  }
+
+  export type VideoTransitionType =
+    | 'action_bridge'
+    | 'audio_bridge'
+    | 'continuous'
+    | 'cut'
+    | 'dissolve'
+    | 'empty_shot'
+    | 'match_cut';
+
+  export type VideoFramePolicy = 'own' | 'previous_tail';
+
+  export interface UpdateVideoTransitionSettings {
+    framePolicy: VideoFramePolicy;
+    id: number;
+    previousTrackId?: number;
+    transitionType: VideoTransitionType;
   }
 
   export interface AgentDeployment {
@@ -205,7 +291,7 @@ export const pollingImage = pollAssetImages;
 export const cancelAssetImage = (id: number) => requestClient.post('/assetsGenerate/cancelGenerate', { id });
 export const uploadMaterial = (data: { projectId: number; base64Data: string; type?: string; name: string }) => requestClient.post('/assets/uploadClip', data);
 export const getMaterialData = (projectId: number, scriptId?: number) => requestClient.post<{ data: any[]; video: any[] }>('/assets/getMaterialData', { projectId, scriptId });
-export const generateFlowImage = (data: { projectId: number; model: number | string; quality: string; ratio: string; prompt: string; references?: string[]; targetType?: 'costume' | 'role' | 'scene' | 'storyboard' | 'tool' }) => requestClient.post<{ url: string }>('/production/editImage/generateFlowImage', data);
+export const generateFlowImage = (data: { projectId: number; storyboardId?: number; model: number | string; quality: string; ratio: string; prompt: string; references?: string[]; targetType?: 'costume' | 'role' | 'scene' | 'storyboard' | 'tool' }) => requestClient.post<{ sceneGenerationContext?: Record<string, unknown>; sceneStateId?: number; url: string }>('/production/editImage/generateFlowImage', data);
 export const getImageFlow = (id: number) => requestClient.post<{ id: number; nodes: any[]; edges: any[] } | null>('/production/editImage/getImageFlow', { id });
 export const saveImageFlow = (nodes: any[], edges: any[], assetId?: number) => requestClient.post<{ id: number }>('/production/editImage/saveImageFlow', { nodes, edges, assetId });
 export const updateImageFlow = (flowId: number, nodes: any[], edges: any[]) => requestClient.post('/production/editImage/updateImageFlow', { flowId, nodes, edges });
@@ -215,7 +301,7 @@ export const pollStoryboardImages = (ids: number[]) => requestClient.post<Array<
 export const batchDeleteStoryboards = (ids: number[], projectId: number) => requestClient.post('/production/storyboard/batchDelete', { ids, projectId });
 export const previewStoryboardImages = (storyboardIds: number[]) => requestClient.post<string | null>('/production/storyboard/previewImage', { storyboardIds });
 export const downloadStoryboardPreview = (storyboardIds: number[]) => requestClient.download<Blob>('/production/storyboard/downPreviewImage', { method: 'POST', data: { storyboardIds } });
-export const updateStoryboardUrl = (id: number, url: string, flowId: number) => requestClient.post('/production/storyboard/updateStoryboardUrl', { id, url, flowId });
+export const updateStoryboardUrl = (id: number, url: string, flowId: number, generatedSceneStateId?: number, sceneGenerationContext?: Record<string, unknown>) => requestClient.post('/production/storyboard/updateStoryboardUrl', { id, url, flowId, generatedSceneStateId, sceneGenerationContext });
 export const getCreativeManuals = () => requestClient.get<ToonflowApi.CreativeManual[]>('/toonflow/manuals');
 export const saveCreativeManual = (manual: Partial<ToonflowApi.CreativeManual> & { kind: 'director' | 'visual'; name: string; path: string }) => requestClient.post(`/project/${manual.kind === 'visual' ? (manual.id ? 'editVisualManual' : 'addVisualManual') : (manual.id ? 'editDirectorlManual' : 'addDirectorManual')}`, { name: manual.name, images: manual.images ?? [], data: manual.data ?? [], ...(manual.kind === 'visual' ? { stylePath: manual.path } : { directorManual: manual.path }) });
 export const deleteCreativeManual = (kind: 'director' | 'visual', name: string) => requestClient.post(`/project/${kind === 'visual' ? 'deleteVisualManual' : 'deleteDirectorManual'}`, { name });
@@ -524,8 +610,48 @@ export function removeStoryboard(id: number) {
   return requestClient.post('/toonflow/production/storyboard/removeFrame', { id });
 }
 
-export function editStoryboardInfo(data: Pick<ToonflowApi.Storyboard, 'associateAssetsIds' | 'duration' | 'id' | 'prompt' | 'shouldGenerateImage' | 'track' | 'videoDesc'>) {
+export function editStoryboardInfo(data: Pick<ToonflowApi.Storyboard, 'associateAssetsIds' | 'duration' | 'id' | 'prompt' | 'sceneKey' | 'sceneStateDescription' | 'sceneStateId' | 'sceneStateKey' | 'sceneStateParentKey' | 'shouldGenerateImage' | 'track' | 'videoDesc'>) {
   return requestClient.post('/toonflow/production/storyboard/editStoryboardInfo', data);
+}
+
+export function getSceneConsistencyCatalog(projectId: number, scriptId: number) {
+  return requestClient.post<ToonflowApi.SceneConsistencyCatalog>(
+    '/toonflow/production/sceneConsistency/catalog',
+    { projectId, scriptId },
+  );
+}
+
+export function saveSceneMaster(data: {
+  layoutSpec?: Record<string, unknown>;
+  name: string;
+  projectId: number;
+  sceneAssetId?: number;
+  sceneKey: string;
+  scriptId: number;
+  spatialPrompt: string;
+}) {
+  return requestClient.post<{ id: number }>(
+    '/toonflow/production/sceneConsistency/saveMaster',
+    data,
+  );
+}
+
+export function saveSceneState(data: {
+  changeSummary: string;
+  id?: number;
+  name: string;
+  objectStates?: Record<string, string>;
+  parentStateId?: number;
+  referenceAssetIds: number[];
+  sceneMasterId: number;
+  sequence?: number;
+  stateKey: string;
+  statePrompt: string;
+}) {
+  return requestClient.post<{ id: number }>(
+    '/toonflow/production/sceneConsistency/saveState',
+    data,
+  );
 }
 
 export function reorderStoryboards(projectId: number, scriptId: number, storyboardIds: number[]) {
@@ -545,6 +671,7 @@ export const getVideoWorkbench = (projectId: number, scriptId: number) => reques
 export const addVideoTrack = (projectId: number, scriptId: number, duration = 5) => requestClient.post<number>('/production/workbench/addTrack', { projectId, scriptId, duration });
 export const updateVideoTrackPrompt = (id: number, prompt: string) => requestClient.post('/production/workbench/updateVideoPrompt', { id, prompt });
 export const updateVideoContinuityMode = (id: number, continuityMode: string) => requestClient.post('/production/workbench/updateVideoContinuityMode', { id, continuityMode });
+export const updateVideoTransitionSettings = (data: ToonflowApi.UpdateVideoTransitionSettings) => requestClient.post('/production/workbench/updateVideoTransitionSettings', data);
 export const generateTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/generateVideo', data);
 export const generateVideoPrompt = (data: Record<string, any>) => requestClient.post<string>('/production/workbench/generateVideoPrompt', data);
 export const batchGenerateVideoPrompts = (data: Record<string, any>) => requestClient.post('/production/workbench/batchGeneratePrompt', data);

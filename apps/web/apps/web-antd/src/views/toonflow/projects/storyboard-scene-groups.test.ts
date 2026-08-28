@@ -81,6 +81,26 @@ describe('storyboard scene groups', () => {
     ]);
   });
 
+  it('uses the persisted canonical scene key before text heuristics', () => {
+    const scenes = groupStoryboardsBySceneAndTrack(
+      [
+        {
+          id: 21,
+          index: 0,
+          sceneKey: 'sc2',
+          track: '1',
+          trackId: 20,
+          videoDesc: '场景：病房；这里保留了上一场名称作为对白语境',
+        },
+      ],
+      storyboardPlan,
+    );
+
+    expect(scenes).toHaveLength(1);
+    expect(scenes[0]?.key).toBe('sc2');
+    expect(scenes[0]?.name).toBe('场2 · 武馆软垫·重逢');
+  });
+
   it('falls back to numbered scene blocks while retaining tracks without a table', () => {
     const scenes = groupStoryboardsBySceneAndTrack([
       {

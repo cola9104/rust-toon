@@ -35,7 +35,13 @@ pub(crate) fn validate_storyboard_prompt(
     }
     for index in 1..=reference_count {
         let marker = format!("@图{index}");
-        if !prompt.contains(&marker) {
+        let marker_is_present = prompt.match_indices(&marker).any(|(position, _)| {
+            prompt[position + marker.len()..]
+                .chars()
+                .next()
+                .is_none_or(|character| !character.is_ascii_digit())
+        });
+        if !marker_is_present {
             return Err(format!(
                 "分镜图片已绑定参考资产 {marker}，但画面提示词未描述该资产；请补充其位置和姿态，或从当前分镜解除绑定"
             ));
@@ -276,6 +282,7 @@ pub struct FlowImage {
     ratio: String,
     prompt: String,
     project_id: i64,
+    storyboard_id: Option<i64>,
     #[serde(default)]
     target_type: String,
 }
@@ -286,7 +293,48 @@ pub async fn generate_flow_image(
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
     let original_references = req.references.clone().unwrap_or_default();
-    let references = normalize_image_references(original_references)
+    let scene_plan = if req.target_type == "storyboard" {
+        let storyboard_id = req
+            .storyboard_id
+            .ok_or_else(|| AppError::bad_request("分镜图片编辑必须提供 storyboardId"))?;
+        let script_id: i64 = sqlx::query_scalar(
+            "SELECT script_id FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
+        )
+        .bind(storyboard_id)
+        .bind(req.project_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to load storyboard image flow context"))?
+        .ok_or_else(|| AppError::not_found("storyboard not found"))?;
+        let asset_references = crate::toonflow_asset_context::load_storyboard_asset_references(
+            &state.pool,
+            req.project_id,
+            script_id,
+            storyboard_id,
+        )
+        .await?;
+        Some(
+            crate::toonflow_storyboard_references::build_storyboard_reference_plan(
+                &state.pool,
+                req.project_id,
+                script_id,
+                storyboard_id,
+                asset_references,
+                original_references.clone(),
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    let mut reference_paths = scene_plan
+        .as_ref()
+        .map(|plan| plan.paths.clone())
+        .unwrap_or_default();
+    if scene_plan.is_none() {
+        reference_paths = original_references;
+    }
+    let references = normalize_image_references(reference_paths)
         .await
         .map_err(AppError::bad_request)?;
     let prompt = toonflow_image_edit_prompt::build(
@@ -295,6 +343,10 @@ pub async fn generate_flow_image(
         &req.ratio,
         references.len(),
     );
+    let prompt = scene_plan
+        .as_ref()
+        .map(|plan| plan.apply_to_prompt(prompt.clone()))
+        .unwrap_or(prompt);
     let url = ai_client::image_with_references_for_project(
         &state.pool,
         Some(req.project_id),
@@ -308,6 +360,7 @@ pub async fn generate_flow_image(
     let now = chrono::Utc::now().timestamp_millis();
     let task_input = json!({
         "projectId": req.project_id,
+        "storyboardId": req.storyboard_id,
         "model": req.model,
         "quality": req.quality,
         "ratio": req.ratio,
@@ -323,7 +376,11 @@ pub async fn generate_flow_image(
         .bind(task_input)
         .execute(&state.pool)
         .await;
-    Ok(Json(ApiResponse::new(json!({"url":url}))))
+    Ok(Json(ApiResponse::new(json!({
+        "url":url,
+        "sceneStateId":scene_plan.as_ref().and_then(|plan|plan.scene_state_id),
+        "sceneGenerationContext":scene_plan.as_ref().map(|plan|plan.generation_context.clone()),
+    }))))
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,12 +474,58 @@ async fn generate_storyboard_job(
     ratio: String,
     job: StoryboardImageJob,
 ) -> bool {
-    let reference_paths = crate::toonflow_asset_context::load_storyboard_asset_references(
+    let asset_references = match crate::toonflow_asset_context::load_storyboard_asset_references(
         &pool, project_id, script_id, job.id,
     )
     .await
-    .unwrap_or_default();
-    let references = match normalize_image_references(reference_paths).await {
+    {
+        Ok(references) => references,
+        Err(error) => {
+            let reason = format!("分镜参考资产查询失败：{error}");
+            let _ = sqlx::query(
+                "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+            )
+            .bind(job.id)
+            .bind(reason)
+            .execute(&pool)
+            .await;
+            return false;
+        }
+    };
+    if let Err(reason) = validate_storyboard_prompt(&job.prompt, asset_references.len()) {
+        let _ =
+            sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1")
+                .bind(job.id)
+                .bind(reason)
+                .execute(&pool)
+                .await;
+        return false;
+    }
+    let reference_plan =
+        match crate::toonflow_storyboard_references::build_storyboard_reference_plan(
+            &pool,
+            project_id,
+            script_id,
+            job.id,
+            asset_references,
+            Vec::new(),
+        )
+        .await
+        {
+            Ok(plan) => plan,
+            Err(error) => {
+                let reason = error.to_string();
+                let _ = sqlx::query(
+                    "UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1",
+                )
+                .bind(job.id)
+                .bind(reason)
+                .execute(&pool)
+                .await;
+                return false;
+            }
+        };
+    let references = match normalize_image_references(reference_plan.paths.clone()).await {
         Ok(references) => references,
         Err(reason) => {
             let reason = format!("分镜参考资产读取失败：{reason}");
@@ -436,16 +539,9 @@ async fn generate_storyboard_job(
             return false;
         }
     };
-    if let Err(reason) = validate_storyboard_prompt(&job.prompt, references.len()) {
-        let _ =
-            sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1")
-                .bind(job.id)
-                .bind(reason)
-                .execute(&pool)
-                .await;
-        return false;
-    }
-    let generation_prompt = crate::toonflow_asset_prompt::storyboard_generation_prompt(&job.prompt);
+    let generation_prompt = reference_plan.apply_to_prompt(
+        crate::toonflow_asset_prompt::storyboard_generation_prompt(&job.prompt),
+    );
     match ai_client::image_with_references_for_project(
         &pool,
         Some(project_id),
@@ -467,10 +563,12 @@ async fn generate_storyboard_job(
             .await
             {
                 Ok(file_path) => sqlx::query(
-                    "UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL WHERE id=$1 AND state='生成中'",
+                    "UPDATE toonflow.storyboards SET file_path=$2,state='已完成',reason=NULL,generated_scene_state_id=$3,scene_generation_context=$4 WHERE id=$1 AND state='生成中'",
                 )
                 .bind(job.id)
                 .bind(file_path)
+                .bind(reference_plan.scene_state_id)
+                .bind(reference_plan.generation_context)
                 .execute(&pool)
                 .await
                 .is_ok_and(|result| result.rows_affected() == 1),
@@ -651,6 +749,18 @@ mod prompt_tests {
     }
 
     #[test]
+    fn marker_one_is_not_satisfied_by_marker_ten() {
+        let prompt = (2..=10)
+            .map(|index| format!("@图{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let error = validate_storyboard_prompt(&prompt, 10).unwrap_err();
+
+        assert!(error.contains("@图1"));
+    }
+
+    #[test]
     fn rejects_empty_prompt() {
         assert!(validate_storyboard_prompt("  ", 0).is_err());
     }
@@ -700,6 +810,8 @@ pub struct StoryboardUrl {
     id: i64,
     url: String,
     flow_id: i64,
+    generated_scene_state_id: Option<i64>,
+    scene_generation_context: Option<Value>,
 }
 pub async fn update_storyboard_url(
     user: CurrentUser,
@@ -707,7 +819,22 @@ pub async fn update_storyboard_url(
     Json(req): Json<StoryboardUrl>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:scene:update")?;
-    sqlx::query("UPDATE toonflow.storyboards SET file_path=$2,flow_id=$3,state='已完成',should_generate_image=$4 WHERE id=$1").bind(req.id).bind(&req.url).bind(req.flow_id).bind(if req.url.is_empty(){0}else{1}).execute(&state.pool).await.map_err(|_|AppError::internal("failed to update storyboard image"))?;
+    let scene_generation_context = req.scene_generation_context.unwrap_or_else(|| json!({}));
+    if !scene_generation_context.is_object() {
+        return Err(AppError::bad_request(
+            "sceneGenerationContext 必须是 JSON 对象",
+        ));
+    }
+    sqlx::query("UPDATE toonflow.storyboards SET file_path=$2,flow_id=$3,state='已完成',should_generate_image=$4,generated_scene_state_id=$5,scene_generation_context=$6 WHERE id=$1")
+        .bind(req.id)
+        .bind(&req.url)
+        .bind(req.flow_id)
+        .bind(if req.url.is_empty(){0}else{1})
+        .bind(req.generated_scene_state_id)
+        .bind(scene_generation_context)
+        .execute(&state.pool)
+        .await
+        .map_err(|_|AppError::internal("failed to update storyboard image"))?;
     Ok(Json(ApiResponse::new(json!({"message":"更新分镜成功"}))))
 }
 #[derive(Deserialize)]

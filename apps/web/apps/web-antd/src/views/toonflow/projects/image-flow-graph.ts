@@ -24,6 +24,14 @@ export function upstreamNodeIds(edges: ImageFlowEdge[], nodeId: string): Set<str
   return visited;
 }
 
+/** Direct inputs are the only references for one edit step. Traversing all ancestors would feed
+ * every historical generated image back into the model and compound visual drift. */
+export function directUpstreamNodeIds(edges: ImageFlowEdge[], nodeId: string): Set<string> {
+  return new Set(
+    edges.filter((edge) => edge.target === nodeId).map((edge) => edge.source),
+  );
+}
+
 export function defaultImageFlowEdges(nodes: ImageFlowNode[]): ImageFlowEdge[] {
   const generatedNode = nodes.find((node) => node.type === 'generated');
   if (!generatedNode) return [];

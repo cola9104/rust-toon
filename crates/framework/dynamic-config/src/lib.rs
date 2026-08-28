@@ -87,6 +87,10 @@ impl NacosConfig {
 /// Keep this value alive for as long as the service should receive updates.
 pub struct DynamicConfig<T: Clone> {
     receiver: watch::Receiver<T>,
+    // Keep the channel open even when dynamic configuration is disabled or
+    // the optional r-nacos client cannot be initialized. Runtime loops treat
+    // a closed receiver as a shutdown condition.
+    _sender: watch::Sender<T>,
     _service: Option<ConfigService>,
     _listener: Option<Arc<dyn ConfigChangeListener>>,
     first_publication_task: Option<tokio::task::JoinHandle<()>>,
@@ -131,6 +135,7 @@ where
         info!(data_id = %config.data_id, "dynamic configuration is disabled");
         return Ok(DynamicConfig {
             receiver,
+            _sender: sender,
             _service: None,
             _listener: None,
             first_publication_task: None,
@@ -157,11 +162,12 @@ where
     let service = match timeout(config.connect_timeout, builder.build()).await {
         Ok(Ok(service)) => service,
         Ok(Err(error)) => {
-            return startup_failure_or_defaults(config, receiver, error.into());
+            return startup_failure_or_defaults(config, sender, receiver, error.into());
         }
         Err(_) => {
             return startup_failure_or_defaults(
                 config,
+                sender,
                 receiver,
                 anyhow!("r-nacos client initialization timed out"),
             );
@@ -276,13 +282,14 @@ where
             config.data_id.clone(),
             config.group.clone(),
             config.connect_timeout,
-            sender,
+            sender.clone(),
             validator,
         ))
     });
 
     Ok(DynamicConfig {
         receiver,
+        _sender: sender,
         _service: Some(service),
         _listener: Some(listener),
         first_publication_task,
@@ -345,6 +352,7 @@ async fn wait_for_first_publication_task<T>(
 
 fn startup_failure_or_defaults<T: Clone>(
     config: NacosConfig,
+    sender: watch::Sender<T>,
     receiver: watch::Receiver<T>,
     error: anyhow::Error,
 ) -> anyhow::Result<DynamicConfig<T>> {
@@ -358,6 +366,7 @@ fn startup_failure_or_defaults<T: Clone>(
     );
     Ok(DynamicConfig {
         receiver,
+        _sender: sender,
         _service: None,
         _listener: None,
         first_publication_task: None,
@@ -598,6 +607,35 @@ mod tests {
             "invalid-md5".into(),
         ));
         assert_eq!(*receiver.borrow(), initial);
+    }
+
+    #[tokio::test]
+    async fn disabled_subscription_keeps_runtime_channel_open() {
+        let config = NacosConfig {
+            enabled: false,
+            required: false,
+            server_addr: String::new(),
+            namespace: String::new(),
+            group: DEFAULT_GROUP.into(),
+            data_id: "disabled-test.json".into(),
+            app_name: "disabled-test".into(),
+            username: None,
+            password: None,
+            cache_dir: PathBuf::from(DEFAULT_CACHE_DIR),
+            connect_timeout: Duration::from_secs(1),
+        };
+        let dynamic = subscribe_json(
+            config,
+            GatewayRuntimeConfig::new(300, 60),
+            GatewayRuntimeConfig::validate,
+        )
+        .await
+        .unwrap();
+        let receiver = dynamic.receiver();
+
+        assert!(matches!(receiver.has_changed(), Ok(false)));
+        drop(dynamic);
+        assert!(receiver.has_changed().is_err());
     }
 
     #[tokio::test]

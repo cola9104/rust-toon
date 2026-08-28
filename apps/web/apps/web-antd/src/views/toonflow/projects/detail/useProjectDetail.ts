@@ -69,7 +69,7 @@ import {
 } from '#/api/toonflow';
 
 import { assetFileUrl } from '../../assets/asset-types';
-import { defaultImageFlowEdges, upstreamNodeIds } from '../image-flow-graph';
+import { defaultImageFlowEdges, directUpstreamNodeIds } from '../image-flow-graph';
 import { parseNovelText } from '../novel-import';
 import {
   extractScriptItems,
@@ -443,16 +443,14 @@ async function performLoadFlow() {
     for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
     return;
   }
-  const flow = await getFlowData(targetProjectId, targetScriptId);
-  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
-  // getVideoWorkbench also repairs legacy rows whose storyboards share one
-  // logical track label but still point at different video track ids. Load it
-  // first so the storyboard list reads the repaired track_id values in the
-  // same refresh cycle; otherwise the first image can appear as Track 1/Shot 1
-  // and the second image as Track 2/Shot 1 until the next manual refresh.
-  const workbench = await getVideoWorkbench(targetProjectId, targetScriptId);
-  if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
-  const nextStoryboards = await getStoryboards(targetProjectId, targetScriptId);
+  // These endpoints are independent, read-only snapshots of the same script.
+  // Fetch them together so switching production scripts does not pay three
+  // consecutive network round trips.
+  const [flow, workbench, nextStoryboards] = await Promise.all([
+    getFlowData(targetProjectId, targetScriptId),
+    getVideoWorkbench(targetProjectId, targetScriptId),
+    getStoryboards(targetProjectId, targetScriptId),
+  ]);
   if (!isCurrentFlowTarget(targetProjectId, targetScriptId)) return;
   const workflow = normalizeProductionWorkflow(flow.workflow);
   const latestRuns = await Promise.all(
@@ -725,6 +723,22 @@ function videoUploadData(track: any, mode: unknown) {
   return [...storyboardMedias, ...explicitFrameMedias];
 }
 
+function ensureVideoStoryboardImagesCurrent(tracks: any[]) {
+  const invalid = tracks.flatMap((track) =>
+    storyboardsForTrack(track).filter((storyboard: any) => {
+      const hasImage = Boolean(storyboard.filePath || storyboard.src);
+      return hasImage && storyboard.sceneConsistencyStatus !== 'ready';
+    }),
+  );
+  if (invalid.length > 0) {
+    message.warning(
+      `有 ${invalid.length} 张分镜图的场景母版或状态已变化，请先重新生成分镜图片`,
+    );
+    return false;
+  }
+  return true;
+}
+
 async function generateSelectedVideoPrompts(tracks: any[]) {
   if (!project.value?.videoModel) return message.warning('请先配置项目视频模型');
   const mode = videoModeForTrack(tracks[0]);
@@ -740,6 +754,7 @@ async function generateSelectedVideoPrompts(tracks: any[]) {
 
 async function generateSelectedVideos(tracks: any[]) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先选择剧本并配置视频模型');
+  if (!ensureVideoStoryboardImagesCurrent(tracks)) return;
   const firstTrack = tracks[0];
   const first = firstTrack?.generation || {};
   const mode = first.mode || videoModeForTrack(firstTrack);
@@ -976,7 +991,7 @@ function onProductionAgentActivity(payload: { status: string; toolName: string }
 }
 
 function collectUpstreamNodeIds(nodeId: string) {
-  return upstreamNodeIds(imageFlowEdges.value, nodeId);
+  return directUpstreamNodeIds(imageFlowEdges.value, nodeId);
 }
 
 async function createFlowImage(nodeId: string) {
@@ -991,9 +1006,11 @@ async function createFlowImage(nodeId: string) {
   if (!prompt.trim()) return message.warning('请先连接编辑指令节点或填写节点编辑要求');
   generatingImageNodeId.value = nodeId;
   try {
-    const result = await generateFlowImage({ projectId: projectId.value, model: String(project.value.imageModel), quality: imageQuality.value, ratio: project.value.videoRatio || '16:9', prompt, references, targetType: generatedNode.data.targetType || 'storyboard' });
+    const result = await generateFlowImage({ projectId: projectId.value, storyboardId: editingStoryboardId.value, model: String(project.value.imageModel), quality: imageQuality.value, ratio: project.value.videoRatio || '16:9', prompt, references, targetType: generatedNode.data.targetType || 'storyboard' });
     generatedNode.data.generatedImage = result.url;
     generatedNode.data.references = references;
+    generatedNode.data.sceneStateId = result.sceneStateId;
+    generatedNode.data.sceneGenerationContext = result.sceneGenerationContext;
     message.success('当前节点图片已生成');
   } finally {
     generatingImageNodeId.value = '';
@@ -1002,6 +1019,14 @@ async function createFlowImage(nodeId: string) {
 
 function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
   const id = `${type}-${Date.now()}`;
+  const editingAsset = productionAssets.value.find(
+    (asset) => asset.id === editingAssetId.value,
+  );
+  const defaultTargetType = editingStoryboardId.value
+    ? 'storyboard'
+    : editingAsset?.type === 'scene'
+      ? 'scene'
+      : 'role';
   imageFlowNodes.value.push({
     id,
     type,
@@ -1011,7 +1036,7 @@ function addImageFlowNode(type: 'generated' | 'prompt' | 'upload') {
         ? { image: '' }
         : type === 'prompt'
           ? { prompt: '' }
-          : { generatedImage: '', prompt: '', references: [], targetType: 'storyboard' },
+          : { generatedImage: '', prompt: '', references: [], targetType: defaultTargetType },
   });
   if (imageFlowNodes.value.length > 1) {
     const source = imageFlowNodes.value.at(-2)?.id;
@@ -1229,6 +1254,8 @@ async function saveVisualImageFlow() {
       editingStoryboardId.value,
       storyboardGeneratedImage,
       imageFlowId.value,
+      [...imageFlowNodes.value].reverse().find((node) => node.type === 'generated' && node.data.generatedImage)?.data.sceneStateId,
+      [...imageFlowNodes.value].reverse().find((node) => node.type === 'generated' && node.data.generatedImage)?.data.sceneGenerationContext,
     );
   }
   await loadFlow();
@@ -1365,6 +1392,7 @@ function scheduleStoryboardPolling() {
           lastStoryboardNodeRunId.value = nodeRun.id;
           activeStoryboardNodeRunId.value = undefined;
           storyboardBusy.value = false;
+          await loadFlow();
           if (nodeRun.state === 'failed') {
             message.error(nodeRun.errorReason || '部分分镜图片生成失败，可点击重试失败项');
           } else if (nodeRun.state === 'success') {
@@ -1730,6 +1758,7 @@ function startVideoPolling() {
 }
 async function generateVideo(track:any) {
   if (!selectedScriptId.value || !project.value?.videoModel) return message.warning('请先配置项目视频模型');
+  if (!ensureVideoStoryboardImagesCurrent([track])) return;
   const options = track.generation ?? {};
   track.videoGenerating = true;
   const mode = options.mode || videoModeForTrack(track);
@@ -1748,7 +1777,7 @@ async function generateVideo(track:any) {
 async function chooseVideo(track:any,video:any){await selectTrackVideo(track.id,video.id);track.selectVideoId=video.id;message.success('候选视频已选择')}
 async function removeVideo(video:any){await deleteTrackVideo(video.id);await loadFlow()}
 async function cancelVideo(video:any){await cancelTrackVideo(video.id);await loadFlow()}
-async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');const mode=videoModeForTrack(track);const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode,resolution:'1080p',audio:true,uploadData:videoUploadData(track,mode)});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
+async function retryVideo(video:any,track:any){if(!project.value?.videoModel)return message.warning('请先配置视频模型');if(!ensureVideoStoryboardImagesCurrent([track]))return;const mode=videoModeForTrack(track);const id=await retryTrackVideo({id:video.id,model:project.value.videoModel,mode,resolution:'1080p',audio:true,uploadData:videoUploadData(track,mode)});track.videoList=[{id,state:'生成中',src:'',errorReason:undefined},...(track.videoList??[])];message.loading({content:`视频任务 ${id} 正在重试`,duration:2,key:`video-${id}`});startVideoPolling()}
 async function exportVideo(videoIds: number[] = []){if(!selectedScriptId.value)return message.warning('请先选择剧本');if(videoIds.length < 2)return message.warning('请至少选择 2 个视频片段');const result=await exportFinalVideo(projectId.value,selectedScriptId.value,videoIds);message.success(`已提交 ${videoIds.length} 个视频片段的合成任务 ${result.taskId}，完成后会自动归档到项目“剧集成果”`)}
 
 function openProductionForScript(scriptId: number) {

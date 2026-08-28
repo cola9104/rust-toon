@@ -17,6 +17,10 @@ use crate::{
     toonflow_materials::save_asset_cover_data_url,
     toonflow_pagination::{PageData, default_limit, default_page},
     toonflow_project_helpers::{default_should_generate, ensure_project, next_id, now_ms},
+    toonflow_scene_transitions::{
+        apply_track_transition_defaults, normalize_persisted_scene_key,
+        persist_work_data_with_transition_sync,
+    },
     toonflow_storage::{delete_asset_file, enqueue_cleanup_paths},
 };
 
@@ -1168,20 +1172,14 @@ pub async fn save_flow_data(
     let mut data = request.data;
     data["workflow"] = serde_json::to_value(workflow)
         .map_err(|_| AppError::internal("failed to serialize workflow definition"))?;
-    sqlx::query(
-        r#"INSERT INTO toonflow.agent_work_data
-           (project_id, episodes_id, key, data, create_time, update_time)
-           VALUES ($1,$2,'productionAgent',$3,$4,$4)
-           ON CONFLICT (project_id, episodes_id, key)
-           DO UPDATE SET data=excluded.data, update_time=excluded.update_time"#,
+    persist_work_data_with_transition_sync(
+        &state.pool,
+        request.project_id,
+        request.episodes_id,
+        &data,
+        time,
     )
-    .bind(request.project_id)
-    .bind(request.episodes_id)
-    .bind(data)
-    .bind(time)
-    .execute(&state.pool)
-    .await
-    .map_err(|_| AppError::internal("failed to save flow data"))?;
+    .await?;
     Ok(Json(ApiResponse::new(())))
 }
 
@@ -1198,6 +1196,17 @@ pub struct StoryboardRow {
     pub reason: Option<String>,
     pub track: Option<String>,
     pub video_desc: Option<String>,
+    pub scene_key: Option<String>,
+    pub scene_state_id: Option<i64>,
+    pub generated_scene_state_id: Option<i64>,
+    pub scene_generation_context: Value,
+    pub scene_master_id: Option<i64>,
+    pub scene_master_name: Option<String>,
+    pub scene_master_status: Option<String>,
+    pub scene_master_revision: Option<i32>,
+    pub scene_state_key: Option<String>,
+    pub scene_state_name: Option<String>,
+    pub scene_state_revision: Option<i32>,
     pub should_generate_image: i32,
     pub project_id: i64,
     pub flow_id: Option<i64>,
@@ -1219,9 +1228,26 @@ pub async fn get_storyboards(
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
     let rows = sqlx::query_as::<_, StoryboardRow>(
-        r#"SELECT id, script_id, prompt, file_path, duration, state, track_id, reason, track,
-                  video_desc, should_generate_image, project_id, flow_id, index, create_time
-           FROM toonflow.storyboards WHERE script_id=$1 AND project_id=$2 ORDER BY index ASC NULLS LAST, id ASC"#,
+        r#"SELECT storyboard.id,storyboard.script_id,storyboard.prompt,storyboard.file_path,
+                  storyboard.duration,storyboard.state,storyboard.track_id,storyboard.reason,
+                  storyboard.track,storyboard.video_desc,storyboard.scene_key,
+                  storyboard.scene_state_id,storyboard.generated_scene_state_id,
+                  storyboard.scene_generation_context,master.id AS scene_master_id,
+                  master.name AS scene_master_name,
+                  CASE WHEN master.status='ready' AND (
+                         master_image.id IS NULL OR master_image.state<>'已完成'
+                         OR coalesce(master_image.file_path,'')=''
+                       ) THEN 'missing_reference' ELSE master.status END AS scene_master_status,
+                  master.revision AS scene_master_revision,scene_state.state_key AS scene_state_key,
+                  scene_state.name AS scene_state_name,scene_state.revision AS scene_state_revision,
+                  storyboard.should_generate_image,storyboard.project_id,storyboard.flow_id,
+                  storyboard.index,storyboard.create_time
+           FROM toonflow.storyboards storyboard
+           LEFT JOIN toonflow.scene_states scene_state ON scene_state.id=storyboard.scene_state_id
+           LEFT JOIN toonflow.scene_masters master ON master.id=scene_state.scene_master_id
+           LEFT JOIN toonflow.images master_image ON master_image.id=master.pinned_image_id
+           WHERE storyboard.script_id=$1 AND storyboard.project_id=$2
+           ORDER BY storyboard.index ASC NULLS LAST,storyboard.id ASC"#,
     )
     .bind(request.script_id)
     .bind(request.project_id)
@@ -1237,6 +1263,7 @@ pub async fn get_storyboards(
         .fetch_all(&state.pool)
         .await
         .map_err(|_| AppError::internal("failed to list storyboard assets"))?;
+        let scene_consistency_status = storyboard_scene_consistency_status(&row);
         result.push(json!({
             "id": row.id,
             "scriptId": row.script_id,
@@ -1250,6 +1277,15 @@ pub async fn get_storyboards(
             "reason": row.reason,
             "track": row.track,
             "videoDesc": row.video_desc,
+            "sceneKey": row.scene_key,
+            "sceneMasterId": row.scene_master_id,
+            "sceneMasterName": row.scene_master_name,
+            "sceneMasterStatus": row.scene_master_status,
+            "sceneStateId": row.scene_state_id,
+            "sceneStateKey": row.scene_state_key,
+            "sceneStateName": row.scene_state_name,
+            "generatedSceneStateId": row.generated_scene_state_id,
+            "sceneConsistencyStatus": scene_consistency_status,
             "shouldGenerateImage": row.should_generate_image,
             "flowId": row.flow_id,
             "index": row.index,
@@ -1258,6 +1294,19 @@ pub async fn get_storyboards(
         }));
     }
     Ok(Json(ApiResponse::new(result)))
+}
+
+fn storyboard_scene_consistency_status(row: &StoryboardRow) -> &'static str {
+    crate::toonflow_scene_consistency::storyboard_consistency_status(
+        row.scene_key.as_deref(),
+        row.scene_state_id,
+        row.file_path.as_deref(),
+        row.generated_scene_state_id,
+        &row.scene_generation_context,
+        row.scene_master_status.as_deref(),
+        row.scene_master_revision,
+        row.scene_state_revision,
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -1269,6 +1318,11 @@ pub struct SaveStoryboardRequest {
     #[serde(default)]
     pub state: String,
     pub video_desc: Option<String>,
+    pub scene_key: Option<String>,
+    pub scene_state_id: Option<i64>,
+    pub scene_state_key: Option<String>,
+    pub scene_state_parent_key: Option<String>,
+    pub scene_state_description: Option<String>,
     #[serde(default = "default_should_generate")]
     pub should_generate_image: i32,
     #[serde(alias = "src")]
@@ -1306,7 +1360,8 @@ pub async fn add_storyboard(
         .await
         .map_err(|_| AppError::internal("failed to create storyboard"))?;
     sqlx::query(
-        "INSERT INTO toonflow.video_tracks (id, script_id, project_id, duration) VALUES ($1,$2,$3,$4)",
+        "INSERT INTO toonflow.video_tracks(id,script_id,project_id,duration,sort_order)
+         VALUES($1,$2,$3,$4,coalesce((SELECT max(sort_order)+1 FROM toonflow.video_tracks WHERE project_id=$3 AND script_id=$2),0))",
     )
     .bind(track_id)
     .bind(script_id)
@@ -1328,6 +1383,7 @@ pub async fn add_storyboard(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to create storyboard"))?;
+    apply_track_transition_defaults(&state.pool, project_id, script_id).await?;
     Ok(Json(ApiResponse::new(json!({ "id": id }))))
 }
 
@@ -1340,11 +1396,24 @@ async fn insert_storyboard(
     script_id: i64,
     project_id: i64,
 ) -> Result<(), AppError> {
+    let scene_key = normalize_persisted_scene_key(request.scene_key.as_deref())?;
+    let scene_state_id = crate::toonflow_scene_consistency::resolve_storyboard_scene_state(
+        &mut **tx,
+        project_id,
+        script_id,
+        scene_key.as_deref(),
+        request.scene_state_id,
+        request.scene_state_key.as_deref(),
+        request.scene_state_parent_key.as_deref(),
+        request.scene_state_description.as_deref(),
+        &request.associate_assets_ids,
+    )
+    .await?;
     sqlx::query(
         r#"INSERT INTO toonflow.storyboards
            (id, script_id, prompt, file_path, duration, state, track_id, track, video_desc,
-            should_generate_image, project_id, index, create_time)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"#,
+            scene_key,scene_state_id,should_generate_image,project_id,index,create_time)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)"#,
     )
     .bind(id)
     .bind(script_id)
@@ -1355,6 +1424,8 @@ async fn insert_storyboard(
     .bind(track_id)
     .bind(&request.track)
     .bind(&request.video_desc)
+    .bind(scene_key)
+    .bind(scene_state_id)
     .bind(request.should_generate_image)
     .bind(project_id)
     .bind(index)
@@ -1473,7 +1544,8 @@ pub async fn batch_add_storyboards(
                 .map_err(|_| AppError::internal("failed to update storyboard track"))?;
         } else {
             sqlx::query(
-                "INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration) VALUES($1,$2,$3,'未生成',$4)",
+                "INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration,sort_order)
+                 VALUES($1,$2,$3,'未生成',$4,coalesce((SELECT max(sort_order)+1 FROM toonflow.video_tracks WHERE project_id=$2 AND script_id=$3),0))",
             )
             .bind(track_id)
             .bind(request.project_id)
@@ -1493,6 +1565,7 @@ pub async fn batch_add_storyboards(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to create storyboards"))?;
+    apply_track_transition_defaults(&state.pool, request.project_id, request.script_id).await?;
     get_storyboards(
         user,
         State(state),
@@ -1510,13 +1583,26 @@ pub struct EditStoryboardInfoRequest {
     pub id: i64,
     pub prompt: String,
     pub video_desc: String,
+    pub scene_key: Option<String>,
+    pub scene_state_id: Option<i64>,
+    pub scene_state_key: Option<String>,
+    pub scene_state_parent_key: Option<String>,
+    pub scene_state_description: Option<String>,
     pub duration: Option<i64>,
     pub track: Option<String>,
     pub should_generate_image: Option<i32>,
     pub associate_assets_ids: Option<Vec<i64>>,
 }
 
-type StoryboardEditRow = (i64, i64, Option<i64>, Option<String>, i32);
+type StoryboardEditRow = (
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+    i32,
+    Option<String>,
+    Option<i64>,
+);
 
 pub async fn edit_storyboard_info(
     user: CurrentUser,
@@ -1530,13 +1616,21 @@ pub async fn edit_storyboard_info(
         .await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
     let current: Option<StoryboardEditRow> = sqlx::query_as(
-        "SELECT project_id,script_id,track_id,track,should_generate_image FROM toonflow.storyboards WHERE id=$1",
+        "SELECT project_id,script_id,track_id,track,should_generate_image,scene_key,scene_state_id FROM toonflow.storyboards WHERE id=$1",
     )
     .bind(request.id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to load storyboard"))?;
-    let Some((project_id, script_id, old_track_id, old_track, current_should_generate)) = current
+    let Some((
+        project_id,
+        script_id,
+        old_track_id,
+        old_track,
+        current_should_generate,
+        current_scene_key,
+        current_scene_state_id,
+    )) = current
     else {
         return Err(AppError::not_found("storyboard not found"));
     };
@@ -1567,16 +1661,53 @@ pub async fn edit_storyboard_info(
         }
         None => {
             let id = next_id(2);
-            sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration) VALUES($1,$2,$3,'未生成',0)")
+            sqlx::query("INSERT INTO toonflow.video_tracks(id,project_id,script_id,state,duration,sort_order) VALUES($1,$2,$3,'未生成',0,coalesce((SELECT max(sort_order)+1 FROM toonflow.video_tracks WHERE project_id=$2 AND script_id=$3),0))")
                 .bind(id).bind(project_id).bind(script_id).execute(&mut *tx).await
                 .map_err(|_| AppError::internal("failed to create storyboard track"))?;
             id
         }
     };
-    let result = sqlx::query("UPDATE toonflow.storyboards SET prompt=$2,video_desc=$3,duration=$4,track=$5,track_id=$6,should_generate_image=$7 WHERE id=$1")
+    let scene_key_was_provided = request.scene_key.is_some();
+    let scene_key = normalize_persisted_scene_key(request.scene_key.as_deref())?;
+    let effective_scene_key = if scene_key_was_provided {
+        scene_key.as_deref()
+    } else {
+        current_scene_key.as_deref()
+    };
+    let scene_changed = scene_key_was_provided && scene_key != current_scene_key;
+    let state_was_provided = request.scene_state_id.is_some() || request.scene_state_key.is_some();
+    let scene_state_id = if scene_changed || state_was_provided {
+        let asset_ids = if let Some(asset_ids) = request.associate_assets_ids.as_deref() {
+            asset_ids.to_vec()
+        } else {
+            sqlx::query_scalar(
+                "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id",
+            )
+            .bind(request.id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to load storyboard assets"))?
+        };
+        crate::toonflow_scene_consistency::resolve_storyboard_scene_state(
+            &mut *tx,
+            project_id,
+            script_id,
+            effective_scene_key,
+            request.scene_state_id,
+            request.scene_state_key.as_deref(),
+            request.scene_state_parent_key.as_deref(),
+            request.scene_state_description.as_deref(),
+            &asset_ids,
+        )
+        .await?
+    } else {
+        current_scene_state_id
+    };
+    let result = sqlx::query("UPDATE toonflow.storyboards SET prompt=$2,video_desc=$3,duration=$4,track=$5,track_id=$6,should_generate_image=$7,scene_key=CASE WHEN $8 THEN $9 ELSE scene_key END,scene_state_id=$10 WHERE id=$1")
         .bind(request.id).bind(request.prompt).bind(request.video_desc)
         .bind(request.duration.map(|value| value.to_string())).bind(track).bind(track_id)
-        .bind(request.should_generate_image.unwrap_or(current_should_generate)).execute(&mut *tx).await
+        .bind(request.should_generate_image.unwrap_or(current_should_generate))
+        .bind(scene_key_was_provided).bind(scene_key).bind(scene_state_id).execute(&mut *tx).await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
     if let Some(asset_ids) = request.associate_assets_ids {
         sqlx::query("DELETE FROM toonflow.assets_storyboards WHERE storyboard_id=$1")
@@ -1622,6 +1753,7 @@ pub async fn edit_storyboard_info(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to update storyboard"))?;
+    apply_track_transition_defaults(&state.pool, project_id, script_id).await?;
     affected(result.rows_affected(), "storyboard")?;
     Ok(Json(ApiResponse::with_message((), "更新分镜成功")))
 }
@@ -1676,6 +1808,7 @@ pub async fn reorder_storyboards(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed transaction"))?;
+    apply_track_transition_defaults(&state.pool, request.project_id, request.script_id).await?;
     Ok(Json(ApiResponse::with_message((), "分镜排序已保存")))
 }
 
@@ -1685,13 +1818,14 @@ pub async fn remove_storyboard(
     Json(request): Json<IdRequest>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     require(&user, "toon:scene:delete")?;
-    let row: Option<(Option<i64>, Option<i64>)> =
-        sqlx::query_as("SELECT track_id,flow_id FROM toonflow.storyboards WHERE id=$1")
-            .bind(request.id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|_| AppError::internal("failed to load storyboard"))?;
-    let Some((track_id, flow_id)) = row else {
+    let row: Option<(Option<i64>, Option<i64>, i64, i64)> = sqlx::query_as(
+        "SELECT track_id,flow_id,project_id,script_id FROM toonflow.storyboards WHERE id=$1",
+    )
+    .bind(request.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load storyboard"))?;
+    let Some((track_id, flow_id, project_id, script_id)) = row else {
         return Err(AppError::not_found("storyboard not found"));
     };
     let mut tx = state
@@ -1742,6 +1876,7 @@ pub async fn remove_storyboard(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to commit storyboard deletion"))?;
+    apply_track_transition_defaults(&state.pool, project_id, script_id).await?;
     Ok(Json(ApiResponse::with_message((), "视频删除成功")))
 }
 

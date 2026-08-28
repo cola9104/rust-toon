@@ -3,6 +3,23 @@ use serde_json::{Value, json};
 use sqlx::FromRow;
 use std::collections::HashMap;
 
+use rust_toon_framework_web::AppError;
+
+#[derive(Clone, Debug, FromRow)]
+pub(crate) struct StoryboardAssetReference {
+    pub(crate) image_id: i64,
+    pub(crate) file_path: String,
+}
+
+#[derive(Clone, Debug, FromRow)]
+struct StoryboardAssetReferenceRow {
+    asset_name: String,
+    asset_project_id: i64,
+    image_id: Option<i64>,
+    file_path: Option<String>,
+    image_state: Option<String>,
+}
+
 /// A production-facing asset record assembled from the canonical asset tables.
 #[derive(Debug, FromRow, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,22 +163,22 @@ pub async fn load_track_asset_references(
     .await
 }
 
-/// Returns the current image URL of each asset associated with one storyboard.
+/// Returns the current image of each asset associated with one storyboard in the exact order used
+/// by the persisted `@图N` prompt contract.
 pub async fn load_storyboard_asset_references(
     pool: &sqlx::PgPool,
     project_id: i64,
     script_id: i64,
     storyboard_id: i64,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        r#"SELECT i.file_path
+) -> Result<Vec<StoryboardAssetReference>, AppError> {
+    let rows = sqlx::query_as::<_, StoryboardAssetReferenceRow>(
+        r#"SELECT a.name AS asset_name,a.project_id AS asset_project_id,
+                  i.id AS image_id,i.file_path,i.state AS image_state
            FROM toonflow.assets_storyboards ast
            JOIN toonflow.storyboards s ON s.id=ast.storyboard_id
            JOIN toonflow.assets a ON a.id=ast.asset_id
-           JOIN toonflow.images i ON i.id=a.image_id
+           LEFT JOIN toonflow.images i ON i.id=a.image_id
            WHERE ast.storyboard_id=$1 AND s.project_id=$2 AND s.script_id=$3
-             AND a.project_id=$2
-             AND i.file_path IS NOT NULL AND i.file_path <> ''
            ORDER BY ast.sort_order, ast.asset_id"#,
     )
     .bind(storyboard_id)
@@ -169,4 +186,32 @@ pub async fn load_storyboard_asset_references(
     .bind(script_id)
     .fetch_all(pool)
     .await
+    .map_err(|_| AppError::internal("failed to load storyboard references"))?;
+    if rows.iter().any(|row| row.asset_project_id != project_id) {
+        return Err(AppError::bad_request(
+            "分镜包含其他项目的关联资产，请重新保存当前项目的资产绑定",
+        ));
+    }
+    let unavailable = rows
+        .iter()
+        .filter(|row| {
+            row.image_id.is_none()
+                || row.image_state.as_deref() != Some("已完成")
+                || row.file_path.as_deref().is_none_or(str::is_empty)
+        })
+        .map(|row| row.asset_name.as_str())
+        .collect::<Vec<_>>();
+    if !unavailable.is_empty() {
+        return Err(AppError::bad_request(format!(
+            "分镜关联资产尚无可用图片：{}。请先完成这些资产图片，不能跳过后重新编号 @图N。",
+            unavailable.join("、")
+        )));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|row| StoryboardAssetReference {
+            image_id: row.image_id.expect("validated storyboard image id"),
+            file_path: row.file_path.expect("validated storyboard image path"),
+        })
+        .collect())
 }

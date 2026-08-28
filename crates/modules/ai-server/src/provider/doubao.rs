@@ -64,8 +64,8 @@ impl DouBaoMediaProvider {
             for (index, reference) in references.iter().filter_map(Value::as_str).enumerate() {
                 let role = match mode {
                     "text" => "reference_image",
-                    "endFrameOptional" if reference_count == 1 => "last_frame",
-                    "startEndRequired" | "endFrameOptional"
+                    "startFrameOptional" if reference_count == 1 => "last_frame",
+                    "startEndRequired" | "endFrameOptional" | "startFrameOptional"
                         if index + 1 == reference_count && reference_count > 1 =>
                     {
                         "last_frame"
@@ -276,17 +276,46 @@ mod tests {
     }
 
     #[test]
-    fn assigns_a_single_optional_end_frame_to_the_last_frame_role() {
+    fn assigns_a_single_required_end_frame_to_the_last_frame_role() {
         let body = DouBaoMediaProvider::video_body(
             &config(),
             json!({
                 "prompt":"镜头推进",
-                "mode":"endFrameOptional",
+                "mode":"startFrameOptional",
                 "references":["https://example.com/last.png"]
             }),
         )
         .unwrap();
         assert_eq!(body["content"][1]["role"], "last_frame");
+    }
+
+    #[test]
+    fn assigns_a_single_required_start_frame_to_the_first_frame_role() {
+        let body = DouBaoMediaProvider::video_body(
+            &config(),
+            json!({
+                "prompt":"镜头推进",
+                "mode":"endFrameOptional",
+                "references":["https://example.com/first.png"]
+            }),
+        )
+        .unwrap();
+        assert_eq!(body["content"][1]["role"], "first_frame");
+    }
+
+    #[test]
+    fn assigns_optional_start_and_required_end_when_both_are_present() {
+        let body = DouBaoMediaProvider::video_body(
+            &config(),
+            json!({
+                "prompt":"镜头推进",
+                "mode":"startFrameOptional",
+                "references":["https://example.com/first.png","https://example.com/last.png"]
+            }),
+        )
+        .unwrap();
+        assert_eq!(body["content"][1]["role"], "first_frame");
+        assert_eq!(body["content"][2]["role"], "last_frame");
     }
 
     #[test]

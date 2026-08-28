@@ -23,6 +23,9 @@ export TEST_DATABASE_URL="postgres://rust_toon:rust_toon@127.0.0.1:${port}/rust_
 # crate so the verification always exercises the complete current chain.
 cargo clean -p rust-toon-framework-database
 cargo test -p rust-toon-framework-database --test migrations -- --ignored --nocapture
+cargo test -p rust-toon-toon-server \
+  toonflow_scene_consistency::tests::resolver_locks_master_and_state_contracts_without_noop_revision_churn \
+  -- --ignored --nocapture
 cargo test -p rust-toon-system-server login_lockout_database_tests -- --ignored --nocapture
 cargo test -p rust-toon-toon-server gateway_repair_database_tests -- --ignored --nocapture
 cargo test -p rust-toon-toon-server agent_memory_database_tests -- --ignored --nocapture

@@ -16,14 +16,20 @@ describe('video generation mode defaults', () => {
     expect(videoFrameRole(0, 2, 'startEndRequired')).toBe('first');
     expect(videoFrameRole(1, 2, 'startEndRequired')).toBe('last');
     expect(videoFrameRole(0, 2, 'startFrameOptional')).toBe('first');
-    expect(videoFrameRole(1, 2, 'startFrameOptional')).toBe('reference');
-    expect(videoFrameRole(0, 1, 'endFrameOptional')).toBe('last');
+    expect(videoFrameRole(1, 2, 'startFrameOptional')).toBe('last');
+    expect(videoFrameRole(0, 1, 'startFrameOptional')).toBe('last');
+    expect(videoFrameRole(0, 1, 'endFrameOptional')).toBe('first');
   });
 
   it('selects the same ordered media for generation as the mode label', () => {
     const frames = ['first', 'middle', 'last'];
-    expect(videoFrameItems(frames, 'startFrameOptional')).toEqual(['first']);
+    expect(videoFrameItems(frames, 'startFrameOptional')).toEqual([
+      'first',
+      'last',
+    ]);
     expect(videoFrameItems(frames, 'endFrameOptional')).toEqual(['first', 'last']);
+    expect(videoFrameItems(['only'], 'startFrameOptional')).toEqual(['only']);
+    expect(videoFrameItems(['only'], 'endFrameOptional')).toEqual(['only']);
     expect(videoFrameItems(['only'], 'startEndRequired')).toEqual(['only', 'only']);
   });
 });

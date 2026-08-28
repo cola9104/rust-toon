@@ -16,7 +16,8 @@ defineEmits<{ 'update:modelValue': [value: string] }>();
       v-for="(stage, index) in stages"
       :key="stage.key"
       class="stage-nav__item"
-      :class="{ active: modelValue === stage.key }"
+      :class="{ 'is-active': modelValue === stage.key }"
+      :aria-current="modelValue === stage.key ? 'step' : undefined"
       type="button"
       @click="$emit('update:modelValue', stage.key)"
     >
@@ -28,9 +29,104 @@ defineEmits<{ 'update:modelValue': [value: string] }>();
 </template>
 
 <style scoped>
-.stage-nav { display: flex; align-items: stretch; gap: 10px; overflow-x: auto; padding: 4px 2px 14px; }
-.stage-nav__item { position: relative; display: flex; min-width: 164px; flex: 1; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--toon-line, #e8e8e8); border-radius: 15px; color: #737373; text-align: left; background: #fff; cursor: pointer; transition: .18s ease; }
-.stage-nav__item:hover { border-color: #bdbdbd; transform: translateY(-1px); }.stage-nav__item.active { border-color: #171717; color: #fff; background: #171717; box-shadow: 0 10px 24px rgb(0 0 0 / 14%); }
-.stage-nav__step { position: absolute; top: 6px; right: 9px; font-size: 10px; opacity: .5; }.stage-nav__icon { display: grid; width: 35px; height: 35px; flex: 0 0 35px; border-radius: 11px; font-size: 18px; background: #f1f1ef; place-items: center; }.active .stage-nav__icon { color: #171717; background: #fff; }
-.stage-nav__copy { display: grid; min-width: 0; }.stage-nav__copy b { color: inherit; font-size: 13px; }.stage-nav__copy small { overflow: hidden; margin-top: 2px; color: inherit; font-size: 10px; opacity: .68; text-overflow: ellipsis; white-space: nowrap; }
+.stage-nav {
+  --menu-item-color: hsl(var(--accent-foreground));
+  --menu-item-background-color: hsl(var(--menu));
+  --menu-item-hover-color: var(--menu-item-color);
+  --menu-item-hover-background-color: hsl(var(--accent));
+  --menu-item-active-color: hsl(var(--primary));
+  --menu-item-active-background-color: hsl(var(--primary) / 15%);
+
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+  padding: 4px 2px 14px;
+  overflow-x: auto;
+}
+
+:global(.dark) .stage-nav {
+  --menu-item-color: hsl(var(--foreground) / 80%);
+  --menu-item-hover-color: hsl(var(--accent-foreground));
+  --menu-item-active-color: hsl(var(--accent-foreground));
+  --menu-item-active-background-color: hsl(var(--accent));
+}
+
+.stage-nav__item {
+  position: relative;
+  display: flex;
+  flex: 1;
+  gap: 10px;
+  align-items: center;
+  min-width: 164px;
+  padding: 10px 12px;
+  color: var(--menu-item-color);
+  text-align: left;
+  cursor: pointer;
+  background: var(--menu-item-background-color);
+  border: 0;
+  border-radius: 8px;
+  transition:
+    color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.stage-nav__item:not(.is-active):hover {
+  color: var(--menu-item-hover-color);
+  background: var(--menu-item-hover-background-color);
+}
+
+.stage-nav__item.is-active {
+  color: var(--menu-item-active-color);
+  background: var(--menu-item-active-background-color);
+}
+
+.stage-nav__item:focus-visible {
+  outline: 2px solid hsl(var(--primary) / 45%);
+  outline-offset: 2px;
+}
+
+.stage-nav__step {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  font-size: 10px;
+  color: inherit;
+  opacity: 0.5;
+}
+
+.stage-nav__icon {
+  display: grid;
+  flex: 0 0 34px;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  font-size: 17px;
+  color: inherit;
+  background: hsl(var(--accent));
+  border-radius: 8px;
+}
+
+.is-active .stage-nav__icon {
+  background: hsl(var(--primary) / 12%);
+}
+
+.stage-nav__copy {
+  display: grid;
+  min-width: 0;
+}
+
+.stage-nav__copy b {
+  font-size: 13px;
+  color: inherit;
+}
+
+.stage-nav__copy small {
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10px;
+  color: inherit;
+  white-space: nowrap;
+  opacity: 0.68;
+}
 </style>

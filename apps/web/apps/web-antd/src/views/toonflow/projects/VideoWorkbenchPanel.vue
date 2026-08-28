@@ -4,6 +4,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { AiModelTypeEnum } from '@vben/constants';
 
 import {
+  Alert,
   Button,
   Checkbox,
   Empty,
@@ -16,14 +17,22 @@ import {
   Tooltip,
 } from 'ant-design-vue';
 
-import { assetFileUrl } from '../assets/asset-types';
-import { updateVideoContinuityMode } from '#/api/toonflow';
 import { getModelSimpleList } from '#/api/ai/model/model';
+import { updateVideoTransitionSettings } from '#/api/toonflow';
+import { assetFileUrl } from '../assets/asset-types';
 import StoryboardQuickPreview from './StoryboardQuickPreview.vue';
 import StoryboardTrackStrip from './StoryboardTrackStrip.vue';
 import { storyboardsForTrack } from './storyboard-track-groups';
 import { defaultVideoGenerationMode, videoFrameRole } from './video-generation-mode';
 import { groupVideoTracksByScene } from './video-scene-groups';
+import {
+  normalizeVideoTransitionSettings,
+  previousVideoTrackContext,
+  transitionSourceLabel,
+  videoFrameApplication,
+  VIDEO_FRAME_POLICY_OPTIONS,
+  VIDEO_TRANSITION_TYPE_OPTIONS,
+} from './video-transition-settings';
 
 const props = defineProps<{
   assets: any[];
@@ -78,6 +87,12 @@ const editorVideoError = ref(false);
 const videoSceneGroups = computed(() =>
   groupVideoTracksByScene(props.tracks, props.storyboards, props.storyboardPlan),
 );
+const unassignedStoryboardCount = computed(
+  () =>
+    props.storyboards.filter(
+      (storyboard) => !/^sc[1-9]\d*$/.test(String(storyboard.sceneKey ?? '')),
+    ).length,
+);
 const generationStoryboardScenes = computed(() =>
   videoSceneGroups.value.filter((scene) => scene.items.length > 0),
 );
@@ -89,6 +104,19 @@ const orderedTrackEntries = computed(() =>
       sceneName: scene.name,
     })),
   ),
+);
+const orderedTransitionTrackContexts = computed(() =>
+  props.tracks.map((track) => {
+    const entry = orderedTrackEntries.value.find(
+      (candidate) => Number(candidate.trackId) === Number(track.id),
+    );
+    return {
+      sceneKey: entry?.sceneKey ?? 'scene:unassigned-video-tracks',
+      sceneName: entry?.sceneName ?? '未分场',
+      trackId: Number(track.id),
+      trackName: entry?.name ?? String(track.id),
+    };
+  }),
 );
 const activeTrack = computed(() =>
   props.tracks.find((track) => Number(track.id) === Number(activeTrackId.value)) ?? orderedTrackEntries.value[0]?.track,
@@ -292,14 +320,109 @@ function generation(track: any) {
   track.generation.mode ??= defaultVideoGenerationMode(storyboards.length, props.videoMode);
   track.generation.model ??= props.videoModel;
   track.generation.resolution ??= '1080p';
-  track.generation.continuityMode ??= track.continuityMode || 'auto';
   return track.generation;
 }
 
-async function persistContinuityMode(track: any) {
-  const mode = generation(track).continuityMode || 'auto';
-  track.continuityMode = mode;
-  await updateVideoContinuityMode(track.id, mode);
+function transitionSettings(track: any) {
+  const settings = normalizeVideoTransitionSettings(track);
+  track.transitionType = settings.transitionType;
+  track.framePolicy = settings.framePolicy;
+  return track as any;
+}
+
+function previousTrackContext(track: any) {
+  return previousVideoTrackContext(
+    orderedTransitionTrackContexts.value,
+    track?.id,
+    track?.previousTrackId,
+  );
+}
+
+function framePolicyOptions(track: any) {
+  const hasPreviousTrack = Boolean(previousTrackContext(track));
+  return VIDEO_FRAME_POLICY_OPTIONS.map((option) =>
+    option.value === 'previous_tail'
+      ? { ...option, disabled: !hasPreviousTrack }
+      : option,
+  );
+}
+
+function previousTailSourceLabel(track: any) {
+  const previous = previousTrackContext(track);
+  if (!previous) return '未找到可用的上一轨道';
+  const trackLabel = `${previous.sceneName} · 视频轨道 ${previous.trackName} (#${previous.trackId})`;
+  const previousTrack = props.tracks.find(
+    (item) => Number(item.id) === previous.trackId,
+  );
+  const videos = Array.isArray(previousTrack?.videoList)
+    ? previousTrack.videoList
+    : [];
+  const selectedId = Number(previousTrack?.selectVideoId);
+  const sourceVideo =
+    videos.find(
+      (item: any) =>
+        Number(item.id) === selectedId &&
+        ['生成成功', '已完成'].includes(item.state) &&
+        videoUrl(item),
+    ) ??
+    videos.find(
+      (item: any) =>
+        ['生成成功', '已完成'].includes(item.state) && videoUrl(item),
+    );
+  return sourceVideo
+    ? `${trackLabel} · 视频 #${sourceVideo.id} 尾帧（生成时提取）`
+    : `${trackLabel} 暂无成功视频，生成时将回退本轨分镜`;
+}
+
+function isCrossScenePreviousTail(track: any) {
+  const current = orderedTransitionTrackContexts.value.find(
+    (entry) => entry.trackId === Number(track?.id),
+  );
+  const previous = previousTrackContext(track);
+  return Boolean(current && previous && current.sceneKey !== previous.sceneKey);
+}
+
+function currentFrameSourceLabel(track: any) {
+  const videos = Array.isArray(track?.videoList) ? track.videoList : [];
+  const selectedId = Number(track?.selectVideoId);
+  const video =
+    videos.find((item: any) => Number(item.id) === selectedId) ??
+    videos.find((item: any) => ['生成成功', '已完成'].includes(item.state));
+  const frame = videoFrameApplication(video);
+  if (!frame) return '尚无结构化生成记录';
+  if (frame.applied && frame.actualSource === 'previous_video_tail') {
+    const trackLabel = frame.previousTrackId
+      ? `轨道 #${frame.previousTrackId}`
+      : '上一轨道';
+    const videoLabel = frame.previousVideoId
+      ? ` · 视频 #${frame.previousVideoId}`
+      : '';
+    return `${trackLabel}${videoLabel} 尾帧`;
+  }
+  if (frame.fallbackReason) return `本轨分镜（${frame.fallbackReason}）`;
+  return '本轨分镜';
+}
+
+async function persistTransitionSettings(track: any) {
+  const settings = transitionSettings(track);
+  const previous =
+    settings.framePolicy === 'previous_tail'
+      ? previousTrackContext(track)
+      : undefined;
+  if (settings.framePolicy === 'previous_tail' && !previous) {
+    track.framePolicy = 'own';
+    return;
+  }
+
+  const previousTrackId = previous?.trackId;
+  await updateVideoTransitionSettings({
+    framePolicy: settings.framePolicy,
+    id: Number(track.id),
+    ...(previousTrackId === undefined ? {} : { previousTrackId }),
+    transitionType: settings.transitionType,
+  });
+  track.previousTrackId = previousTrackId;
+  track.transitionSource = 'manual';
 }
 
 function trackStoryboards(track: any) {
@@ -327,6 +450,38 @@ function trackMediaItems(track: any) {
     (media: any) => media.sources !== 'storyboard' && (!media.storyboardId || storyboardIds.has(Number(media.storyboardId))),
   );
   return [...storyboardMediaForTrack(track), ...references];
+}
+
+function trackSceneBindings(track: any) {
+  return [
+    ...new Set(
+      storyboardMediaForTrack(track)
+        .map((media: any) => {
+          const master = media.sceneMasterName;
+          const state = media.sceneStateName || media.sceneStateKey;
+          return master && state ? `${master} · ${state}` : undefined;
+        })
+        .filter(Boolean),
+    ),
+  ] as string[];
+}
+
+function trackSceneBindingLabel(track: any) {
+  const bindings = trackSceneBindings(track);
+  if (bindings.length === 1) return bindings[0];
+  if (bindings.length > 1) return `混用 ${bindings.length} 个场景状态`;
+  return '未绑定场景状态';
+}
+
+function invalidSceneStoryboards(track: any) {
+  return trackStoryboards(track).filter((storyboard: any) => {
+    const hasImage = Boolean(storyboard.filePath || storyboard.src);
+    return hasImage && storyboard.sceneConsistencyStatus !== 'ready';
+  });
+}
+
+function trackStoryboardImagesReady(track: any) {
+  return invalidSceneStoryboards(track).length === 0;
 }
 
 function storyboardMediaLabel(track: any, media: any) {
@@ -392,8 +547,10 @@ function addReference(asset: any) {
   if (activeTrack.value) addReferenceToTrack(activeTrack.value, asset);
 }
 
-function removeReference(track: any, index: number) {
-  track.medias?.splice(index, 1);
+function removeReference(track: any, media: any) {
+  if (media?.sources === 'storyboard' || !Array.isArray(track?.medias)) return;
+  const index = track.medias.indexOf(media);
+  if (index >= 0) track.medias.splice(index, 1);
 }
 
 function stateColor(state?: string) {
@@ -589,6 +746,14 @@ onMounted(async () => {
     </header>
 
     <div class="workbench-content">
+      <Alert
+        v-if="unassignedStoryboardCount"
+        class="legacy-scene-warning"
+        type="warning"
+        show-icon
+        :message="`${unassignedStoryboardCount} 条旧分镜尚未设置场次键`"
+        description="这些分镜会安全地按硬切和本轨首帧处理。请回到分镜制作逐条补充 scN，或重新运行分镜面板 Agent，导演转场才会自动生效。"
+      />
       <StoryboardQuickPreview
         v-if="activeTab === 'preview'"
         :assets="assets"
@@ -625,16 +790,17 @@ onMounted(async () => {
               </section>
 
               <section class="setting-block">
-                <div class="section-heading"><div><b>轨道分镜与参考素材</b><span>按轨道和分镜顺序查看素材</span></div><Button size="small" @click="addReferenceOpen = true">＋ 添加图片</Button></div>
+                <div class="section-heading"><div><b>轨道分镜与参考素材</b><span>按轨道和分镜顺序查看素材</span></div><Tag :color="trackSceneBindings(activeTrack).length === 1 && trackStoryboardImagesReady(activeTrack) ? 'green' : 'orange'">{{ trackSceneBindingLabel(activeTrack) }}</Tag><Button size="small" @click="addReferenceOpen = true">＋ 添加图片</Button></div>
+                <Alert v-if="!trackStoryboardImagesReady(activeTrack)" type="error" show-icon :message="`${invalidSceneStoryboards(activeTrack).length} 张分镜图的场景状态已变化`" description="请回到分镜制作重新生成这些图片；旧图不能继续用于视频生成。" />
                 <div v-if="trackMediaItems(activeTrack).length" class="media-strip">
                   <article v-for="(media, index) in trackMediaItems(activeTrack)" :key="`${media.sources}-${media.id}-${index}`" class="media-card">
                     <div class="media-preview">
                       <img v-if="media.fileType === 'image' && mediaUrl(media)" :src="mediaUrl(media)" :alt="mediaName(media, Number(index))" class="media-image" />
                       <div v-else-if="media.fileType === 'audio'" class="audio-preview">♪</div>
                       <div v-else class="empty-media">暂无图片</div>
-                      <span class="media-order">{{ media.sources === 'storyboard' ? storyboardMediaLabel(activeTrack, media) : referenceMediaLabel(activeTrack, media) }}</span><span class="media-source">{{ media.sources === 'storyboard' ? '分镜' : '参考素材' }}</span>
+                      <span class="media-order">{{ media.sources === 'storyboard' ? storyboardMediaLabel(activeTrack, media) : referenceMediaLabel(activeTrack, media) }}</span><span class="media-source">{{ media.sources === 'storyboard' ? '分镜' : '参考素材' }}</span><span v-if="media.sources === 'storyboard'" class="media-scene-state">{{ media.sceneConsistencyStatus === 'ready' ? (media.sceneStateName || media.sceneStateKey || '状态未绑定') : '状态已过期' }}</span>
                     </div>
-                    <Button danger size="small" type="text" @click="removeReference(activeTrack, activeTrack.medias.indexOf(media))">删除</Button>
+                    <Button v-if="media.sources !== 'storyboard'" danger size="small" type="text" @click="removeReference(activeTrack, media)">删除</Button>
                   </article>
                 </div>
                 <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无参考素材" />
@@ -644,19 +810,32 @@ onMounted(async () => {
                 <div class="section-heading parameter-heading"><div><b>生成参数</b><span>决定当前轨道的视频输出</span></div><Tag color="blue">{{ videoRatio || '16:9' }}</Tag></div>
                 <div class="parameter-grid">
                   <label><span>视频模型</span><Select v-model:value="generation(activeTrack).model" :options="videoModelOptions" placeholder="选择视频模型" size="small" /></label>
-                  <label><span>生成模式</span><Select v-model:value="generation(activeTrack).mode" :options="[{label:'纯文本',value:'text'},{label:'单图首帧',value:'singleImage'},{label:'首尾帧',value:'startEndRequired'},{label:'尾帧可选',value:'endFrameOptional'},{label:'首帧可选',value:'startFrameOptional'}]" size="small" /></label>
-                  <label><span>镜头衔接</span><Select v-model:value="generation(activeTrack).continuityMode" :options="[{label:'自动判断',value:'auto'},{label:'强制使用上一尾帧',value:'always'},{label:'不使用上一尾帧',value:'never'}]" size="small" @change="persistContinuityMode(activeTrack)" /></label>
+                  <label><span>生成模式</span><Select v-model:value="generation(activeTrack).mode" :options="[{label:'纯文本',value:'text'},{label:'单图首帧',value:'singleImage'},{label:'首尾帧',value:'startEndRequired'},{label:'首帧必填、尾帧可选',value:'endFrameOptional'},{label:'尾帧必填、首帧可选',value:'startFrameOptional'}]" size="small" /></label>
+                  <label><span>入场过渡</span><Select v-model:value="transitionSettings(activeTrack).transitionType" :options="VIDEO_TRANSITION_TYPE_OPTIONS" size="small" @change="persistTransitionSettings(activeTrack)" /></label>
+                  <label><span>首帧来源</span><Select v-model:value="transitionSettings(activeTrack).framePolicy" :options="framePolicyOptions(activeTrack)" size="small" @change="persistTransitionSettings(activeTrack)" /></label>
                   <label><span>分辨率</span><Select v-model:value="generation(activeTrack).resolution" :options="[{label:'720p',value:'720p'},{label:'1080p',value:'1080p'}]" size="small" /></label>
                   <label class="parameter-field--readonly"><span>分镜时长</span><span class="duration-readonly">{{ generation(activeTrack).duration }} 秒 · 来自分镜</span></label>
+                  <div
+                    v-if="transitionSettings(activeTrack).framePolicy === 'previous_tail'"
+                    class="frame-source-note"
+                    :class="{ 'frame-source-note--cross-scene': isCrossScenePreviousTail(activeTrack) }"
+                  >
+                    <span><b>上一尾帧来源：</b>{{ previousTailSourceLabel(activeTrack) }}</span>
+                    <span v-if="isCrossScenePreviousTail(activeTrack)" class="frame-source-warning">跨场提醒：当前轨道将继承上一场视频尾帧，请确认不是硬切换场。</span>
+                  </div>
+                  <div class="transition-setting-meta">
+                    <span>设置来源：{{ transitionSourceLabel(activeTrack.transitionSource) }}</span>
+                    <span>当前视频首帧：{{ currentFrameSourceLabel(activeTrack) }}</span>
+                  </div>
                 </div>
-              <div class="generate-actions"><label v-if="activeModelSupportsAudio" class="audio-setting"><span>生成音频</span><Switch v-model:checked="generation(activeTrack).audio" /></label><span v-else class="audio-unavailable">当前视频模型不支持原生音频</span><Button type="primary" :disabled="(!activeTrack.prompt?.trim() && !selectedStoryboard(activeTrack)?.videoDesc?.trim()) || activeTrack.videoGenerating" :loading="activeTrack.videoGenerating || activeTrack.state === '生成中'" @click="emit('generateVideo', activeTrack)">生成视频</Button></div>
+              <div class="generate-actions"><label v-if="activeModelSupportsAudio" class="audio-setting"><span>生成音频</span><Switch v-model:checked="generation(activeTrack).audio" /></label><span v-else class="audio-unavailable">当前视频模型不支持原生音频</span><Button type="primary" :disabled="(!activeTrack.prompt?.trim() && !selectedStoryboard(activeTrack)?.videoDesc?.trim()) || activeTrack.videoGenerating || !trackStoryboardImagesReady(activeTrack)" :loading="activeTrack.videoGenerating || activeTrack.state === '生成中'" @click="emit('generateVideo', activeTrack)">生成视频</Button></div>
               </section>
 
             </aside>
           </section>
 
           <section class="track-filmstrip setting-block">
-            <div class="section-heading"><div><b>选择轨道</b><span>{{ selectedTrackCount }} 项已选（单选）</span></div><div class="batch-track-actions"><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.promptGenerating)" :loading="selectedTracks.some((track:any) => track.promptGenerating)" @click="emit('batchGeneratePrompts', selectedTracks)">生成提示词</Button><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.videoGenerating)" :loading="selectedTracks.some((track:any) => track.videoGenerating)" @click="emit('batchGenerateVideos', selectedTracks)">生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">下载视频</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
+                <div class="section-heading"><div><b>选择轨道</b><span>{{ selectedTrackCount }} 项已选（单选）</span></div><div class="batch-track-actions"><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.promptGenerating)" :loading="selectedTracks.some((track:any) => track.promptGenerating)" @click="emit('batchGeneratePrompts', selectedTracks)">生成提示词</Button><Button size="small" :disabled="!selectedTracks.length || selectedTracks.some((track:any) => track.videoGenerating || !trackStoryboardImagesReady(track))" :loading="selectedTracks.some((track:any) => track.videoGenerating)" @click="emit('batchGenerateVideos', selectedTracks)">生成视频</Button><Button size="small" :disabled="!selectedTracks.length" @click="emit('batchDownload', selectedTracks)">下载视频</Button><Button size="small" @click="emit('openTrack', activeTrack.id)">调整分镜</Button></div></div>
             <div class="generation-scene-strips">
               <section v-for="scene in generationStoryboardScenes" :key="scene.key" class="generation-scene-strip">
                 <header class="generation-scene-heading">
@@ -783,6 +962,7 @@ onMounted(async () => {
 .workbench-tabs .workbench-tab--active::after { background: #1677ff !important; }
 .workbench-tabs .workbench-tab--active span, .workbench-tabs .workbench-tab--active b { color: #1677ff !important; }
 .workbench-tabs .workbench-tab--active b { font-weight: 700; }
+.legacy-scene-warning { margin: 12px 16px 0; }
 .workbench-content { min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; background: var(--ant-color-bg-layout); }
 .toonflow-workbench { display: grid; width: 100%; height: 100%; grid-template-columns: 240px minmax(0, 1fr); overflow: hidden; background: var(--ant-color-bg-layout); }
 .editor-pane { width: 100%; height: 100%; overflow-y: auto; padding: 20px 28px; background: var(--ant-color-bg-layout); }
@@ -823,7 +1003,7 @@ onMounted(async () => {
 .media-preview .media-image, .media-preview video { display: block; width: 100%; height: 100%; }
 .media-preview .media-image { max-width: 100%; max-height: 100%; object-fit: scale-down !important; object-position: center; }
 .media-preview video { object-fit: cover; }
-.media-order, .media-source { position: absolute; top: 6px; padding: 1px 6px; border-radius: 10px; color: #fff; font-size: 10px; background: rgb(0 0 0 / 60%); }.media-order { left: 6px; }.media-source { right: 6px; }
+.media-order, .media-source, .media-scene-state { position: absolute; padding: 1px 6px; border-radius: 10px; color: #fff; font-size: 10px; background: rgb(0 0 0 / 60%); }.media-order, .media-source { top: 6px; }.media-order { left: 6px; }.media-source { right: 6px; }.media-scene-state { right: 6px; bottom: 6px; }
 .audio-preview, .empty-media { display: grid; height: 100%; color: var(--ant-color-text-tertiary); place-items: center; }.audio-preview { font-size: 28px; }
 .duration-readonly { color: var(--ant-color-text-secondary); font-size: 12px; }
 .media-name { overflow: hidden; margin-top: 6px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -1215,6 +1395,39 @@ onMounted(async () => {
   text-overflow: ellipsis;
   white-space: nowrap;
   background: var(--ant-color-fill-tertiary);
+}
+
+.frame-source-note {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--ant-color-primary-border);
+  border-radius: 8px;
+  color: var(--ant-color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  background: var(--ant-color-primary-bg);
+}
+
+.frame-source-note--cross-scene {
+  border-color: var(--ant-color-warning-border);
+  background: var(--ant-color-warning-bg);
+}
+
+.frame-source-warning {
+  color: var(--ant-color-warning-text);
+  font-weight: 600;
+}
+
+.transition-setting-meta {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 14px;
+  color: var(--ant-color-text-tertiary);
+  font-size: 11px;
 }
 
 @media (max-width: 900px) {

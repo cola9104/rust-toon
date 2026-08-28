@@ -3,9 +3,10 @@ import type { ToonflowApi } from '#/api/toonflow';
 
 import { computed, ref, watch } from 'vue';
 
-import { Button, Checkbox, Empty, Modal, Popconfirm, Slider, Space, Tag, Tooltip } from 'ant-design-vue';
+import { Button, Checkbox, Empty, message, Modal, Popconfirm, Slider, Space, Tag, Tooltip } from 'ant-design-vue';
 
 import { assetFileUrl } from '../assets/asset-types';
+import { sceneConsistencyStatusLabel } from './scene-consistency';
 import { groupStoryboardsBySceneAndTrack } from './storyboard-scene-groups';
 
 const props = defineProps<{
@@ -137,7 +138,36 @@ function statusColor(state?: string) {
 }
 
 function generateSelected(compulsory = false) {
-  emit('generate', [...selectedIds.value], compulsory);
+  generateItems([...selectedIds.value], compulsory);
+}
+
+function sceneReady(item: ToonflowApi.Storyboard) {
+  return ['ready', 'stale'].includes(item.sceneConsistencyStatus ?? 'unconfigured');
+}
+
+function generateItems(ids: number[], compulsory = false) {
+  const invalid = props.storyboards.filter((item) => ids.includes(item.id) && !sceneReady(item));
+  if (invalid.length) {
+    message.warning(`有 ${invalid.length} 条分镜未完成场景母版/状态绑定，请先打开“场景一致性”修复`);
+    return;
+  }
+  emit('generate', ids, compulsory);
+}
+
+function consistencyColor(item: ToonflowApi.Storyboard) {
+  if (item.sceneConsistencyStatus === 'ready') return 'green';
+  if (item.sceneConsistencyStatus === 'stale') return 'orange';
+  return 'red';
+}
+
+function sceneBindingSummary(items: ToonflowApi.Storyboard[]) {
+  const masters = [...new Set(items.map((item) => item.sceneMasterName).filter(Boolean))];
+  const states = new Set(items.map((item) => item.sceneStateId).filter(Boolean));
+  return masters.length === 1
+    ? `${masters[0]} · ${states.size} 个状态`
+    : masters.length > 1
+      ? `${masters.length} 个母版（需检查）`
+      : '母版未配置';
 }
 
 function selectedOrAll() {
@@ -208,10 +238,11 @@ function restoreOrder() {
             {{ scene.name }}
           </Checkbox>
           <span>{{ scene.items.length }} 个分镜 · {{ scene.tracks.length }} 条视频轨道 · {{ scene.duration }}s</span>
+          <Tag :color="scene.items.every(sceneReady) ? 'green' : 'red'">{{ sceneBindingSummary(scene.items) }}</Tag>
           <Button
             size="small"
             :disabled="busy"
-            @click="emit('generate', scene.items.map((item) => item.id), false)"
+            @click="generateItems(scene.items.map((item) => item.id), false)"
           >
             整场生成
           </Button>
@@ -237,7 +268,7 @@ function restoreOrder() {
               <Button
                 size="small"
                 :disabled="busy"
-                @click="emit('generate', track.items.map((item) => item.id), false)"
+                @click="generateItems(track.items.map((item) => item.id), false)"
               >
                 整轨生成
               </Button>
@@ -284,13 +315,22 @@ function restoreOrder() {
                     <b>视频轨道 {{ item.track || '默认轨道' }} · {{ item.duration || 0 }}s</b>
                     <Tag :color="statusColor(item.state)">{{ item.state || '未生成' }}</Tag>
                   </div>
+                  <div class="storyboard-consistency">
+                    <Tag :color="consistencyColor(item)">
+                      {{ item.sceneStateName || item.sceneStateKey || sceneConsistencyStatusLabel(item.sceneConsistencyStatus) }}
+                    </Tag>
+                    <span>{{ item.sceneMasterName || '未绑定场景母版' }}</span>
+                  </div>
                   <p>{{ item.videoDesc || item.prompt || '等待 Agent 写入描述' }}</p>
+                  <p v-if="!sceneReady(item) || item.sceneConsistencyStatus === 'stale'" class="storyboard-consistency-warning" role="alert">
+                    {{ sceneConsistencyStatusLabel(item.sceneConsistencyStatus) }}
+                  </p>
                   <p v-if="item.reason" class="storyboard-error" role="alert">{{ item.reason }}</p>
                   <Space size="small" wrap>
                     <Button size="small" @click="emit('edit', item)">编辑</Button>
                     <Button size="small" @click="emit('insertAfter', item)">在后面插入</Button>
                     <Button size="small" @click="emit('editImage', item)">图片生成流</Button>
-                    <Button size="small" :loading="item.state === '生成中'" @click="emit('generate', [item.id], false)">
+                    <Button size="small" :loading="item.state === '生成中'" @click="generateItems([item.id], false)">
                       {{ item.state === '生成失败' ? '重试' : '生成' }}
                     </Button>
                     <Popconfirm title="确认删除这个分镜？" @confirm="emit('remove', item)">
@@ -348,6 +388,8 @@ function restoreOrder() {
 .storyboard-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .storyboard-card-body p { display: -webkit-box; min-height: 40px; overflow: hidden; margin: 8px 0; color: var(--ant-color-text-secondary); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .storyboard-card-body .storyboard-error { min-height: 0; color: var(--ant-color-error); }
+.storyboard-consistency { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--ant-color-text-secondary); font-size: 12px; }
+.storyboard-card-body .storyboard-consistency-warning { min-height: 0; color: var(--ant-color-warning); }
 .associated-assets { margin-top: 8px; color: var(--ant-color-text-secondary); font-size: 11px; }
 .preview-scale { display: grid; grid-template-columns: 150px minmax(220px, 420px); align-items: center; gap: 12px; margin-bottom: 16px; }
 .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(220px * var(--preview-scale)), 1fr)); gap: 12px; max-height: 72vh; overflow: auto; }

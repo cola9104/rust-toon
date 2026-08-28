@@ -7,6 +7,7 @@ import {
 
 export interface StoryboardSceneItem extends StoryboardTrackItem {
   prompt?: null | string;
+  sceneKey?: null | string;
   videoDesc?: null | string;
 }
 
@@ -32,6 +33,14 @@ function normalizeSceneText(value: string) {
     .normalize('NFKC')
     .toLocaleLowerCase()
     .replace(/[\s·•:：|｜，,。；;（）()[\]【】_'“”‘’"-]/gu, '');
+}
+
+function canonicalSceneKey(value: unknown) {
+  if (typeof value !== 'string') return undefined;
+  const compact = value.trim().toLocaleLowerCase().replace(/\s+/gu, '');
+  const match = compact.match(/^(?:scene|sc|场|第)?0*(\d+)(?:场)?$/u);
+  if (!match) return undefined;
+  return `sc${Number(match[1])}`;
 }
 
 function markdownCells(line: string) {
@@ -69,7 +78,9 @@ function parseSceneDefinitions(storyboardPlan: string) {
         .replace(/\s*[|｜]\s*参演角色[：:].*$/u, '')
         .trim();
       current = {
-        key: `scene:${scenes.length}:${sceneNumber}`,
+        key:
+          canonicalSceneKey(sceneNumber) ??
+          `scene:${scenes.length}:${sceneNumber}`,
         name: `场${sceneNumber} · ${title}`,
         order: scenes.length,
         title,
@@ -140,7 +151,10 @@ export function groupStoryboardsBySceneAndTrack<T extends StoryboardSceneItem>(
   const unknownSceneOrders = new Map<string, number>();
 
   for (const item of sortStoryboards(items)) {
-    const definition = matchingDefinition(item, definitions);
+    const explicitSceneKey = canonicalSceneKey(item.sceneKey);
+    const definition =
+      definitions.find((candidate) => candidate.key === explicitSceneKey) ??
+      matchingDefinition(item, definitions);
     const explicitSceneName = storyboardSceneName(item);
     const normalizedSceneName = explicitSceneName
       ? normalizeSceneText(explicitSceneName)
@@ -148,10 +162,12 @@ export function groupStoryboardsBySceneAndTrack<T extends StoryboardSceneItem>(
     const fallbackKey = normalizedSceneName
       ? `scene-name:${normalizedSceneName}`
       : 'scene:unassigned';
-    const key = definition?.key || fallbackKey;
+    const key = explicitSceneKey || definition?.key || fallbackKey;
     let group = groups.get(key);
     if (!group) {
-      let order = definition?.order;
+      let order =
+        definition?.order ??
+        (explicitSceneKey ? Number(explicitSceneKey.slice(2)) - 1 : undefined);
       if (order === undefined) {
         if (!unknownSceneOrders.has(key)) {
           unknownSceneOrders.set(key, unknownSceneOrders.size);
@@ -164,6 +180,9 @@ export function groupStoryboardsBySceneAndTrack<T extends StoryboardSceneItem>(
         key,
         name:
           definition?.name ||
+          (explicitSceneKey
+            ? `场${Number(explicitSceneKey.slice(2))}`
+            : undefined) ||
           (explicitSceneName
             ? `场${fallbackNumber} · ${explicitSceneName}`
             : '未分场'),

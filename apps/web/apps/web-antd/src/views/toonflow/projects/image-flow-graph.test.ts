@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { defaultImageFlowEdges, upstreamNodeIds } from './image-flow-graph';
+import { defaultImageFlowEdges, directUpstreamNodeIds, upstreamNodeIds } from './image-flow-graph';
 
 describe('image flow graph', () => {
   it('collects transitive upstream nodes without looping', () => {
@@ -16,5 +16,18 @@ describe('image flow graph', () => {
     expect(defaultImageFlowEdges([
       { id: 'upload', type: 'upload' }, { id: 'prompt', type: 'prompt' }, { id: 'output', type: 'generated' },
     ])).toHaveLength(2);
+  });
+
+  it('uses only direct inputs for one edit generation step', () => {
+    const edges = [
+      { id: '1', source: 'old-output', target: 'repair-base' },
+      { id: '2', source: 'repair-base', target: 'next-output' },
+      { id: '3', source: 'instruction', target: 'next-output' },
+    ];
+
+    expect([...directUpstreamNodeIds(edges, 'next-output')].sort()).toEqual([
+      'instruction',
+      'repair-base',
+    ]);
   });
 });

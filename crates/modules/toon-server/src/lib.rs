@@ -33,13 +33,17 @@ mod toonflow_project_crud;
 mod toonflow_project_helpers;
 mod toonflow_prompt_store;
 mod toonflow_resources;
+mod toonflow_scene_consistency;
+mod toonflow_scene_transitions;
 mod toonflow_script_ai;
 mod toonflow_status;
 mod toonflow_storage;
 mod toonflow_storyboard_asset_validation;
 mod toonflow_storyboard_panel_validation;
+mod toonflow_storyboard_references;
 mod toonflow_storyboard_table_validation;
 mod toonflow_video;
+mod toonflow_video_continuity;
 mod toonflow_video_export;
 mod toonflow_workflow;
 mod toonflow_workflow_control;
@@ -554,6 +558,11 @@ mod storyboard_database_tests {
             duration: Some(duration),
             state: "未生成".into(),
             video_desc: Some(format!("shot {id}")),
+            scene_key: None,
+            scene_state_id: None,
+            scene_state_key: None,
+            scene_state_parent_key: None,
+            scene_state_description: None,
             should_generate_image: 1,
             file_path: None,
             script_id: None,
@@ -631,6 +640,11 @@ mod storyboard_database_tests {
                 id: 9_100_010,
                 prompt: "edited".into(),
                 video_desc: "edited shot".into(),
+                scene_key: None,
+                scene_state_id: None,
+                scene_state_key: None,
+                scene_state_parent_key: None,
+                scene_state_description: None,
                 duration: Some(7),
                 track: Some("secondary".into()),
                 should_generate_image: Some(1),
@@ -1411,6 +1425,18 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_image_workflow::download_storyboards),
         )
         .route(
+            "/api/production/sceneConsistency/catalog",
+            post(toonflow_scene_consistency::list_scene_catalog),
+        )
+        .route(
+            "/api/production/sceneConsistency/saveMaster",
+            post(toonflow_scene_consistency::save_scene_master),
+        )
+        .route(
+            "/api/production/sceneConsistency/saveState",
+            post(toonflow_scene_consistency::save_scene_state),
+        )
+        .route(
             "/api/production/workbench/addTrack",
             post(toonflow_video::add_track),
         )
@@ -1433,6 +1459,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/api/production/workbench/updateVideoContinuityMode",
             post(toonflow_video::update_continuity_mode),
+        )
+        .route(
+            "/api/production/workbench/updateVideoTransitionSettings",
+            post(toonflow_video::update_transition_settings),
         )
         .route(
             "/api/production/workbench/selectVideo",
@@ -1622,6 +1652,18 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/toonflow/production/storyboard/reorder",
             post(toonflow::reorder_storyboards),
+        )
+        .route(
+            "/toonflow/production/sceneConsistency/catalog",
+            post(toonflow_scene_consistency::list_scene_catalog),
+        )
+        .route(
+            "/toonflow/production/sceneConsistency/saveMaster",
+            post(toonflow_scene_consistency::save_scene_master),
+        )
+        .route(
+            "/toonflow/production/sceneConsistency/saveState",
+            post(toonflow_scene_consistency::save_scene_state),
         )
         .route(
             "/toonflow/setting/agentDeploy",
@@ -1950,6 +1992,18 @@ pub fn routes(state: ToonState) -> Router {
             post(toonflow_image_workflow::download_storyboards),
         )
         .route(
+            "/production/sceneConsistency/catalog",
+            post(toonflow_scene_consistency::list_scene_catalog),
+        )
+        .route(
+            "/production/sceneConsistency/saveMaster",
+            post(toonflow_scene_consistency::save_scene_master),
+        )
+        .route(
+            "/production/sceneConsistency/saveState",
+            post(toonflow_scene_consistency::save_scene_state),
+        )
+        .route(
             "/production/workbench/addTrack",
             post(toonflow_video::add_track),
         )
@@ -1972,6 +2026,10 @@ pub fn routes(state: ToonState) -> Router {
         .route(
             "/production/workbench/updateVideoContinuityMode",
             post(toonflow_video::update_continuity_mode),
+        )
+        .route(
+            "/production/workbench/updateVideoTransitionSettings",
+            post(toonflow_video::update_transition_settings),
         )
         .route(
             "/production/workbench/selectVideo",

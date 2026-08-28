@@ -16,8 +16,14 @@ export type VideoFrameRole = 'first' | 'last' | 'firstLast' | 'reference';
 
 export function videoFrameRole(index: number, count: number, mode?: string): VideoFrameRole {
   if (count === 1 && mode === 'startEndRequired') return 'firstLast';
-  if (count === 1 && mode === 'endFrameOptional') return 'last';
-  if ((mode === 'startEndRequired' || mode === 'endFrameOptional') && count > 1) {
+  if (count === 1 && mode === 'startFrameOptional') return 'last';
+  if (
+    (
+      mode === 'startEndRequired' ||
+      mode === 'endFrameOptional' ||
+      mode === 'startFrameOptional'
+    ) && count > 1
+  ) {
     if (index === 0) return 'first';
     if (index === count - 1) return 'last';
     return 'reference';
@@ -32,6 +38,8 @@ export function videoFrameItems<T>(items: readonly T[], mode?: string): T[] {
   const last = items.at(-1);
   if (first === undefined || last === undefined) return [];
   if (mode === 'startEndRequired') return items.length === 1 ? [first, first] : [first, last];
-  if (mode === 'endFrameOptional') return items.length === 1 ? [last] : [first, last];
+  if (mode === 'endFrameOptional' || mode === 'startFrameOptional') {
+    return items.length === 1 ? [first] : [first, last];
+  }
   return [first];
 }
