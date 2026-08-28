@@ -6,6 +6,7 @@ mod shared;
 mod toonflow;
 mod toonflow_agent_episode_scope;
 mod toonflow_agent_events;
+mod toonflow_agent_history;
 mod toonflow_agent_plan;
 mod toonflow_agent_read_tools;
 mod toonflow_agent_runtime;

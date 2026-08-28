@@ -1,4 +1,4 @@
-use crate::{ToonState, toonflow_agents};
+use crate::{ToonState, toonflow_agent_history, toonflow_agents};
 use axum::{
     extract::{
         Path, Query, State,
@@ -25,6 +25,8 @@ pub(crate) struct WsParams {
     project_id: i64,
     #[serde(rename = "scriptId")]
     script_id: Option<i64>,
+    #[serde(default, rename = "historyMode")]
+    history_mode: Option<String>,
     #[serde(default)]
     eio: Option<u8>,
     #[serde(default)]
@@ -46,6 +48,12 @@ enum ClientMessage {
         think: bool,
         #[serde(rename = "thinkLevel")]
         think_level: i32,
+    },
+    #[serde(rename = "history")]
+    History {
+        #[serde(rename = "beforeId")]
+        before_id: Option<i64>,
+        limit: Option<usize>,
     },
     #[serde(rename = "updateContext")]
     UpdateContext {
@@ -419,26 +427,53 @@ async fn handle_socket(
     let mut active_task: Option<tokio::task::JoinHandle<()>> = None;
     let mut active_message: Option<(String, String)> = None;
 
-    // Restore historical messages as chat bubbles
-    let memories: Vec<toonflow_agents::MemoryRow> = sqlx::query_as(
-        "SELECT id,role,content,memory_type,create_time FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' ORDER BY create_time",
-    )
-    .bind(&agent_type)
-    .bind(&params.isolation_key)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    // New clients restore one bounded history page in a single frame. Keep the
+    // legacy event stream for older deployed frontends during rolling updates.
+    let batch_history = params.history_mode.as_deref() == Some("batch");
+    let has_user_msg = if batch_history {
+        match toonflow_agent_history::load_history_page(
+            &state.pool,
+            &agent_type,
+            &params.isolation_key,
+            None,
+            None,
+            false,
+        )
+        .await
+        {
+            Ok(page) => {
+                let has_history = !page.messages.is_empty();
+                emitter.send_json(&json!({ "event": "history", "data": page }));
+                has_history
+            }
+            Err(error) => {
+                warn!(%error, "failed to restore agent history page");
+                emitter.send_json(&json!({
+                    "event": "history:error",
+                    "data": { "message": "历史会话加载失败" }
+                }));
+                false
+            }
+        }
+    } else {
+        let memories: Vec<toonflow_agents::MemoryRow> = sqlx::query_as(
+            "SELECT id,role,content,memory_type,create_time FROM toonflow.agent_memories WHERE agent_type=$1 AND isolation_key=$2 AND memory_type='message' ORDER BY create_time",
+        )
+        .bind(&agent_type)
+        .bind(&params.isolation_key)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
 
-    for mem in &memories {
-        let role = if mem.role.starts_with("user") {
-            "user"
-        } else {
-            "assistant"
-        };
-        let name = if role == "user" {
-            "你"
-        } else {
-            if mem.role.contains("execution:storySkeleton")
+        for mem in &memories {
+            let role = if mem.role.starts_with("user") {
+                "user"
+            } else {
+                "assistant"
+            };
+            let name = if role == "user" {
+                "你"
+            } else if mem.role.contains("execution:storySkeleton")
                 || mem.role.contains("execution:adaptationStrategy")
                 || mem.role.contains("execution:script")
             {
@@ -447,17 +482,19 @@ async fn handle_socket(
                 "编辑"
             } else {
                 "统筹"
-            }
-        };
-        let (mid, _dt) = emitter.new_message(name, role);
-        let cid = emitter.add_content(&mid, "text", &json!(""));
-        emitter.text_delta(&mid, &cid, &mem.content);
-        emitter.text_complete(&mid, &cid);
-        emitter.update_message(&mid, "complete", None);
-    }
+            };
+            let (mid, _dt) = emitter.new_message(name, role);
+            let cid = emitter.add_content(&mid, "text", &json!(""));
+            emitter.text_delta(&mid, &cid, &mem.content);
+            emitter.text_complete(&mid, &cid);
+            emitter.update_message(&mid, "complete", None);
+        }
+        memories
+            .iter()
+            .any(|memory| memory.role.starts_with("user"))
+    };
 
     // If no history, send proactive greeting
-    let has_user_msg = memories.iter().any(|m| m.role.starts_with("user"));
     if !has_user_msg {
         let (greeting_id, _dt) = emitter.new_message("统筹", "assistant");
         let greeting_cid = emitter.add_content(&greeting_id, "text", &json!(""));
@@ -620,6 +657,33 @@ async fn handle_socket(
                 if let Some((message_id, content_id)) = active_message.take() {
                     emitter.text_complete(&message_id, &content_id);
                     emitter.update_message(&message_id, "canceled", Some("用户已中止"));
+                }
+            }
+
+            ClientMessage::History { before_id, limit } => {
+                if !batch_history {
+                    continue;
+                }
+                match toonflow_agent_history::load_history_page(
+                    &state.pool,
+                    &agent_type,
+                    &params.isolation_key,
+                    before_id,
+                    limit,
+                    true,
+                )
+                .await
+                {
+                    Ok(page) => {
+                        emitter.send_json(&json!({ "event": "history", "data": page }));
+                    }
+                    Err(error) => {
+                        warn!(%error, "failed to load older agent history");
+                        emitter.send_json(&json!({
+                            "event": "history:error",
+                            "data": { "message": "更早的会话加载失败" }
+                        }));
+                    }
                 }
             }
 

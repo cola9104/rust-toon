@@ -1,30 +1,40 @@
 <script setup lang="ts">
+/* eslint-disable vue/custom-event-name-casing, vue/no-mutating-props, vue/no-v-html -- the shared session array and legacy event names are the existing AgentChat contract */
+import type {
+  AgentChatContentBlock,
+  AgentChatMessage,
+  AgentHistoryFrame,
+} from './agent-chat-history';
+
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+
+import { useAppConfig } from '@vben/hooks';
 import { useAccessStore } from '@vben/stores';
 
+import {
+  Button,
+  Dropdown,
+  Menu,
+  Select,
+  SelectOption,
+  Switch,
+  Textarea,
+} from 'ant-design-vue';
+
+import { buildWebSocketUrl } from '#/utils/websocket';
+
 import { assetFileUrl } from '../assets/asset-types';
-
-interface ContentBlock {
-  type: string;
-  id: string;
-  data: any;
-  status: string;
-}
-
-interface ChatMessage {
-  id: string;
-  role: 'assistant' | 'user' | 'system';
-  name?: string;
-  status: string;
-  datetime: string;
-  content: ContentBlock[];
-}
+import {
+  AGENT_HISTORY_PAGE_SIZE,
+  historyContentPreview,
+  mergeAgentHistory,
+} from './agent-chat-history';
 
 const props = defineProps<{
-  agentType: 'scriptAgent' | 'productionAgent';
+  agentType: 'productionAgent' | 'scriptAgent';
+  messages: AgentChatMessage[];
   projectId: number;
   scriptId?: number;
-  messages: ChatMessage[];
   starterLabel?: string;
   starterPrompt?: string;
 }>();
@@ -33,32 +43,89 @@ const emit = defineEmits<{
   (e: 'activity', payload: { status: string; toolName: string }): void;
   (e: 'clear-memory', memoryType: 'all' | 'message' | 'summary'): void;
   (e: 'workspace-preview', payload: { key: 'scriptPlan' | 'storyboardTable'; value: string }): void;
-  (e: 'tool-result', payload: { toolName: string; result: any }): void;
+  (e: 'tool-result', payload: { result: any; toolName: string; }): void;
 }>();
 
 const accessStore = useAccessStore();
+const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 const connected = ref(false);
 const connecting = ref(false);
 const restoredNotice = ref(false);
 const thinkEnabled = ref(false);
 const thinkLevel = ref(1);
 const ratings = ref<Record<string, 'bad' | 'good' | undefined>>({});
+const historyHasMore = ref(false);
+const historyLoading = ref(false);
+const historyOldestId = ref<number>();
+const expandedHistoryBlocks = ref(new Set<string>());
 
-let ws: WebSocket | null = null;
+let ws: null | WebSocket = null;
 let hasConnected = false;
 let restoreTimer: number | undefined;
+let reconnectTimer: number | undefined;
+let scrollFrame: number | undefined;
+let historyFallbackTimer: number | undefined;
+let workspacePreviewTimer: number | undefined;
+let pendingWorkspacePreviewText = '';
+let liveMessageBudget = 0;
+let disposed = true;
+let shouldReconnect = false;
 const completedToolCalls = new Set<string>();
+const liveMessageIds = new Set<string>();
 const workspacePreviewValues = new Map<string, string>();
+const messageById = new Map<string, AgentChatMessage>();
+const blockById = new Map<string, AgentChatContentBlock>();
+const workspacePreviewPatterns = {
+  scriptPlan: /<scriptPlan>([\s\S]*?)<\/scriptPlan>/,
+  storyboardTable: /<storyboardTable>([\s\S]*?)<\/storyboardTable>/,
+};
 
 function emitWorkspacePreview(text: string) {
   for (const key of ['scriptPlan', 'storyboardTable'] as const) {
-    const match = text.match(new RegExp(`<${key}>([\\s\\S]*?)<\\/${key}>`));
+    const match = text.match(workspacePreviewPatterns[key]);
     const value = match?.[1]?.trim();
-    if (value && workspacePreviewValues.get(key) !== value) {
-      workspacePreviewValues.set(key, value);
-      emit('workspace-preview', { key, value });
+    if (value) updateWorkspacePreview(key, value);
+  }
+}
+
+function updateWorkspacePreview(
+  key: 'scriptPlan' | 'storyboardTable',
+  value: string,
+) {
+  if (workspacePreviewValues.get(key) === value) return;
+  workspacePreviewValues.set(key, value);
+  emit('workspace-preview', { key, value });
+}
+
+function restoreWorkspacePreviews(messages: AgentChatMessage[]) {
+  const pending = new Set(['scriptPlan', 'storyboardTable'] as const);
+  for (const message of [...messages].reverse()) {
+    for (const block of [...message.content].reverse()) {
+      if (typeof block.data !== 'string') continue;
+      for (const key of [...pending]) {
+        const value = block.data.match(workspacePreviewPatterns[key])?.[1]?.trim();
+        if (!value) continue;
+        updateWorkspacePreview(key, value);
+        pending.delete(key);
+      }
+      if (pending.size === 0) return;
     }
   }
+}
+
+function queueWorkspacePreview(text: string, complete = false) {
+  pendingWorkspacePreviewText = text;
+  if (complete) {
+    window.clearTimeout(workspacePreviewTimer);
+    workspacePreviewTimer = undefined;
+    emitWorkspacePreview(pendingWorkspacePreviewText);
+    return;
+  }
+  if (workspacePreviewTimer) return;
+  workspacePreviewTimer = window.setTimeout(() => {
+    workspacePreviewTimer = undefined;
+    emitWorkspacePreview(pendingWorkspacePreviewText);
+  }, 200);
 }
 
 const isolationKey = computed(() => {
@@ -66,7 +133,46 @@ const isolationKey = computed(() => {
   return `${props.agentType}:${props.projectId}:${sid}`;
 });
 
+function rebuildMessageIndex() {
+  messageById.clear();
+  blockById.clear();
+  for (const message of props.messages) {
+    messageById.set(message.id, message);
+    for (const block of message.content) blockById.set(block.id, block);
+  }
+}
+
+function replaceMessages(messages: AgentChatMessage[]) {
+  props.messages.splice(0, props.messages.length, ...messages);
+  rebuildMessageIndex();
+}
+
+function resetHistoryState() {
+  historyHasMore.value = false;
+  historyLoading.value = true;
+  historyOldestId.value = undefined;
+  expandedHistoryBlocks.value = new Set();
+}
+
+function clearReconnectTimer() {
+  window.clearTimeout(reconnectTimer);
+  reconnectTimer = undefined;
+}
+
+function scheduleReconnect() {
+  if (disposed || !shouldReconnect) return;
+  clearReconnectTimer();
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    if (!disposed && shouldReconnect && !connected.value && !connecting.value) {
+      connect();
+    }
+  }, 2000);
+}
+
 function connect() {
+  shouldReconnect = true;
+  if (disposed) return;
   if (ws && ws.readyState === WebSocket.OPEN) return;
   if (ws && ws.readyState === WebSocket.CONNECTING) return;
   const token = accessStore.accessToken;
@@ -75,18 +181,39 @@ function connect() {
     connecting.value = false;
     return;
   }
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  clearReconnectTimer();
+  connecting.value = true;
   const params = new URLSearchParams({
+    historyMode: 'batch',
     token: token ?? '',
     isolationKey: isolationKey.value,
     projectId: String(props.projectId),
   });
   if (props.scriptId) params.set('scriptId', String(props.scriptId));
-  const url = `${proto}//${location.host}/api/socket/${props.agentType}?${params}`;
+  const url = buildWebSocketUrl(
+    apiURL,
+    `/socket/${props.agentType}`,
+    params,
+    location.href,
+  );
 
-  ws = new WebSocket(url);
+  const socket = new WebSocket(url);
+  ws = socket;
 
-  ws.onopen = () => {
+  socket.onopen = () => {
+    if (ws !== socket || disposed) {
+      socket.close();
+      return;
+    }
+    replaceMessages([]);
+    resetHistoryState();
+    completedToolCalls.clear();
+    liveMessageIds.clear();
+    liveMessageBudget = 0;
+    window.clearTimeout(historyFallbackTimer);
+    historyFallbackTimer = window.setTimeout(() => {
+      historyLoading.value = false;
+    }, 750);
     connected.value = true;
     connecting.value = false;
     if (hasConnected) {
@@ -97,36 +224,49 @@ function connect() {
     hasConnected = true;
   };
 
-  ws.onmessage = (event) => {
+  socket.onmessage = (event) => {
+    if (ws !== socket || disposed) return;
     try {
       const frame = JSON.parse(event.data);
       handleServerMessage(frame);
     } catch { /* ignore invalid frames */ }
   };
 
-  ws.onerror = () => {
+  socket.onerror = () => {
+    if (ws !== socket) return;
     connecting.value = false;
     connected.value = false;
-    setTimeout(() => { if (!connected.value && !connecting.value) connect(); }, 2000);
+    scheduleReconnect();
   };
 
-  ws.onclose = () => {
-    const was = connected.value;
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    ws = null;
     connected.value = false;
     connecting.value = false;
-    if (was) setTimeout(() => { if (!connected.value && !connecting.value) connect(); }, 2000);
+    scheduleReconnect();
   };
 }
 
 function disconnect() {
-  if (ws) {
-    ws.close();
-    ws = null;
+  shouldReconnect = false;
+  clearReconnectTimer();
+  const socket = ws;
+  ws = null;
+  if (socket) {
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+    socket.onclose = null;
+    socket.close();
   }
+  connected.value = false;
+  connecting.value = false;
 }
 
 function send(content: string) {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  liveMessageBudget = 2;
   ws.send(JSON.stringify({ type: 'chat', content }));
 }
 
@@ -143,37 +283,90 @@ function applyThinkConfig() {
   updateThinkConfig(thinkEnabled.value, thinkLevel.value);
 }
 
+function applyHistoryFrame(data: AgentHistoryFrame) {
+  const incoming = Array.isArray(data.messages) ? data.messages : [];
+  const container = chatContainer.value;
+  const previousHeight = container?.scrollHeight ?? 0;
+  const previousTop = container?.scrollTop ?? 0;
+  replaceMessages(mergeAgentHistory(props.messages, incoming, !!data.prepend));
+  restoreWorkspacePreviews(incoming);
+  historyHasMore.value = !!data.hasMore;
+  historyOldestId.value = data.oldestId;
+  historyLoading.value = false;
+  window.clearTimeout(historyFallbackTimer);
+  historyFallbackTimer = undefined;
+
+  if (data.prepend && container) {
+    void nextTick(() => {
+      window.requestAnimationFrame(() => {
+        container.scrollTop = previousTop + container.scrollHeight - previousHeight;
+      });
+    });
+  } else {
+    scrollToBottom(true);
+  }
+}
+
+function loadOlderHistory() {
+  if (
+    historyLoading.value ||
+    !historyHasMore.value ||
+    !historyOldestId.value ||
+    !ws ||
+    ws.readyState !== WebSocket.OPEN
+  ) {
+    return;
+  }
+  historyLoading.value = true;
+  ws.send(JSON.stringify({
+    type: 'history',
+    beforeId: historyOldestId.value,
+    limit: AGENT_HISTORY_PAGE_SIZE,
+  }));
+}
+
+function historyBlockKey(message: AgentChatMessage, block: AgentChatContentBlock) {
+  return `${message.id}:${block.id}`;
+}
+
+function isHistoryBlockExpanded(
+  message: AgentChatMessage,
+  block: AgentChatContentBlock,
+) {
+  return expandedHistoryBlocks.value.has(historyBlockKey(message, block));
+}
+
+function historyBlockPreview(
+  message: AgentChatMessage,
+  block: AgentChatContentBlock,
+) {
+  return historyContentPreview(
+    block.data,
+    isHistoryBlockExpanded(message, block),
+  );
+}
+
+function toggleHistoryBlock(
+  message: AgentChatMessage,
+  block: AgentChatContentBlock,
+) {
+  const key = historyBlockKey(message, block);
+  const next = new Set(expandedHistoryBlocks.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  expandedHistoryBlocks.value = next;
+}
+
 function handleServerMessage(frame: any) {
   const { event: type, data } = frame;
   if (!data) return;
 
   switch (type) {
-    case 'message': {
-      const msg: ChatMessage = {
-        id: data.id,
-        role: data.role || 'assistant',
-        name: data.name,
-        status: data.status || 'pending',
-        datetime: data.datetime || new Date().toISOString(),
-        content: [],
-      };
-      props.messages.push(msg);
-      scrollToBottom();
-      break;
-    }
-    case 'message:update': {
-      const msg = props.messages.find((m) => m.id === data.id);
-      if (msg) {
-        msg.status = data.status;
-        if (data.ext) Object.assign(msg, { ext: data.ext });
-      }
-      emit('activity', { status: data.status || 'pending', toolName: '__agent__' });
-      break;
-    }
     case 'content:add': {
-      const msg = props.messages.find((m) => m.id === data.messageId);
+      const msg = messageById.get(data.messageId);
       if (msg) {
         msg.content.push(data.content);
+        blockById.set(data.content.id, data.content);
         if (data.content?.type === 'toolcall') {
           emit('activity', {
             status: data.content.status || 'pending',
@@ -185,47 +378,88 @@ function handleServerMessage(frame: any) {
       break;
     }
     case 'content:update': {
-      const msg = props.messages.find((m) => m.id === data.messageId);
+      const block = blockById.get(data.contentId);
+      if (block) {
+        block.status = data.status || block.status;
+        if (data.strategy === 'append' && data.data !== undefined) {
+          if (block.type === 'text' || block.type === 'markdown') {
+            block.data = (block.data || '') + (typeof data.data === 'string' ? data.data : '');
+            queueWorkspacePreview(
+              String(block.data || ''),
+              data.status === 'complete',
+            );
+          } else if (block.type === 'thinking') {
+            if (typeof data.data === 'object' && data.data.text) {
+              block.data.text = (block.data.text || '') + data.data.text;
+            } else if (block.data.title && data.data?.title) {
+              block.data.title = data.data.title;
+            }
+          } else if (block.type === 'toolcall') {
+            if (data.data.toolCallId) block.data.toolCallId = data.data.toolCallId;
+            if (data.data.toolCallName) block.data.toolCallName = data.data.toolCallName;
+            if (data.data.args) block.data.args = (block.data.args || '') + data.data.args;
+            if (data.data.chunk) block.data.result = (block.data.result || '') + data.data.chunk;
+          }
+        } else if (data.strategy === 'merge' && data.data !== undefined) {
+          if (typeof data.data === 'object') {
+            Object.assign(block.data, data.data);
+          } else {
+            block.data = data.data;
+          }
+        }
+        if (
+          block.type === 'toolcall' &&
+          (data.status === 'complete' || data.status === 'error') &&
+          !completedToolCalls.has(block.id)
+        ) {
+          completedToolCalls.add(block.id);
+          const toolName = block.data.toolCallName || 'unknown';
+          emit('activity', { status: data.status, toolName });
+          emit('tool-result', {
+            toolName,
+            result: data.data?.result || block.data.result || block.data,
+          });
+        }
+        scrollToBottom();
+      }
+      break;
+    }
+    case 'history': {
+      applyHistoryFrame(data as AgentHistoryFrame);
+      break;
+    }
+    case 'history:error': {
+      historyLoading.value = false;
+      break;
+    }
+    case 'message': {
+      const msg: AgentChatMessage = {
+        id: data.id,
+        role: data.role || 'assistant',
+        name: data.name,
+        status: data.status || 'pending',
+        datetime: data.datetime || new Date().toISOString(),
+        content: [],
+      };
+      props.messages.push(msg);
+      messageById.set(msg.id, msg);
+      if (liveMessageBudget > 0) {
+        liveMessageIds.add(msg.id);
+        liveMessageBudget -= 1;
+      }
+      scrollToBottom();
+      break;
+    }
+    case 'message:update': {
+      const msg = messageById.get(data.id);
       if (msg) {
-        const block = msg.content.find((c) => c.id === data.contentId);
-        if (block) {
-          block.status = data.status || block.status;
-          if (data.strategy === 'append' && data.data !== undefined) {
-            if (block.type === 'text' || block.type === 'markdown') {
-              block.data = (block.data || '') + (typeof data.data === 'string' ? data.data : '');
-              emitWorkspacePreview(String(block.data || ''));
-            } else if (block.type === 'thinking') {
-              if (typeof data.data === 'object' && data.data.text) {
-                block.data.text = (block.data.text || '') + data.data.text;
-              } else if (block.data.title && data.data?.title) {
-                block.data.title = data.data.title;
-              }
-            } else if (block.type === 'toolcall') {
-              if (data.data.toolCallId) block.data.toolCallId = data.data.toolCallId;
-              if (data.data.toolCallName) block.data.toolCallName = data.data.toolCallName;
-              if (data.data.args) block.data.args = (block.data.args || '') + data.data.args;
-              if (data.data.chunk) block.data.result = (block.data.result || '') + data.data.chunk;
-            }
-          } else if (data.strategy === 'merge' && data.data !== undefined) {
-            if (typeof data.data === 'object') {
-              Object.assign(block.data, data.data);
-            } else {
-              block.data = data.data;
-            }
-          }
-          if (
-            block.type === 'toolcall' &&
-            (data.status === 'complete' || data.status === 'error') &&
-            !completedToolCalls.has(block.id)
-          ) {
-            completedToolCalls.add(block.id);
-            const toolName = block.data.toolCallName || 'unknown';
-            emit('activity', { status: data.status, toolName });
-            emit('tool-result', {
-              toolName,
-              result: data.data?.result || block.data.result || block.data,
-            });
-          }
+        msg.status = data.status;
+        if (data.ext) Object.assign(msg, { ext: data.ext });
+      }
+      if (liveMessageIds.has(data.id)) {
+        emit('activity', { status: data.status || 'pending', toolName: '__agent__' });
+        if (data.status === 'complete' || data.status === 'error') {
+          liveMessageIds.delete(data.id);
         }
       }
       break;
@@ -235,8 +469,15 @@ function handleServerMessage(frame: any) {
 
 const chatContainer = ref<HTMLElement | null>(null);
 
-function scrollToBottom() {
-  nextTick(() => {
+function scrollToBottom(force = false) {
+  const container = chatContainer.value;
+  if (!container) return;
+  const distanceFromBottom =
+    container.scrollHeight - container.scrollTop - container.clientHeight;
+  if (!force && distanceFromBottom > 120) return;
+  if (scrollFrame !== undefined) return;
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = undefined;
     if (chatContainer.value) {
       chatContainer.value.scrollTop = chatContainer.value.scrollHeight;
     }
@@ -244,7 +485,11 @@ function scrollToBottom() {
 }
 
 onBeforeUnmount(() => {
+  disposed = true;
   window.clearTimeout(restoreTimer);
+  window.clearTimeout(historyFallbackTimer);
+  window.clearTimeout(workspacePreviewTimer);
+  if (scrollFrame !== undefined) window.cancelAnimationFrame(scrollFrame);
   disconnect();
 });
 
@@ -319,16 +564,26 @@ function useSuggestion(item: any) {
 
 // Auto-connect on mount and when agentType/projectId/scriptId changes
 onMounted(() => {
+  disposed = false;
+  rebuildMessageIndex();
   connect();
 });
 
 watch(
-  () => [props.agentType, props.projectId, props.scriptId],
+  isolationKey,
   () => {
     disconnect();
+    replaceMessages([]);
+    resetHistoryState();
+    completedToolCalls.clear();
+    liveMessageIds.clear();
+    workspacePreviewValues.clear();
+    hasConnected = false;
     connect();
   },
 );
+
+watch(() => props.messages, rebuildMessageIndex, { immediate: true });
 
 defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
 </script>
@@ -337,38 +592,47 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   <div class="agent-chat-wrapper">
     <!-- Connection status -->
     <div class="connection-status" :class="{ connected, connecting }">
-      <span class="status-dot" />
+      <span class="status-dot"></span>
       <span class="status-text">
         {{ connecting ? '连接中...' : connected ? '已连接' : '未连接' }}
       </span>
       <div class="agent-controls">
-        <label><a-switch v-model:checked="thinkEnabled" size="small" @change="applyThinkConfig" /> 深度思考</label>
-        <a-select v-model:value="thinkLevel" size="small" :disabled="!thinkEnabled" style="width: 88px" @change="applyThinkConfig">
-          <a-select-option :value="0">快速</a-select-option><a-select-option :value="1">基础</a-select-option><a-select-option :value="2">深入</a-select-option><a-select-option :value="3">完整</a-select-option>
-        </a-select>
-        <a-dropdown>
-          <a-button size="small">记忆</a-button>
-          <template #overlay><a-menu>
-            <a-menu-item @click="emit('clear-memory', 'message')">清除消息记忆</a-menu-item>
-            <a-menu-item @click="emit('clear-memory', 'summary')">清除摘要记忆</a-menu-item>
-            <a-menu-item danger @click="emit('clear-memory', 'all')">清除全部记忆</a-menu-item>
-          </a-menu></template>
-        </a-dropdown>
+        <label><Switch v-model:checked="thinkEnabled" size="small" @change="applyThinkConfig" /> 深度思考</label>
+        <Select v-model:value="thinkLevel" size="small" :disabled="!thinkEnabled" style="width: 88px" @change="applyThinkConfig">
+          <SelectOption :value="0">快速</SelectOption><SelectOption :value="1">基础</SelectOption><SelectOption :value="2">深入</SelectOption><SelectOption :value="3">完整</SelectOption>
+        </Select>
+        <Dropdown>
+          <Button size="small">记忆</Button>
+          <template #overlay>
+            <Menu>
+              <Menu.Item @click="emit('clear-memory', 'message')">清除消息记忆</Menu.Item>
+              <Menu.Item @click="emit('clear-memory', 'summary')">清除摘要记忆</Menu.Item>
+              <Menu.Item danger @click="emit('clear-memory', 'all')">清除全部记忆</Menu.Item>
+            </Menu>
+          </template>
+        </Dropdown>
       </div>
     </div>
     <div v-if="restoredNotice" class="restored-notice">✓ 已恢复会话</div>
 
     <!-- Messages area -->
     <div ref="chatContainer" class="chat-messages">
+      <div v-if="historyHasMore" class="history-more">
+        <Button size="small" :loading="historyLoading" @click="loadOlderHistory">
+          加载更早会话
+        </Button>
+      </div>
       <div v-if="messages.length === 0" class="chat-empty">
         <div>让 Agent 读取当前剧本和资产并启动制作流程</div>
-        <a-button
+        <Button
           v-if="starterPrompt"
           class="starter-button"
           type="primary"
           :disabled="!connected"
           @click="handleStarter"
-        >{{ starterLabel || '开始制作' }}</a-button>
+        >
+          {{ starterLabel || '开始制作' }}
+        </Button>
       </div>
 
       <div
@@ -389,8 +653,22 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
         <div v-for="block in msg.content" :key="block.id" class="content-block">
           <!-- Text content -->
           <div v-if="block.type === 'text' || block.type === 'markdown'" class="content-text">
-            <div class="markdown-body" v-html="block.data" />
-            <span v-if="block.status === 'streaming'" class="streaming-cursor">▊</span>
+            <template v-if="msg.historical">
+              <div class="history-content-text">{{ historyBlockPreview(msg, block).text }}</div>
+              <button
+                v-if="historyBlockPreview(msg, block).truncated"
+                class="history-expand"
+                type="button"
+                @click="toggleHistoryBlock(msg, block)"
+              >
+                {{ isHistoryBlockExpanded(msg, block) ? '收起内容' : '展开完整内容' }}
+              </button>
+            </template>
+            <template v-else>
+              <div v-if="block.status === 'streaming'" class="streaming-text">{{ block.data }}</div>
+              <div v-else class="markdown-body" v-html="block.data"></div>
+              <span v-if="block.status === 'streaming'" class="streaming-cursor">▊</span>
+            </template>
           </div>
 
           <!-- Thinking content -->
@@ -435,7 +713,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
 
           <div v-else-if="block.type === 'image'" class="content-images">
             <a v-for="(item, index) in blockItems(block.data)" :key="index" :href="blockUrl(item)" target="_blank" rel="noreferrer">
-              <img :src="blockUrl(item)" :alt="item?.name || `生成图片 ${index + 1}`" />
+              <img :src="blockUrl(item)" :alt="item?.name || `生成图片 ${index + 1}`" decoding="async" loading="lazy" />
             </a>
           </div>
 
@@ -460,7 +738,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
           <span class="loading-dots">...</span>
         </div>
         <div v-else-if="msg.status === 'error'" class="message-error">
-          {{ (msg as any).ext?.error || '执行出错' }}
+          {{ msg.ext?.error || '执行出错' }}
         </div>
         <div v-if="msg.role === 'assistant' && msg.status === 'complete'" class="message-rating">
           <button :class="{ active: ratings[msg.id] === 'good' }" type="button" title="有帮助" @click="ratings[msg.id] = ratings[msg.id] === 'good' ? undefined : 'good'">👍</button>
@@ -472,25 +750,29 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
     <!-- Input area -->
     <div class="chat-input-area">
       <div class="input-wrapper">
-        <a-textarea
+        <Textarea
           v-model:value="inputText"
           :auto-size="{ minRows: 2, maxRows: 6 }"
           placeholder="输入消息，Enter 发送，Ctrl+Enter 换行"
           @keydown="handleKeydown"
         />
-        <a-button
+        <Button
           v-if="hasActiveRun"
           class="send-btn stop-btn"
           danger
           @click="stop"
-        >■</a-button>
-        <a-button
+        >
+          ■
+        </Button>
+        <Button
           v-else
           class="send-btn"
           type="primary"
           :disabled="!inputText.trim()"
           @click="handleSend"
-        >▶</a-button>
+        >
+          ▶
+        </Button>
       </div>
     </div>
   </div>
@@ -536,6 +818,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   flex-direction: column;
   gap: 12px;
 }
+.history-more { display: flex; justify-content: center; }
 
 .chat-empty {
   text-align: center;
@@ -551,6 +834,8 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   border-radius: 10px;
   font-size: 14px;
   line-height: 1.6;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
 }
 
 .chat-message-user {
@@ -585,6 +870,17 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
 
 .content-text {
   word-break: break-word;
+}
+.history-content-text,
+.streaming-text { white-space: pre-wrap; }
+.history-expand {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  color: #1677ff;
+  background: transparent;
+  cursor: pointer;
+  font-size: 12px;
 }
 .streaming-cursor {
   animation: blink 1s infinite;
