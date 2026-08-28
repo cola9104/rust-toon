@@ -1334,6 +1334,19 @@ pub struct SaveStoryboardRequest {
     pub associate_assets_ids: Vec<i64>,
 }
 
+async fn validate_storyboard_prompt_inputs(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    prompt: &str,
+    asset_ids: &[i64],
+) -> Result<(), AppError> {
+    let prompt_assets =
+        crate::toonflow_asset_context::load_storyboard_prompt_assets(pool, project_id, asset_ids)
+            .await?;
+    crate::toonflow_storyboard_prompt_validation::validate_storyboard_prompt(prompt, &prompt_assets)
+        .map_err(AppError::bad_request)
+}
+
 pub async fn add_storyboard(
     user: CurrentUser,
     State(state): State<ToonState>,
@@ -1352,6 +1365,15 @@ pub async fn add_storyboard(
         &request.associate_assets_ids,
     )
     .await?;
+    if request.should_generate_image != 0 {
+        validate_storyboard_prompt_inputs(
+            &state.pool,
+            project_id,
+            &request.prompt,
+            &request.associate_assets_ids,
+        )
+        .await?;
+    }
     let id = request.id.unwrap_or_else(|| next_id(0));
     let track_id = next_id(1);
     let mut tx = state
@@ -1490,6 +1512,17 @@ pub async fn batch_add_storyboards(
         &associated_asset_ids,
     )
     .await?;
+    for item in &request.data {
+        if item.should_generate_image != 0 {
+            validate_storyboard_prompt_inputs(
+                &state.pool,
+                request.project_id,
+                &item.prompt,
+                &item.associate_assets_ids,
+            )
+            .await?;
+        }
+    }
     let mut tx = state
         .pool
         .begin()
@@ -1643,6 +1676,30 @@ pub async fn edit_storyboard_info(
         )
         .await?;
     }
+    let effective_asset_ids = if let Some(asset_ids) = request.associate_assets_ids.as_ref() {
+        asset_ids.clone()
+    } else {
+        sqlx::query_scalar(
+            "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id",
+        )
+        .bind(request.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to load storyboard assets"))?
+    };
+    if request
+        .should_generate_image
+        .unwrap_or(current_should_generate)
+        != 0
+    {
+        validate_storyboard_prompt_inputs(
+            &state.pool,
+            project_id,
+            &request.prompt,
+            &effective_asset_ids,
+        )
+        .await?;
+    }
     let track = request.track.as_deref().unwrap_or("main").trim();
     let track = if track.is_empty() { "main" } else { track };
     let target_track_id: Option<i64> = sqlx::query_scalar(
@@ -1678,17 +1735,6 @@ pub async fn edit_storyboard_info(
     let scene_changed = scene_key_was_provided && scene_key != current_scene_key;
     let state_was_provided = request.scene_state_id.is_some() || request.scene_state_key.is_some();
     let scene_state_id = if scene_changed || state_was_provided {
-        let asset_ids = if let Some(asset_ids) = request.associate_assets_ids.as_deref() {
-            asset_ids.to_vec()
-        } else {
-            sqlx::query_scalar(
-                "SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id",
-            )
-            .bind(request.id)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|_| AppError::internal("failed to load storyboard assets"))?
-        };
         crate::toonflow_scene_consistency::resolve_storyboard_scene_state(
             &mut *tx,
             project_id,
@@ -1698,13 +1744,13 @@ pub async fn edit_storyboard_info(
             request.scene_state_key.as_deref(),
             request.scene_state_parent_key.as_deref(),
             request.scene_state_description.as_deref(),
-            &asset_ids,
+            &effective_asset_ids,
         )
         .await?
     } else {
         current_scene_state_id
     };
-    let result = sqlx::query("UPDATE toonflow.storyboards SET prompt=$2,video_desc=$3,duration=$4,track=$5,track_id=$6,should_generate_image=$7,scene_key=CASE WHEN $8 THEN $9 ELSE scene_key END,scene_state_id=$10 WHERE id=$1")
+    let result = sqlx::query("UPDATE toonflow.storyboards SET prompt=$2,video_desc=$3,duration=$4,track=$5,track_id=$6,should_generate_image=$7,scene_key=CASE WHEN $8 THEN $9 ELSE scene_key END,scene_state_id=$10,state='未生成',reason='分镜描述或参考资产已更新，请重新生成图片',generated_scene_state_id=NULL,scene_generation_context='{}'::jsonb WHERE id=$1")
         .bind(request.id).bind(request.prompt).bind(request.video_desc)
         .bind(request.duration.map(|value| value.to_string())).bind(track).bind(track_id)
         .bind(request.should_generate_image.unwrap_or(current_should_generate))
@@ -1743,7 +1789,7 @@ pub async fn edit_storyboard_info(
                 .await
                 .map_err(|_| AppError::internal("failed to delete empty storyboard track"))?;
         } else {
-            sqlx::query("UPDATE toonflow.video_tracks SET duration=$2 WHERE id=$1")
+            sqlx::query("UPDATE toonflow.video_tracks SET duration=$2,state='未生成',reason='分镜已更新，请重新生成视频' WHERE id=$1")
                 .bind(affected_track_id)
                 .bind(duration)
                 .execute(&mut *tx)

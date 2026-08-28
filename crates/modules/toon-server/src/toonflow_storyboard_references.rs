@@ -451,10 +451,18 @@ mod tests {
             StoryboardAssetReference {
                 image_id: 11,
                 file_path: "role.png".into(),
+                prompt_asset: crate::toonflow_asset_context::StoryboardPromptAsset {
+                    name: "角色".into(),
+                    kind: "role".into(),
+                },
             },
             StoryboardAssetReference {
                 image_id: 12,
                 file_path: "prop.png".into(),
+                prompt_asset: crate::toonflow_asset_context::StoryboardPromptAsset {
+                    name: "道具".into(),
+                    kind: "tool".into(),
+                },
             },
         ];
 

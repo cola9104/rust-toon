@@ -43,6 +43,7 @@ mod toonflow_status;
 mod toonflow_storage;
 mod toonflow_storyboard_asset_validation;
 mod toonflow_storyboard_panel_validation;
+mod toonflow_storyboard_prompt_validation;
 mod toonflow_storyboard_references;
 mod toonflow_storyboard_table_validation;
 mod toonflow_video;

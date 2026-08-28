@@ -81,6 +81,17 @@ pub(crate) struct ToolRequest {
     pub(crate) emitter: Option<WsEmitter>,
 }
 
+#[derive(sqlx::FromRow)]
+struct StoryboardAgentEditRow {
+    prompt: String,
+    should_generate_image: i32,
+    script_id: i64,
+    track_id: Option<i64>,
+    track: Option<String>,
+    scene_key: Option<String>,
+    scene_state_id: Option<i64>,
+}
+
 #[derive(Default)]
 struct StoryboardPanelBatchContext {
     created_ids: std::sync::Mutex<Vec<i64>>,
@@ -1188,9 +1199,13 @@ pub(crate) async fn execute_inner(
                         r#"SELECT child.id, parent.name
                            FROM toonflow.assets child
                            JOIN toonflow.assets parent ON parent.id=child.parent_asset_id
-                           JOIN toonflow.script_assets linked ON linked.asset_id=child.id
-                           WHERE child.project_id=$1 AND linked.script_id=$2
-                             AND child.type='role' AND parent.type='role'"#,
+                           WHERE child.project_id=$1
+                             AND child.type='role' AND parent.type='role'
+                             AND EXISTS(
+                               SELECT 1 FROM toonflow.script_assets linked
+                               WHERE linked.script_id=$2
+                                 AND linked.asset_id IN (child.id,parent.id)
+                             )"#,
                     )
                     .bind(request.project_id)
                     .bind(script_id)
@@ -1266,7 +1281,7 @@ pub(crate) async fn execute_inner(
                 String::new()
             };
             let generation_gate = if agent_key == "productionAgent:storyboardTableAgent" {
-                "\n\n## Toonflow 分镜规划强制执行顺序（不得跳步）\n1. 首轮只调用 get_flowData，依次读取 script、assets、scriptPlan；三项必须全部实际读取，禁止依靠记忆补写。\n2. 先在回复中输出简短的逐场结构化草案：逐条台词按4字/秒估时、划分不超过15秒的片段、写明相邻片段的桥梁元素、标出长台词拆镜点并核对全员视觉落点。\n3. 草案完成后保存完整 storyboardTable；标签内部必须是技能模板规定的 Markdown，禁止 JSON、XML 子标签和代码围栏。\n4. 每一行镜头必须能直接生成一张构图明确的静态关键帧：只允许一个时间点、一个机位、一个连续动作状态。禁止蒙太奇、快切、多景别、定格画面、用箭头串联多个动作或在同一行跨时间。\n5. 逐场维护“在场角色状态”：记录每个人物的入场、位置、姿态、朝向、持有物和离场。相邻镜头仍在同一空间且没有明确离场、转场、特写、反打或画外依据时，上一镜在场人物必须继续写入画面描述并绑定对应衍生资产；不得因本镜没有台词或主动作而让人物凭空消失。\n6. 画面描述必须写出本镜所有出镜人物的姓名、姿态、位置、朝向及相互空间关系；即使某人没有主动作，只要同框也必须描述。例如病床对话中必须持续写明患者躺在病床上、陪伴者坐在床边。\n7. 画面描述、运镜、音效不得出现光影色调词；画面描述不得重复服装、发型、五官、肤色等资产固有外观。\n8. 每镜含台词最低时长按：台词字数÷4 + 每处标点停顿0.4秒 + 1秒安全余量，最终向上取整；台词必须与剧本逐字一致。\n9. 只有本镜实际出现在画面中的人物、场景和物件才能绑定；每个已绑定资产都必须在该镜画面描述中明确出现，禁止把片段级资产整组复制到每一镜。\n10. 人物在当前场次存在 scenes 匹配的衍生形象时，必须引用该衍生资产的名称和ID，禁止继续引用基础人物。输出前逐镜自检，任一项不满足不得输出。"
+                "\n\n## Toonflow 分镜规划强制执行顺序（不得跳步）\n1. 首轮只调用 get_flowData，依次读取 script、assets、scriptPlan；三项必须全部实际读取，禁止依靠记忆补写。\n2. 先在回复中输出简短的逐场结构化草案：逐条台词按4字/秒估时、划分不超过15秒的片段、写明相邻片段的桥梁元素、标出长台词拆镜点并核对全员视觉落点。\n3. 草案完成后保存完整 storyboardTable；标签内部必须是技能模板规定的 Markdown，禁止 JSON、XML 子标签和代码围栏。\n4. 每一行镜头必须能直接生成一张构图明确的静态关键帧：只允许一个时间点、一个机位、一个连续动作状态。禁止蒙太奇、快切、多景别、定格画面、用箭头串联多个动作或在同一行跨时间。\n5. 逐场维护“在场角色状态”：跨片段持续记录每个人物的入场、位置、基础姿态、承托物、朝向、持有物和离场。相邻镜头仍在同一空间且没有明确离场、转场、特写、反打或画外依据时，上一镜在场人物必须继续写入画面描述并绑定对应衍生资产；不得因本镜没有台词或主动作而让人物凭空消失。\n6. 画面描述必须逐镜展开本镜所有出镜人物的姓名、基础姿态、承托物、位置、朝向及相互空间关系；禁止用“同前”“保持原姿势”或上下文隐含替代。即使某人没有主动作，只要同框也必须明确描述，例如病床对话每一镜都要写患者仰躺在病床上、陪伴者坐在床边。只有明确写出坐起、下床、起身、站起等可见动作时才能改变既有姿态。\n7. 画面描述、运镜、音效不得出现光影色调词；画面描述不得重复服装、发型、五官、肤色等资产固有外观。\n8. 每镜含台词最低时长按：台词字数÷4 + 每处标点停顿0.4秒 + 1秒安全余量，最终向上取整；台词必须与剧本逐字一致。\n9. 只有本镜实际出现在画面中的人物、场景和物件才能绑定；每个已绑定资产都必须在该镜画面描述中明确出现，禁止把片段级资产整组复制到每一镜。\n10. 人物在当前场次存在 scenes 匹配的衍生形象时，必须引用该衍生资产的名称和ID，禁止继续引用基础人物。输出前逐镜自检，任一项不满足不得输出。"
             } else {
                 ""
             };
@@ -1287,15 +1302,15 @@ pub(crate) async fn execute_inner(
                         Some(
                             crate::toonflow_storyboard_panel_validation::PromptFormat::Seedream,
                         ) => {
-                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Seedream 模式A：分镜表每一行独立写入；prompt 使用中文【画面】【风格】结构，按关联资产顺序声明 @图N，并在【画面】正文用 @图N 替换对应资产名称；prompt 只写可视画面，禁止写入台词、对白、音效或要求画面内字幕；shouldGenerateImage 传 true。禁止输出 JSON，禁止自行切换模式。"
+                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Seedream 模式A：分镜表每一行独立写入；prompt 使用中文【画面】【风格】结构，按关联资产顺序声明 @图N，并在【画面】正文用 @图N 替换对应资产名称。每个角色 @图N 都必须作为主语单独写出其基础姿态、承托物、位置和朝向；“@图2 盯着 @图1”不能代替 @图1 自身的姿态描述。相邻镜头没有明确起身/坐下等变化时，必须把上一镜姿态逐字展开到本镜；人物参考图仅锁定身份和服装，禁止继承其站立设定姿态。prompt 只写可视画面，禁止写入台词、对白、音效或要求画面内字幕；shouldGenerateImage 传 true。禁止输出 JSON，禁止自行切换模式。"
                         }
                         Some(
                             crate::toonflow_storyboard_panel_validation::PromptFormat::Nanobanana,
                         ) => {
-                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Nanobanana 模式B：分镜表每一行独立写入；prompt 使用包含 character_reference、continuity_rules、shot、negative 的英文 JSON 结构，每个 @图N 必须在参考声明及 shot 正文中出现；shouldGenerateImage 传 true。禁止自行切换模式。"
+                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”与 Nanobanana 模式B：分镜表每一行独立写入；prompt 使用包含 character_reference、continuity_rules、shot、negative 的英文 JSON 结构，每个角色 @图N 必须在参考声明及 shot 正文中出现，并在自己的 shot 状态中明确 base pose、support surface、position 和 facing；作为另一角色 gaze target 不算自身状态。没有明确姿态转换时逐镜继承并展开上一镜姿态；人物参考图只锁定身份和服装，不继承站姿。shouldGenerateImage 传 true。禁止自行切换模式。"
                         }
                         _ => {
-                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”：分镜表每一行独立写入，生成忠实的静态首帧 prompt，按关联资产顺序建立 @图N 绑定，shouldGenerateImage 传 true。禁止自行切换模式。"
+                            "\n\n## 本次写入路由（服务端已确定）\n必须执行“首位帧模式”：分镜表每一行独立写入，生成忠实的静态首帧 prompt，按关联资产顺序建立 @图N 绑定；每个角色 @图N 都必须独立写明基础姿态和承托物，并逐镜展开未发生变化的上一镜姿态，不能只作为其他角色动作的宾语出现。人物参考图只锁定身份和服装，不继承站姿。shouldGenerateImage 传 true。禁止自行切换模式。"
                         }
                     }
                 }
@@ -1303,7 +1318,7 @@ pub(crate) async fn execute_inner(
                 ""
             };
             let storyboard_generation_gate = if agent_key == "productionAgent:storyboardGenAgent" {
-                "\n\n## 分镜图生成强制流程\n1. 必须先调用 get_flowData 读取 storyboard 的最新分镜、状态、失败原因和资产绑定。\n2. 如果失败原因是已绑定 @图N 但提示词未描述，必须逐条核对本镜真实可见对象，调用 update_storyboard 同时修正 prompt 和 associateAssetsIds；不可把本镜不出镜的人物强行写进提示词。\n3. 修复后才能调用 generate_storyboard；只提交委派范围或用户明确选中的 ID，禁止自动扩大为全部分镜。\n4. concurrentCount 默认使用 2，避免图片模型限流。"
+                "\n\n## 分镜图生成强制流程\n1. 必须先调用 get_flowData 读取 storyboard 的最新分镜、状态、失败原因和资产绑定。\n2. 如果失败原因是已绑定 @图N 未描述或角色 @图N 缺少自身姿态，必须逐条核对本镜真实可见对象及上一镜角色状态，调用 update_storyboard 同时修正 prompt、videoDesc 和 associateAssetsIds。每个出镜角色必须作为主语写出基础姿态与承托物；“另一人物盯着 @图N”不能代替该角色自身描述。不可把本镜不出镜的人物强行写进提示词。\n3. 修复后才能调用 generate_storyboard；只提交委派范围或用户明确选中的 ID，禁止自动扩大为全部分镜。\n4. concurrentCount 默认使用 2，避免图片模型限流。"
             } else {
                 ""
             };
@@ -1741,17 +1756,25 @@ pub(crate) async fn execute_inner(
                 .arguments
                 .get("sceneStateParentKey")
                 .and_then(Value::as_str);
-            crate::toonflow_image_workflow::validate_storyboard_prompt(
-                prompt,
-                associated_asset_ids.len(),
-            )
-            .map_err(AppError::bad_request)?;
             crate::toonflow_storyboard_asset_validation::validate_storyboard_asset_ids(
                 &state.pool,
                 request.project_id,
                 &associated_asset_ids,
             )
             .await?;
+            if should {
+                let prompt_assets = crate::toonflow_asset_context::load_storyboard_prompt_assets(
+                    &state.pool,
+                    request.project_id,
+                    &associated_asset_ids,
+                )
+                .await?;
+                crate::toonflow_storyboard_prompt_validation::validate_storyboard_prompt(
+                    prompt,
+                    &prompt_assets,
+                )
+                .map_err(AppError::bad_request)?;
+            }
             let index:i32=sqlx::query_scalar("SELECT coalesce(max(index),-1)+1 FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2").bind(request.project_id).bind(script_id).fetch_one(&state.pool).await.unwrap_or(0);
             let track_id = id + 1;
             let mut tx = state
@@ -1838,29 +1861,22 @@ pub(crate) async fn execute_inner(
                 .get("id")
                 .and_then(Value::as_i64)
                 .ok_or_else(|| AppError::bad_request("缺少 id"))?;
-            let current: Option<(
-                String,
-                i64,
-                Option<i64>,
-                Option<String>,
-                Option<String>,
-                Option<i64>,
-            )> = sqlx::query_as(
-                "SELECT prompt,script_id,track_id,track,scene_key,scene_state_id FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
+            let current = sqlx::query_as::<_, StoryboardAgentEditRow>(
+                "SELECT prompt,should_generate_image,script_id,track_id,track,scene_key,scene_state_id FROM toonflow.storyboards WHERE id=$1 AND project_id=$2",
             )
             .bind(id)
             .bind(request.project_id)
             .fetch_optional(&state.pool)
                 .await
                 .map_err(|_| AppError::internal("failed to load storyboard"))?;
-            let (
-                current_prompt,
-                script_id,
-                current_track_id,
-                current_track,
-                current_scene_key,
-                current_scene_state_id,
-            ) = current.ok_or_else(|| AppError::not_found("storyboard not found"))?;
+            let current = current.ok_or_else(|| AppError::not_found("storyboard not found"))?;
+            let current_prompt = current.prompt;
+            let current_should_generate = current.should_generate_image;
+            let script_id = current.script_id;
+            let current_track_id = current.track_id;
+            let current_track = current.track;
+            let current_scene_key = current.scene_key;
+            let current_scene_state_id = current.scene_state_id;
             let prompt = request.arguments.get("prompt").and_then(Value::as_str);
             let associated_asset_ids = request
                 .arguments
@@ -1879,11 +1895,25 @@ pub(crate) async fn execute_inner(
                 } else {
                     sqlx::query_scalar("SELECT asset_id FROM toonflow.assets_storyboards WHERE storyboard_id=$1 ORDER BY sort_order,asset_id").bind(id).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to load storyboard assets"))?
                 };
-                crate::toonflow_image_workflow::validate_storyboard_prompt(
-                    prompt.unwrap_or(&current_prompt),
-                    asset_ids.len(),
-                )
-                .map_err(AppError::bad_request)?;
+                let should_generate = request
+                    .arguments
+                    .get("shouldGenerateImage")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(current_should_generate != 0);
+                if should_generate {
+                    let prompt_assets =
+                        crate::toonflow_asset_context::load_storyboard_prompt_assets(
+                            &state.pool,
+                            request.project_id,
+                            &asset_ids,
+                        )
+                        .await?;
+                    crate::toonflow_storyboard_prompt_validation::validate_storyboard_prompt(
+                        prompt.unwrap_or(&current_prompt),
+                        &prompt_assets,
+                    )
+                    .map_err(AppError::bad_request)?;
+                }
             }
             let mut tx = state
                 .pool
@@ -1967,7 +1997,55 @@ pub(crate) async fn execute_inner(
             } else {
                 current_scene_state_id
             };
-            let result=sqlx::query("UPDATE toonflow.storyboards SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),duration=coalesce($5,duration),track=$6,track_id=$7,should_generate_image=coalesce($8,should_generate_image),scene_key=CASE WHEN $9 THEN $10 ELSE scene_key END,scene_state_id=$11 WHERE id=$1 AND project_id=$2").bind(id).bind(request.project_id).bind(prompt).bind(request.arguments.get("videoDesc").and_then(Value::as_str)).bind(request.arguments.get("duration").and_then(Value::as_i64).map(|v|v.to_string())).bind(&target_track).bind(target_track_id).bind(request.arguments.get("shouldGenerateImage").and_then(Value::as_bool).map(|v|if v{1}else{0})).bind(scene_key_was_provided).bind(scene_key).bind(scene_state_id).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to update storyboard"))?;
+            let image_inputs_changed = prompt.is_some()
+                || request.arguments.get("videoDesc").is_some()
+                || associated_asset_ids.is_some()
+                || scene_changed
+                || scene_state_key.is_some();
+            let result = sqlx::query(
+                r#"UPDATE toonflow.storyboards
+                   SET prompt=coalesce($3,prompt),video_desc=coalesce($4,video_desc),
+                       duration=coalesce($5,duration),track=$6,track_id=$7,
+                       should_generate_image=coalesce($8,should_generate_image),
+                       scene_key=CASE WHEN $9 THEN $10 ELSE scene_key END,scene_state_id=$11,
+                       state=CASE WHEN $12 THEN '未生成' ELSE state END,
+                       reason=CASE WHEN $12 THEN '分镜描述或参考资产已更新，请重新生成图片' ELSE reason END,
+                       generated_scene_state_id=CASE WHEN $12 THEN NULL ELSE generated_scene_state_id END,
+                       scene_generation_context=CASE WHEN $12 THEN '{}'::jsonb ELSE scene_generation_context END
+                   WHERE id=$1 AND project_id=$2"#,
+            )
+            .bind(id)
+            .bind(request.project_id)
+            .bind(prompt)
+            .bind(
+                request
+                    .arguments
+                    .get("videoDesc")
+                    .and_then(Value::as_str),
+            )
+            .bind(
+                request
+                    .arguments
+                    .get("duration")
+                    .and_then(Value::as_i64)
+                    .map(|value| value.to_string()),
+            )
+            .bind(&target_track)
+            .bind(target_track_id)
+            .bind(
+                request
+                    .arguments
+                    .get("shouldGenerateImage")
+                    .and_then(Value::as_bool)
+                    .map(|value| if value { 1 } else { 0 }),
+            )
+            .bind(scene_key_was_provided)
+            .bind(scene_key)
+            .bind(scene_state_id)
+            .bind(image_inputs_changed)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AppError::internal("failed to update storyboard"))?;
             if result.rows_affected() == 0 {
                 return Err(AppError::not_found("storyboard not found"));
             }
@@ -2009,6 +2087,15 @@ pub(crate) async fn execute_inner(
                         .execute(&mut *tx)
                         .await
                         .map_err(|_| AppError::internal("failed to update storyboard track duration"))?;
+                    if image_inputs_changed {
+                        sqlx::query(
+                            "UPDATE toonflow.video_tracks SET state='未生成',reason='分镜已更新，请重新生成视频' WHERE id=$1",
+                        )
+                        .bind(affected_track_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| AppError::internal("failed to invalidate storyboard track"))?;
+                    }
                 }
             }
             tx.commit()

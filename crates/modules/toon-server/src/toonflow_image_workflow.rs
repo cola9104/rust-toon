@@ -26,30 +26,6 @@ async fn normalize_image_references(references: Vec<String>) -> Result<Vec<Strin
     Ok(normalized)
 }
 
-pub(crate) fn validate_storyboard_prompt(
-    prompt: &str,
-    reference_count: usize,
-) -> Result<(), String> {
-    if prompt.trim().is_empty() {
-        return Err("分镜图片提示词为空，请先按首位帧模式重新写入分镜面板".to_string());
-    }
-    for index in 1..=reference_count {
-        let marker = format!("@图{index}");
-        let marker_is_present = prompt.match_indices(&marker).any(|(position, _)| {
-            prompt[position + marker.len()..]
-                .chars()
-                .next()
-                .is_none_or(|character| !character.is_ascii_digit())
-        });
-        if !marker_is_present {
-            return Err(format!(
-                "分镜图片已绑定参考资产 {marker}，但画面提示词未描述该资产；请补充其位置和姿态，或从当前分镜解除绑定"
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn storyboard_image_size(quality: &str, ratio: &str) -> String {
     let long_edge = match quality.trim().to_ascii_uppercase().as_str() {
         "1K" => 1280.0,
@@ -492,7 +468,14 @@ async fn generate_storyboard_job(
             return false;
         }
     };
-    if let Err(reason) = validate_storyboard_prompt(&job.prompt, asset_references.len()) {
+    let prompt_assets = asset_references
+        .iter()
+        .map(|reference| reference.prompt_asset.clone())
+        .collect::<Vec<_>>();
+    if let Err(reason) = crate::toonflow_storyboard_prompt_validation::validate_storyboard_prompt(
+        &job.prompt,
+        &prompt_assets,
+    ) {
         let _ =
             sqlx::query("UPDATE toonflow.storyboards SET state='生成失败',reason=$2 WHERE id=$1")
                 .bind(job.id)
@@ -732,38 +715,7 @@ pub async fn schedule_storyboard_generation(
 
 #[cfg(test)]
 mod prompt_tests {
-    use super::{storyboard_image_size, validate_storyboard_prompt};
-
-    #[test]
-    fn accepts_ordered_reference_markers() {
-        assert!(
-            validate_storyboard_prompt("@图1 为角色，@图2 为场景，【画面】二人对视", 2).is_ok()
-        );
-    }
-
-    #[test]
-    fn rejects_bound_but_undocumented_reference_assets() {
-        let error = validate_storyboard_prompt("@图2 为角色，@图3 为场景", 3)
-            .expect_err("bound @图1 must be documented or unbound");
-        assert!(error.contains("已绑定参考资产 @图1"));
-    }
-
-    #[test]
-    fn marker_one_is_not_satisfied_by_marker_ten() {
-        let prompt = (2..=10)
-            .map(|index| format!("@图{index}"))
-            .collect::<Vec<_>>()
-            .join(" ");
-
-        let error = validate_storyboard_prompt(&prompt, 10).unwrap_err();
-
-        assert!(error.contains("@图1"));
-    }
-
-    #[test]
-    fn rejects_empty_prompt() {
-        assert!(validate_storyboard_prompt("  ", 0).is_err());
-    }
+    use super::storyboard_image_size;
 
     #[test]
     fn converts_project_ratio_to_provider_dimensions() {

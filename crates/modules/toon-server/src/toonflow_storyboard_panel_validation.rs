@@ -1,10 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
+use crate::toonflow_storyboard_prompt_validation::{
+    CharacterPose, marker_poses, pose_after_subject,
+};
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExpectedPanelItem {
     pub duration: f64,
     pub asset_ids: Vec<i64>,
     pub asset_names: Vec<String>,
+    pub role_poses: HashMap<i64, CharacterPose>,
     pub scene: usize,
     pub shots: Vec<ExpectedShot>,
 }
@@ -65,16 +70,19 @@ pub fn expected_items_with_aliases(
     let mut asset_names = Vec::new();
     let mut scene = 0;
     let mut rows: Vec<(f64, ExpectedShot)> = Vec::new();
+    let mut active_role_ids = HashSet::new();
+    let mut scene_role_poses = HashMap::new();
 
     let flush = |result: &mut Vec<ExpectedPanelItem>,
                  rows: &mut Vec<(f64, ExpectedShot)>,
                  segment_duration: Option<f64>,
                  asset_ids: &[i64],
                  asset_names: &[String],
-                 scene: usize| {
+                 scene: usize,
+                 active_role_ids: &mut HashSet<i64>,
+                 scene_role_poses: &mut HashMap<i64, CharacterPose>| {
         if first_frame {
-            let mut active_role_ids = HashSet::new();
-            result.extend(rows.drain(..).map(|(duration, shot)| {
+            for (duration, shot) in rows.drain(..) {
                 let mut visible_assets = asset_ids
                     .iter()
                     .copied()
@@ -100,24 +108,54 @@ pub fn expected_items_with_aliases(
                         }
                     }
                 }
+                let visible_role_names = visible_assets
+                    .iter()
+                    .filter(|(id, _)| asset_aliases.contains_key(id))
+                    .map(|(id, name)| {
+                        let mut names = vec![name.clone()];
+                        names.extend(asset_aliases.get(id).into_iter().flatten().cloned());
+                        (*id, names)
+                    })
+                    .collect::<Vec<_>>();
+                for (id, names) in &visible_role_names {
+                    let other_names = visible_role_names
+                        .iter()
+                        .filter(|(other_id, _)| other_id != id)
+                        .flat_map(|(_, names)| names.iter().cloned())
+                        .collect::<Vec<_>>();
+                    if let Some(pose) = pose_after_subject(&shot.visual, names, &other_names) {
+                        scene_role_poses.insert(*id, pose);
+                    }
+                }
+                let role_poses = visible_role_names
+                    .iter()
+                    .filter_map(|(id, _)| scene_role_poses.get(id).map(|pose| (*id, *pose)))
+                    .collect();
                 for (id, _) in &visible_assets {
                     if asset_aliases.contains_key(id) {
                         active_role_ids.insert(*id);
                     }
                 }
-                for (id, aliases) in asset_aliases {
-                    if aliases.iter().any(|alias| role_exits(alias, &shot.visual)) {
-                        active_role_ids.remove(id);
-                    }
-                }
-                ExpectedPanelItem {
+                let exiting_role_ids = asset_aliases
+                    .iter()
+                    .filter(|(_, aliases)| {
+                        aliases.iter().any(|alias| role_exits(alias, &shot.visual))
+                    })
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                result.push(ExpectedPanelItem {
                     duration,
                     asset_ids: visible_assets.iter().map(|(id, _)| *id).collect(),
                     asset_names: visible_assets.into_iter().map(|(_, name)| name).collect(),
+                    role_poses,
                     scene,
                     shots: vec![shot],
+                });
+                for id in exiting_role_ids {
+                    active_role_ids.remove(&id);
+                    scene_role_poses.remove(&id);
                 }
-            }));
+            }
         } else {
             if let Some(duration) = segment_duration {
                 let shots = rows.drain(..).map(|(_, shot)| shot).collect();
@@ -125,6 +163,7 @@ pub fn expected_items_with_aliases(
                     duration,
                     asset_ids: asset_ids.to_vec(),
                     asset_names: asset_names.to_vec(),
+                    role_poses: HashMap::new(),
                     scene,
                     shots,
                 });
@@ -144,6 +183,8 @@ pub fn expected_items_with_aliases(
                 &asset_ids,
                 &asset_names,
                 scene,
+                &mut active_role_ids,
+                &mut scene_role_poses,
             );
             segment_duration = declared_duration(line);
             asset_ids.clear();
@@ -156,7 +197,11 @@ pub fn expected_items_with_aliases(
                 &asset_ids,
                 &asset_names,
                 scene,
+                &mut active_role_ids,
+                &mut scene_role_poses,
             );
+            active_role_ids.clear();
+            scene_role_poses.clear();
             scene += 1;
             segment_duration = None;
             asset_ids.clear();
@@ -177,6 +222,8 @@ pub fn expected_items_with_aliases(
         &asset_ids,
         &asset_names,
         scene,
+        &mut active_role_ids,
+        &mut scene_role_poses,
     );
     result
 }
@@ -326,6 +373,29 @@ fn validate_role_continuity(
         }
         let name = expected.asset_names.get(asset_index).map(String::as_str);
         let marker = format!("@图{}", asset_index + 1);
+        match expected.role_poses.get(asset_id) {
+            Some(expected_pose) => {
+                let actual_poses = marker_poses(prompt, &marker);
+                if !actual_poses.contains(expected_pose) {
+                    let actual = if actual_poses.is_empty() {
+                        "未描述".to_string()
+                    } else {
+                        actual_poses
+                            .iter()
+                            .map(|pose| pose.label())
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    };
+                    issues.push(format!(
+                        "第{position}条角色{marker}姿态应继承“{}”，实际为{actual}",
+                        expected_pose.label()
+                    ));
+                }
+            }
+            None => issues.push(format!(
+                "第{position}条角色{marker}在本场首次出镜前没有明确姿态，无法建立人物姿态连续性"
+            )),
+        }
         let role_is_visible = name.is_some_and(|name| shot.visual.contains(name));
         if !role_is_visible {
             continue;
@@ -482,6 +552,7 @@ mod tests {
         ActualPanelItem, PromptFormat, expected_items, expected_items_with_aliases, prompt_format,
         validate,
     };
+    use crate::toonflow_storyboard_prompt_validation::CharacterPose;
     use std::collections::HashMap;
 
     const TABLE: &str = r#"
@@ -570,6 +641,70 @@ mod tests {
 
         assert_eq!(frames[0].asset_ids, vec![19]);
         assert_eq!(frames[1].asset_ids, vec![20, 19]);
+    }
+
+    #[test]
+    fn carries_role_poses_across_segments_and_rejects_the_track_six_regression() {
+        let table = r#"
+## 场1：重症监护室 ｜ 参演角色：王闲、鸭舌帽兄弟
+### 片段一（约4s）
+**引用资产名称**：[濒死武神装, 床边陪伴装, 重症监护室]
+**引用资产ID**：[19, 20, 30]
+| 序号 | 画面描述 | 时长 | 景别 | 运镜 | 台词 | 音效 |
+|---|---|---|---|---|---|---|
+| 1 | 王闲躺在病床上，鸭舌帽兄弟坐在床边。 | 4 | 中景 | 固定 |  |  |
+### 片段二（约4s）
+**引用资产名称**：[濒死武神装, 床边陪伴装, 重症监护室]
+**引用资产ID**：[19, 20, 30]
+| 序号 | 画面描述 | 时长 | 景别 | 运镜 | 台词 | 音效 |
+|---|---|---|---|---|---|---|
+| 1 | 鸭舌帽兄弟身体前倾，盯着王闲。 | 4 | 中景 | 缓推 |  |  |
+"#;
+        let aliases = HashMap::from([
+            (19, vec!["王闲".to_string()]),
+            (20, vec!["鸭舌帽兄弟".to_string()]),
+        ]);
+        let expected = expected_items_with_aliases(table, true, &aliases);
+
+        assert_eq!(expected[1].role_poses[&19], CharacterPose::Lying);
+        assert_eq!(expected[1].role_poses[&20], CharacterPose::Sitting);
+
+        let actual = vec![
+            ActualPanelItem {
+                prompt: "@图1 为王闲，@图2 为鸭舌帽兄弟，@图3 为场景；【画面】中景，@图1 躺在病床上，@图2 坐在床边。【风格】写实".into(),
+                video_desc: "王闲躺在病床上，鸭舌帽兄弟坐在床边。".into(),
+                track: "1".into(),
+                duration: 4.0,
+                should_generate_image: true,
+                asset_ids: vec![19, 20, 30],
+            },
+            ActualPanelItem {
+                prompt: "@图1 为王闲，@图2 为鸭舌帽兄弟，@图3 为场景；【画面】中景，@图2 身体前倾，盯着 @图1。【风格】写实".into(),
+                video_desc: "鸭舌帽兄弟身体前倾，盯着王闲。".into(),
+                track: "2".into(),
+                duration: 4.0,
+                should_generate_image: true,
+                asset_ids: vec![19, 20, 30],
+            },
+        ];
+        let issues = validate(
+            &expected,
+            &actual,
+            true,
+            PromptFormat::Seedream,
+            &[19_i64, 20].into_iter().collect(),
+        );
+
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("角色@图1姿态应继承“躺姿”"))
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|issue| issue.contains("角色@图2姿态应继承“坐姿”"))
+        );
     }
 
     #[test]

@@ -245,7 +245,7 @@ pub(crate) fn storyboard_generation_prompt(stored_prompt: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "{visual_prompt}\n所有已绑定的参考资产都必须在画面中清晰可见并与描述一一对应；不得遗漏任何出镜人物，不得把应出镜人物裁切成只露手、肩膀或局部身体。\n画面中禁止出现任何文字、字母、数字、对白、字幕、标题、Logo或水印；不得把台词画进图像。"
+        "{visual_prompt}\n人物参考图只用于锁定身份、面容、体型和服装；必须严格执行分镜文字中为每个 @图N 指定的姿态、承托物、位置和朝向，不得继承人物设定图中的站姿、四视图或展示构图。\n所有已绑定的参考资产都必须在画面中清晰可见并与描述一一对应；不得遗漏任何出镜人物，不得把应出镜人物裁切成只露手、肩膀或局部身体。\n画面中禁止出现任何文字、字母、数字、对白、字幕、标题、Logo或水印；不得把台词画进图像。"
     )
 }
 
@@ -307,6 +307,8 @@ mod tests {
         assert!(prompt.contains("@图1 坐在床边"));
         assert!(prompt.contains("禁止出现任何文字"));
         assert!(prompt.contains("不得遗漏任何出镜人物"));
+        assert!(prompt.contains("人物参考图只用于锁定身份"));
+        assert!(prompt.contains("不得继承人物设定图中的站姿"));
         assert!(!prompt.contains("『你好』"));
         assert!(!prompt.contains("脚步声"));
     }

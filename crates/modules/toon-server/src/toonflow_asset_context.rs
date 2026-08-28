@@ -5,19 +5,33 @@ use std::collections::HashMap;
 
 use rust_toon_framework_web::AppError;
 
-#[derive(Clone, Debug, FromRow)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StoryboardPromptAsset {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct StoryboardAssetReference {
     pub(crate) image_id: i64,
     pub(crate) file_path: String,
+    pub(crate) prompt_asset: StoryboardPromptAsset,
 }
 
 #[derive(Clone, Debug, FromRow)]
 struct StoryboardAssetReferenceRow {
     asset_name: String,
+    asset_type: String,
     asset_project_id: i64,
     image_id: Option<i64>,
     file_path: Option<String>,
     image_state: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct StoryboardPromptAssetRow {
+    asset_name: String,
+    asset_type: String,
 }
 
 /// A production-facing asset record assembled from the canonical asset tables.
@@ -163,6 +177,40 @@ pub async fn load_track_asset_references(
     .await
 }
 
+/// Loads the ordered asset metadata used by the persisted `@图N` prompt contract.
+pub async fn load_storyboard_prompt_assets(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    asset_ids: &[i64],
+) -> Result<Vec<StoryboardPromptAsset>, AppError> {
+    if asset_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, StoryboardPromptAssetRow>(
+        r#"SELECT asset.name AS asset_name,asset.type AS asset_type
+           FROM unnest($2::bigint[]) WITH ORDINALITY requested(id,position)
+           JOIN toonflow.assets asset ON asset.id=requested.id AND asset.project_id=$1
+           ORDER BY requested.position"#,
+    )
+    .bind(project_id)
+    .bind(asset_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to load storyboard prompt assets"))?;
+    if rows.len() != asset_ids.len() {
+        return Err(AppError::bad_request(
+            "分镜包含不存在或不属于当前项目的关联资产，请重新保存资产绑定",
+        ));
+    }
+    Ok(rows
+        .into_iter()
+        .map(|row| StoryboardPromptAsset {
+            name: row.asset_name,
+            kind: row.asset_type,
+        })
+        .collect())
+}
+
 /// Returns the current image of each asset associated with one storyboard in the exact order used
 /// by the persisted `@图N` prompt contract.
 pub async fn load_storyboard_asset_references(
@@ -172,7 +220,7 @@ pub async fn load_storyboard_asset_references(
     storyboard_id: i64,
 ) -> Result<Vec<StoryboardAssetReference>, AppError> {
     let rows = sqlx::query_as::<_, StoryboardAssetReferenceRow>(
-        r#"SELECT a.name AS asset_name,a.project_id AS asset_project_id,
+        r#"SELECT a.name AS asset_name,a.type AS asset_type,a.project_id AS asset_project_id,
                   i.id AS image_id,i.file_path,i.state AS image_state
            FROM toonflow.assets_storyboards ast
            JOIN toonflow.storyboards s ON s.id=ast.storyboard_id
@@ -212,6 +260,10 @@ pub async fn load_storyboard_asset_references(
         .map(|row| StoryboardAssetReference {
             image_id: row.image_id.expect("validated storyboard image id"),
             file_path: row.file_path.expect("validated storyboard image path"),
+            prompt_asset: StoryboardPromptAsset {
+                name: row.asset_name,
+                kind: row.asset_type,
+            },
         })
         .collect())
 }
