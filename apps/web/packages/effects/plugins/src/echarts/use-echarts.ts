@@ -29,8 +29,6 @@ import {
 } from '@vueuse/core';
 
 import echarts from './echarts';
-// TODO @xingyu：有 500kb，china.json 会影响打包么？
-import chinaMap from './map/china.json';
 
 type EchartsUIType = typeof EchartsUI | undefined;
 
@@ -45,18 +43,6 @@ function useEcharts(chartRef: Ref<EchartsUIType>) {
   const { isDark } = usePreferences();
   const { height, width } = useWindowSize();
   const resizeHandler: () => void = useDebounceFn(resize, 200);
-
-  echarts.registerMap('china', {
-    geoJSON: chinaMap as any,
-    specialAreas: {
-      china: {
-        left: 500,
-        top: 500,
-        width: 1000,
-        height: 1000,
-      },
-    },
-  });
 
   const getChartEl = (): HTMLElement | null => {
     const refValue = chartRef?.value as unknown;

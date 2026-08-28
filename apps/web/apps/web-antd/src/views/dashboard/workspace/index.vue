@@ -6,7 +6,7 @@ import type {
   WorkbenchTrendItem,
 } from '@vben/common-ui';
 
-import { ref } from 'vue';
+import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import {
@@ -21,9 +21,33 @@ import { preferences } from '@vben/preferences';
 import { useUserStore } from '@vben/stores';
 import { openWindow } from '@vben/utils';
 
-import AnalyticsVisitsSource from '../analytics/analytics-visits-source.vue';
+const AnalyticsVisitsSource = defineAsyncComponent(
+  () => import('../analytics/analytics-visits-source.vue'),
+);
 
 const userStore = useUserStore();
+const chartContainer = ref<HTMLElement>();
+const chartReady = ref(false);
+let chartObserver: IntersectionObserver | undefined;
+
+onMounted(() => {
+  if (!chartContainer.value || typeof IntersectionObserver === 'undefined') {
+    chartReady.value = true;
+    return;
+  }
+  chartObserver = new IntersectionObserver(
+    ([entry]) => {
+      if (!entry?.isIntersecting) return;
+      chartReady.value = true;
+      chartObserver?.disconnect();
+      chartObserver = undefined;
+    },
+    { threshold: 0.1 },
+  );
+  chartObserver.observe(chartContainer.value);
+});
+
+onBeforeUnmount(() => chartObserver?.disconnect());
 
 // 这是一个示例数据，实际项目中需要根据实际情况进行调整
 // url 也可以是内部路由，在 navTo 方法中识别处理，进行内部跳转
@@ -251,9 +275,12 @@ function navTo(nav: WorkbenchProjectItem | WorkbenchQuickNavItem) {
           @click="navTo"
         />
         <WorkbenchTodo :items="todoItems" class="mt-5" title="待办事项" />
-        <AnalysisChartCard class="mt-5" title="访问来源">
-          <AnalyticsVisitsSource />
-        </AnalysisChartCard>
+        <div ref="chartContainer">
+          <AnalysisChartCard class="mt-5" title="访问来源">
+            <AnalyticsVisitsSource v-if="chartReady" />
+            <div v-else class="h-[300px]" aria-hidden="true"></div>
+          </AnalysisChartCard>
+        </div>
       </div>
     </div>
   </div>
