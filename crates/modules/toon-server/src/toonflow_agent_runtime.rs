@@ -171,11 +171,11 @@ fn parse_id_array(value: &str) -> HashSet<i64> {
 }
 
 pub(crate) async fn load_agent_skill(pool: &PgPool, agent_key: &str) -> Result<String, String> {
-    let (_, name, description, path): (String, String, String, String) = sqlx::query_as(
-        "SELECT a.skill_path,s.name,s.description,a.skill_path
+    let (path, content): (String, String) = sqlx::query_as(
+        "SELECT a.skill_path,s.content
          FROM toonflow.skill_attributions a
          JOIN toonflow.skill_list s ON s.path=a.skill_path
-         WHERE a.agent_key=$1 AND s.state=1
+         WHERE a.agent_key=$1 AND s.state=1 AND s.content<>''
          ORDER BY a.priority,a.skill_path LIMIT 1",
     )
     .bind(agent_key)
@@ -183,9 +183,10 @@ pub(crate) async fn load_agent_skill(pool: &PgPool, agent_key: &str) -> Result<S
     .await
     .map_err(|error| error.to_string())?
     .ok_or_else(|| format!("Agent {agent_key} 没有可用 Skill"))?;
-    Ok(format!(
-        "可用 Skill（仅在需要时调用 use_skill 加载完整内容）：{name}（{description}）={path}。加载后可调用 read_skill_file 读取资源文件。"
-    ))
+    if content.trim().is_empty() {
+        return Err(format!("Agent {agent_key} 的主 Skill {path} 内容为空"));
+    }
+    Ok(content)
 }
 
 pub(crate) async fn load_skill(pool: &PgPool, path: &str) -> Result<String, String> {

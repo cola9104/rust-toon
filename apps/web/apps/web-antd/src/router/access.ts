@@ -57,6 +57,9 @@ function normalizeToonflowTabRoutes(router: Router) {
       .find((item) => item.name === name || item.path === path);
     if (route) {
       route.meta.fullPathKey = false;
+      if (name === 'ToonflowProjectDetail') {
+        route.meta.keepAlive = true;
+      }
     }
   }
 }

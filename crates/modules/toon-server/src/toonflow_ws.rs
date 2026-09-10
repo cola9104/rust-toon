@@ -419,8 +419,8 @@ async fn handle_socket(
     };
 
     // Think config defaults
-    let mut think = false;
-    let mut think_level: i32 = 0;
+    let mut think = true;
+    let mut think_level: i32 = 1;
 
     // Abort controller
     let (mut abort_tx, _abort_rx) = watch::channel(false);
@@ -642,6 +642,7 @@ async fn handle_socket(
                                 &exec_text_cid,
                                 &format!("\n\n错误：{friendly}"),
                             );
+                            exec_emitter.text_complete(&exec_msg_id, &exec_text_cid);
                             exec_emitter.update_message(&exec_msg_id, "error", Some(&error));
                         }
                     }

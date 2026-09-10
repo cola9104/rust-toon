@@ -143,20 +143,61 @@ pub fn agent_key_for(agent_type: &str) -> Result<&'static str, String> {
     }
 }
 
+fn format_chapter_ranges(indexes: &[i32]) -> String {
+    let Some((&first, rest)) = indexes.split_first() else {
+        return "无".to_string();
+    };
+    let mut ranges = Vec::new();
+    let mut start = first;
+    let mut end = first;
+    for &index in rest {
+        if index == end + 1 {
+            end = index;
+        } else {
+            ranges.push(if start == end {
+                start.to_string()
+            } else {
+                format!("{start}-{end}")
+            });
+            start = index;
+            end = index;
+        }
+    }
+    ranges.push(if start == end {
+        start.to_string()
+    } else {
+        format!("{start}-{end}")
+    });
+    ranges.join("、")
+}
+
 async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
     let project: Option<ProjectContextRow> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model,mode FROM toonflow.projects WHERE id=$1")
         .bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to load agent project"))?;
     let (name, kind, intro, style, ratio, image_model, video_model, mode) =
         project.ok_or_else(|| AppError::not_found("project not found"))?;
     if request.agent_type == "scriptAgent" {
-        let chapters: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM toonflow.novels WHERE project_id=$1")
-                .bind(request.project_id)
-                .fetch_one(&state.pool)
-                .await
-                .unwrap_or(0);
+        let chapters: Vec<(i32, bool)> = sqlx::query_as(
+            "SELECT chapter_index,event_state=1 AND COALESCE(event,'')<>''
+             FROM toonflow.novels WHERE project_id=$1 ORDER BY chapter_index",
+        )
+        .bind(request.project_id)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|_| AppError::internal("failed to load agent chapter catalog"))?;
+        let imported_range = match (chapters.first(), chapters.last()) {
+            (Some((first, _)), Some((last, _))) => format!("第{first}-{last}章"),
+            _ => "无".to_string(),
+        };
+        let extracted = chapters
+            .iter()
+            .filter_map(|(index, ready)| ready.then_some(*index))
+            .collect::<Vec<_>>();
+        let extracted_ranges = format_chapter_ranges(&extracted);
         Ok(format!(
-            "## 项目信息\n小说名称：{name}\n小说类型：{kind}\n小说简介：{intro}\n视觉风格：{style}\n视频画幅：{ratio}\n章节数量：{chapters}章\n\n**重要**：平台规格=视频画幅({ratio})，风格定位=小说类型({kind})+视觉风格({style})。这两项参数已由项目配置确定，无需再向用户确认，直接使用即可。"
+            "## 项目信息\n小说名称：{name}\n小说类型：{kind}\n小说简介：{intro}\n视觉风格：{style}\n视频画幅：{ratio}\n导入章节：{}章（{imported_range}）\n已完成事件提取：{}章\n可用于改编的原著章节：{extracted_ranges}\n\n**重要**：平台规格=视频画幅({ratio})，风格定位=小说类型({kind})+视觉风格({style})。这两项参数已由项目配置确定，无需再向用户确认，直接使用即可。推荐或确认改编范围时，必须明确写出起止章节，并以“可用于改编的原著章节”为依据；尚未完成事件提取的章节必须先提示用户提取事件，不得直接进入生成。",
+            chapters.len(),
+            extracted.len(),
         ))
     } else {
         let image_model_label = if let Some(id) = image_model {
@@ -361,10 +402,14 @@ fn thinking_instruction(enabled: bool, level: i32) -> &'static str {
 
 fn pipeline_rule(agent_type: &str) -> &'static str {
     if agent_type == "scriptAgent" {
-        "\n\n## 流水线铁律\n1. 阶段必须串行：故事骨架 → 改编策略 → 剧本编写，禁止跳过或合并\n2. 阶段1故事骨架、阶段2改编策略完成后必须分别调用 run_supervision_agent 审核，并把审核报告展示给用户\n3. 用户确认阶段1/2审核结果后才能进入下一阶段\n4. 阶段3不调用监督层：必须按集序为每一集单独调用 run_sub_agent_script，每次只生成一集；全部集数完成后统一调用 save_scripts 写入，未保存不得宣称完成"
+        "\n\n## 流水线铁律\n1. 阶段必须串行：故事骨架 → 改编策略 → 剧本编写，禁止跳过或合并\n2. 阶段1故事骨架、阶段2改编策略完成后必须分别调用 run_supervision_agent 审核，并把审核报告展示给用户\n3. 用户确认阶段1/2审核结果后才能进入下一阶段\n4. 阶段3不调用监督层：必须按集序为每一集单独调用 run_sub_agent_script，每次只生成一集；全部集数完成后统一调用 save_scripts 写入，未保存不得宣称完成\n5. 用户给出明确原著章节范围但未指定集数或单集时长时，必须先调用 get_novel_events 读取该范围，依据事件数量、密度和情节完整性，主动给出明确的推荐集数、单集时长及简短理由，再等待用户确认；禁止仅显示“待确认”或继续把同一问题原样抛给用户\n6. 项目参数未全部确认前，不得调用任何生成或保存工具"
     } else {
         ""
     }
+}
+
+fn stop_run_after_tool_failure(tool_name: &str) -> bool {
+    tool_name.starts_with("run_sub_agent_") || tool_name == "run_supervision_agent"
 }
 
 fn parse_tool_calls(text: &str) -> Vec<(String, Value)> {
@@ -741,14 +786,18 @@ async fn run_native_tools(
                         (value, true)
                     }
                     Err(error) => {
+                        let error = format!("{error:?}");
                         record_run_event(
                             &state.pool,
                             run_id,
                             "tool_result",
-                            json!({"tool": name, "success": false, "error": format!("{error:?}")}),
+                            json!({"tool": name, "success": false, "error": error}),
                         )
                         .await;
-                        (json!({"error":format!("{error:?}")}), false)
+                        if stop_run_after_tool_failure(name) {
+                            return Err(format!("{name} 执行失败：{error}"));
+                        }
+                        (json!({"error":error}), false)
                     }
                 };
             messages
@@ -765,6 +814,8 @@ async fn run_with_tools(
     system: &str,
     run_id: i64,
 ) -> Result<String, String> {
+    let primary_skill =
+        toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
     let available_skills =
         toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
             .await?;
@@ -781,7 +832,7 @@ async fn run_with_tools(
         )
     };
     let complete_system = format!(
-        "{system}\n\n{}{}\n{}{}",
+        "{primary_skill}\n\n{system}\n\n{}{}\n{}{}",
         tool_guide(&request.agent_type),
         skill_guide,
         thinking_instruction(request.think, request.think_level),
@@ -842,14 +893,18 @@ async fn run_with_tools(
                         .push(json!({"callId":call_id,"tool":name,"success":true,"result":value}))
                 }
                 Err(error) => {
+                    let error = format!("{error:?}");
                     record_run_event(
                         &state.pool,
                         run_id,
                         "tool_result",
-                        json!({"tool": name, "success": false, "error": format!("{error:?}")}),
+                        json!({"tool": name, "success": false, "error": error}),
                     )
                     .await;
-                    results.push(json!({"tool":name,"success":false,"error":format!("{error:?}")}))
+                    if stop_run_after_tool_failure(&name) {
+                        return Err(format!("{name} 执行失败：{error}"));
+                    }
+                    results.push(json!({"tool":name,"success":false,"error":error}))
                 }
             }
         }
@@ -970,6 +1025,8 @@ pub(crate) async fn run_with_emitter(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
+    let primary_skill =
+        toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
     let available_skills =
         toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
             .await?;
@@ -989,7 +1046,7 @@ pub(crate) async fn run_with_emitter(
 
     let pipeline_rule = pipeline_rule(&request.agent_type);
     let system = format!(
-        "{context}\n{memory}\n{}{}\n{}{pipeline_rule}",
+        "{primary_skill}\n\n{context}\n{memory}\n{}{}\n{}{pipeline_rule}",
         tool_guide(&request.agent_type),
         skill_guide,
         thinking_instruction(request.think, request.think_level),
@@ -1111,6 +1168,9 @@ pub(crate) async fn run_with_emitter(
                 Err(error) => {
                     let err_str = format!("{error:?}");
                     emitter.tool_call_error(msg_id, &tc_cid, &tool_call_id, &err_str);
+                    if stop_run_after_tool_failure(name) {
+                        return Err(format!("{name} 执行失败：{err_str}"));
+                    }
                     messages.push(json!({"role":"tool","tool_call_id":call_id,"content":err_str}));
                 }
             }
@@ -1388,7 +1448,35 @@ pub(crate) async fn clear_memory_records(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_native_tool_arguments, parse_tool_calls, tool_names};
+    use super::{
+        format_chapter_ranges, parse_native_tool_arguments, parse_tool_calls, pipeline_rule,
+        stop_run_after_tool_failure, tool_names,
+    };
+
+    #[test]
+    fn formats_available_chapters_as_compact_ranges() {
+        assert_eq!(format_chapter_ranges(&[]), "无");
+        assert_eq!(
+            format_chapter_ranges(&[1, 2, 3, 5, 8, 9, 10]),
+            "1-3、5、8-10"
+        );
+    }
+
+    #[test]
+    fn script_pipeline_requires_concrete_recommendations_for_a_chapter_range() {
+        let rule = pipeline_rule("scriptAgent");
+        assert!(rule.contains("主动给出明确的推荐集数、单集时长"));
+        assert!(rule.contains("禁止仅显示“待确认”"));
+        assert!(rule.contains("参数未全部确认前，不得调用任何生成或保存工具"));
+    }
+
+    #[test]
+    fn sub_agent_and_supervision_failures_stop_the_parent_run() {
+        assert!(stop_run_after_tool_failure("run_sub_agent_storySkeleton"));
+        assert!(stop_run_after_tool_failure("run_sub_agent_supervision"));
+        assert!(stop_run_after_tool_failure("run_supervision_agent"));
+        assert!(!stop_run_after_tool_failure("get_novel_events"));
+    }
 
     #[test]
     fn parses_multiple_tool_calls() {

@@ -10,6 +10,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
+fn merge_tool_call_delta(target: &mut Value, part: &Value) {
+    // Ark sends empty IDs and names on argument-only chunks. These must not
+    // erase the metadata from the first chunk. Function names can also arrive
+    // in fragments, just like arguments.
+    if let Some(id) = part.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()) {
+        target["id"] = json!(id);
+    }
+    for key in ["name", "arguments"] {
+        if let Some(fragment) = part.get("function").and_then(|f| f.get(key)).and_then(Value::as_str) {
+            let previous = target["function"][key].as_str().unwrap_or("");
+            target["function"][key] = json!(format!("{previous}{fragment}"));
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProviderError {
@@ -325,31 +340,7 @@ impl OpenAiCompatibleProvider {
                         while tool_calls.len() <= index {
                             tool_calls.push(json!({"id":"","type":"function","function":{"name":"","arguments":""}}));
                         }
-                        let target = tool_calls[index].as_object_mut().expect("tool call object");
-                        if let Some(id) = part.get("id").and_then(Value::as_str) {
-                            target.insert("id".into(), json!(id));
-                        }
-                        if let Some(function) = part.get("function").and_then(Value::as_object) {
-                            let current = target
-                                .get_mut("function")
-                                .and_then(Value::as_object_mut)
-                                .unwrap();
-                            if let Some(name) = function.get("name").and_then(Value::as_str) {
-                                current.insert("name".into(), json!(name));
-                            }
-                            if let Some(arguments) =
-                                function.get("arguments").and_then(Value::as_str)
-                            {
-                                let previous = current
-                                    .get("arguments")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("");
-                                current.insert(
-                                    "arguments".into(),
-                                    json!(format!("{previous}{arguments}")),
-                                );
-                            }
-                        }
+                        merge_tool_call_delta(&mut tool_calls[index], part);
                     }
                 }
                 on_delta(delta).await?;
@@ -956,9 +947,31 @@ impl ChatProvider for OpenAiCompatibleProvider {
 
 #[cfg(test)]
 mod structured_error_tests {
-    use super::{ProviderError, provider_app_error, retryable_status, upstream_error};
+    use super::{ProviderError, merge_tool_call_delta, provider_app_error, retryable_status, upstream_error};
     use reqwest::StatusCode;
     use serde_json::json;
+
+    #[test]
+    fn tool_stream_preserves_metadata_across_empty_ark_chunks() {
+        let mut call = json!({"id":"","type":"function","function":{"name":"","arguments":""}});
+        merge_tool_call_delta(&mut call, &json!({"id":"call_1","function":{"name":"read_skill_file","arguments":""}}));
+        merge_tool_call_delta(&mut call, &json!({"id":"","function":{"name":"","arguments":"{\"path\":"}}));
+        merge_tool_call_delta(&mut call, &json!({"id":"","function":{"name":"","arguments":"\"production_skills/storyboard_prompt_techniques.md\"}"}}));
+        assert_eq!(call["id"], "call_1");
+        assert_eq!(call["function"]["name"], "read_skill_file");
+        let args: serde_json::Value = serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(args["path"], "production_skills/storyboard_prompt_techniques.md");
+    }
+
+    #[test]
+    fn tool_stream_accumulates_fragmented_names_and_arguments() {
+        let mut call = json!({"id":"","function":{"name":"","arguments":""}});
+        merge_tool_call_delta(&mut call, &json!({"id":"call_2","function":{"name":"get_novel_","arguments":"{"}}));
+        merge_tool_call_delta(&mut call, &json!({"function":{"name":"events","arguments":"}"}}));
+        assert_eq!(call["id"], "call_2");
+        assert_eq!(call["function"]["name"], "get_novel_events");
+        assert_eq!(call["function"]["arguments"], "{}");
+    }
 
     #[test]
     fn preserves_upstream_status_and_response_summary() {

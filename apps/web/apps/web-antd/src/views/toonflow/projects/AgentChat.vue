@@ -24,6 +24,7 @@ import {
 import { buildWebSocketUrl } from '#/utils/websocket';
 
 import { assetFileUrl } from '../assets/asset-types';
+import { useAgentChatRun } from './agent-chat-run';
 import {
   AGENT_HISTORY_PAGE_SIZE,
   historyContentPreview,
@@ -49,9 +50,11 @@ const emit = defineEmits<{
 const accessStore = useAccessStore();
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 const connected = ref(false);
+const run = useAgentChatRun();
+const hasActiveRun = run.active;
 const connecting = ref(false);
 const restoredNotice = ref(false);
-const thinkEnabled = ref(false);
+const thinkEnabled = ref(true);
 const thinkLevel = ref(1);
 const ratings = ref<Record<string, 'bad' | 'good' | undefined>>({});
 const historyHasMore = ref(false);
@@ -216,6 +219,7 @@ function connect() {
     }, 750);
     connected.value = true;
     connecting.value = false;
+    updateThinkConfig(thinkEnabled.value, thinkLevel.value);
     if (hasConnected) {
       restoredNotice.value = true;
       window.clearTimeout(restoreTimer);
@@ -234,6 +238,7 @@ function connect() {
 
   socket.onerror = () => {
     if (ws !== socket) return;
+    run.reset();
     connecting.value = false;
     connected.value = false;
     scheduleReconnect();
@@ -241,6 +246,7 @@ function connect() {
 
   socket.onclose = () => {
     if (ws !== socket) return;
+    run.reset();
     ws = null;
     connected.value = false;
     connecting.value = false;
@@ -249,6 +255,7 @@ function connect() {
 }
 
 function disconnect() {
+  run.reset();
   shouldReconnect = false;
   clearReconnectTimer();
   const socket = ws;
@@ -265,14 +272,18 @@ function disconnect() {
 }
 
 function send(content: string) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN || hasActiveRun.value || !content.trim()) return;
   liveMessageBudget = 2;
   ws.send(JSON.stringify({ type: 'chat', content }));
+  run.begin();
 }
 
 function stop() {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify({ type: 'stop' }));
+  run.reset();
+  liveMessageBudget = 0;
+  liveMessageIds.clear();
 }
 
 function updateThinkConfig(think: boolean, thinkLevel: number) {
@@ -366,7 +377,7 @@ function handleServerMessage(frame: any) {
       const msg = messageById.get(data.messageId);
       if (msg) {
         msg.content.push(data.content);
-        blockById.set(data.content.id, data.content);
+        blockById.set(data.content.id, msg.content[msg.content.length - 1]!);
         if (data.content?.type === 'toolcall') {
           emit('activity', {
             status: data.content.status || 'pending',
@@ -442,7 +453,8 @@ function handleServerMessage(frame: any) {
         content: [],
       };
       props.messages.push(msg);
-      messageById.set(msg.id, msg);
+      messageById.set(msg.id, props.messages[props.messages.length - 1]!);
+      run.message(msg.id, msg.role);
       if (liveMessageBudget > 0) {
         liveMessageIds.add(msg.id);
         liveMessageBudget -= 1;
@@ -451,6 +463,7 @@ function handleServerMessage(frame: any) {
       break;
     }
     case 'message:update': {
+      run.update(data.id, data.status);
       const msg = messageById.get(data.id);
       if (msg) {
         msg.status = data.status;
@@ -508,10 +521,6 @@ function toolCallStatusColor(status: string) {
 
 const inputText = ref('');
 
-const hasActiveRun = computed(() =>
-  props.messages.some((m) => m.status === 'pending' || m.status === 'streaming'),
-);
-
 function handleKeydown(e: KeyboardEvent) {
   if (e.key !== 'Enter') return;
   if (e.ctrlKey || e.metaKey || e.shiftKey) {
@@ -525,6 +534,7 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function handleSend() {
+  if (hasActiveRun.value) return;
   const text = inputText.value.trim();
   if (!text) return;
   if (!connected.value) {
@@ -594,7 +604,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
     <div class="connection-status" :class="{ connected, connecting }">
       <span class="status-dot"></span>
       <span class="status-text">
-        {{ connecting ? '连接中...' : connected ? '已连接' : '未连接' }}
+        {{ connecting ? '连接中...' : connected ? (hasActiveRun ? 'Agent 执行中' : '已连接 · 等待发送') : '未连接' }}
       </span>
       <div class="agent-controls">
         <label><Switch v-model:checked="thinkEnabled" size="small" @change="applyThinkConfig" /> 深度思考</label>
@@ -760,18 +770,21 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
           v-if="hasActiveRun"
           class="send-btn stop-btn"
           danger
+          :disabled="!connected"
+          aria-label="停止生成"
           @click="stop"
         >
-          ■
+          停止
         </Button>
         <Button
           v-else
           class="send-btn"
           type="primary"
-          :disabled="!inputText.trim()"
+          :disabled="!connected || !inputText.trim()"
+          aria-label="发送消息"
           @click="handleSend"
         >
-          ▶
+          发送
         </Button>
       </div>
     </div>
@@ -812,6 +825,7 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
 
 .chat-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   display: flex;
@@ -951,9 +965,9 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   position: absolute;
   right: 8px;
   bottom: 8px;
-  width: 32px;
+  width: 56px;
   height: 32px;
-  min-width: 32px;
+  min-width: 56px;
   padding: 0;
   border-radius: 6px;
   font-size: 14px;
@@ -970,6 +984,6 @@ defineExpose({ connect, disconnect, send, stop, updateThinkConfig, connected });
   50% { opacity: 0.6; }
 }
 .input-wrapper :deep(.ant-input) {
-  padding-right: 48px;
+  padding-right: 72px;
 }
 </style>
