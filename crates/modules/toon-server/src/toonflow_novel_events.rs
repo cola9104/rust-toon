@@ -24,6 +24,10 @@ pub async fn generate(
     if req.novel_ids.is_empty() {
         return Err(AppError::bad_request("没有对应章节"));
     }
+    let task_model = ai_client::project_model_id(&state.pool, "universalAi", req.project_id)
+        .await
+        .map_err(AppError::bad_request)?
+        .to_string();
     sqlx::query("UPDATE toonflow.novels SET event_state=0,event=NULL,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)").bind(req.project_id).bind(&req.novel_ids).execute(&state.pool).await.map_err(|_|AppError::internal("failed to reset novel event state"))?;
     let pool = state.pool.clone();
     let project_id = req.project_id;
@@ -34,10 +38,11 @@ pub async fn generate(
         let mut jobs = Vec::new();
         for id in ids {
             let pool = pool.clone();
+            let task_model = task_model.clone();
             let permit = semaphore.clone().acquire_owned().await;
             jobs.push(tokio::spawn(async move {
                 if permit.is_ok() {
-                    process_chapter(&pool, project_id, id).await;
+                    process_chapter(&pool, project_id, id, &task_model).await;
                 }
             }));
         }
@@ -48,7 +53,7 @@ pub async fn generate(
     Ok(Json(ApiResponse::new("生成事件成功")))
 }
 
-async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
+async fn process_chapter(pool: &PgPool, project_id: i64, id: i64, task_model: &str) {
     let chapter: Option<(String, String)> = sqlx::query_as(
         "SELECT chapter,chapter_data FROM toonflow.novels WHERE id=$1 AND project_id=$2",
     )
@@ -63,10 +68,6 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     };
     let task_id = chrono::Utc::now().timestamp_millis() * 1_000_000 + id % 1_000_000;
     let task_input = json!({"projectId":project_id,"novelId":id,"chapter":title});
-    let task_model = ai_client::project_model_id(pool, "universalAi", project_id)
-        .await
-        .map(|model| model.to_string())
-        .unwrap_or_else(|_| "universalAi".to_string());
     // 手动提取可能重复提交，用章节级 advisory lock + running 检查
     // 保证同一章节不会并发创建两个任务。
     let mut task_tx = match pool.begin().await {

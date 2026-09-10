@@ -296,6 +296,85 @@ pub(crate) async fn persist_remote_project_image(
     persist_asset_bytes_named(project_id, category, object_name, &extension, bytes).await
 }
 
+const MAX_GENERATED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Validate actual decoded pixels, never the provider's declared MIME or size.
+/// This checks geometry and file integrity, not semantic anatomy/composition.
+fn validate_generated_image_bytes(
+    bytes: &[u8],
+    canvas: crate::toonflow_image_contract::ImageCanvas,
+    role_sheet: bool,
+) -> Result<String, String> {
+    let format = image::guess_format(bytes).map_err(|_| "生成结果不是可识别的图片".to_string())?;
+    let extension = match format {
+        image::ImageFormat::Png => "png",
+        image::ImageFormat::Jpeg => "jpg",
+        image::ImageFormat::WebP => "webp",
+        _ => return Err("生成图片仅支持 PNG、JPEG 或 WebP".into()),
+    };
+    let mut reader = image::ImageReader::with_format(std::io::Cursor::new(bytes), format);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|error| format!("生成图片损坏或超出解码限制：{error}"))?;
+    canvas.validate_dimensions(image.width(), image.height())?;
+    if role_sheet {
+        crate::toonflow_image_contract::validate_role_margins(&image)?;
+    }
+    Ok(extension.into())
+}
+
+pub(crate) async fn validate_and_persist_generated_image(
+    url: &str,
+    project_id: Option<i64>,
+    canvas: crate::toonflow_image_contract::ImageCanvas,
+    role_sheet: bool,
+) -> Result<String, String> {
+    let bytes = if url.starts_with("http://") || url.starts_with("https://") {
+        download_remote_image(url).await?.1
+    } else if let Some((metadata, data)) = url.strip_prefix("data:").and_then(|v| v.split_once(','))
+    {
+        if !metadata.starts_with("image/")
+            || !metadata.ends_with(";base64")
+            || data.len() > MAX_GENERATED_IMAGE_BYTES * 4 / 3 + 4
+        {
+            return Err("生成图片 Base64 类型或长度不合法".into());
+        }
+        base64::engine::general_purpose::STANDARD
+            .decode(data)
+            .map_err(|_| "生成图片 Base64 无效".to_string())?
+    } else if let Some(key) = asset_image_key(url) {
+        let project_id = project_id.ok_or_else(|| "读取生成图片需要项目上下文".to_string())?;
+        if !key.starts_with(&format!("toonflow/{project_id}/assets/")) {
+            return Err("生成图片返回了其他项目的对象路径".into());
+        }
+        read_asset_bytes(url).await?
+    } else {
+        return Err("生成图片返回了不受支持的地址".into());
+    };
+    if bytes.len() > MAX_GENERATED_IMAGE_BYTES {
+        return Err("生成图片超过 64 MiB 限制".into());
+    }
+    let (extension, bytes) = tokio::task::spawn_blocking(move || {
+        validate_generated_image_bytes(&bytes, canvas, role_sheet)
+            .map(|extension| (extension, bytes))
+    })
+    .await
+    .map_err(|error| format!("生成图片检查失败：{error}"))??;
+    if let Some(project_id) = project_id {
+        if asset_image_key(url).is_some() {
+            return Ok(url.to_string());
+        }
+        persist_asset_bytes(project_id, "generated-images", &extension, bytes).await
+    } else {
+        Ok(url.to_string())
+    }
+}
+
 async fn download_remote_image(url: &str) -> Result<(String, Vec<u8>), String> {
     let response = remote_media_client()
         .execute(
@@ -317,8 +396,21 @@ async fn download_remote_image(url: &str) -> Result<(String, Vec<u8>), String> {
         .and_then(|value| value.to_str().ok())
         .unwrap_or("image/jpeg")
         .to_string();
-    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
-    ensure_bucket().await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_GENERATED_IMAGE_BYTES as u64)
+    {
+        return Err("生成图片超过 64 MiB 限制".into());
+    }
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|error| format!("下载生成图片失败：{error}"))?;
+        if bytes.len().saturating_add(chunk.len()) > MAX_GENERATED_IMAGE_BYTES {
+            return Err("生成图片超过 64 MiB 限制".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let extension = if content_type.contains("png") {
         "png"
     } else if content_type.contains("webp") {
@@ -326,7 +418,7 @@ async fn download_remote_image(url: &str) -> Result<(String, Vec<u8>), String> {
     } else {
         "jpg"
     };
-    Ok((extension.to_string(), bytes.to_vec()))
+    Ok((extension.to_string(), bytes))
 }
 
 fn existing_project_video_path(url: &str, project_id: i64) -> Result<Option<String>, String> {
@@ -788,6 +880,9 @@ pub(crate) async fn enqueue_cleanup_paths(
 
 fn asset_image_key(file_path: &str) -> Option<&str> {
     file_path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(file_path)
         .strip_prefix("/toonflow/assets/files/")
         .or_else(|| file_path.strip_prefix("/api/toonflow/assets/files/"))
         .filter(|key| !key.is_empty())
@@ -991,6 +1086,52 @@ pub async fn serve_image(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn validates_pixels_and_rejects_corrupt_provider_results() {
+        use crate::toonflow_image_contract::ImageCanvas;
+        let canvas = ImageCanvas::parse("192x128").unwrap();
+        let png = |width, height| {
+            let mut output = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(width, height)
+                .write_to(&mut output, image::ImageFormat::Png)
+                .unwrap();
+            output.into_inner()
+        };
+        assert_eq!(
+            super::validate_generated_image_bytes(&png(192, 128), canvas, false).unwrap(),
+            "png"
+        );
+        assert!(
+            super::validate_generated_image_bytes(&png(2048, 512), canvas, false)
+                .unwrap_err()
+                .contains("比例不合格")
+        );
+        assert!(
+            super::validate_generated_image_bytes(b"<html>upstream failed</html>", canvas, false)
+                .is_err()
+        );
+        let mut damaged = png(192, 128);
+        damaged.truncate(40);
+        assert!(super::validate_generated_image_bytes(&damaged, canvas, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn base64_provider_results_receive_the_same_validation() {
+        use base64::Engine;
+        let url = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(b"not an image")
+        );
+        let error = super::validate_and_persist_generated_image(
+            &url,
+            None,
+            crate::toonflow_image_contract::ImageCanvas::parse("2560x1696").unwrap(),
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("不是可识别的图片"));
+    }
     use super::*;
 
     #[test]

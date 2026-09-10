@@ -26,6 +26,10 @@ fn task_id() -> i64 {
         + TASK_SEQUENCE.fetch_add(1, Ordering::Relaxed) % 1000
 }
 
+fn should_record_task(task_class: &str) -> bool {
+    task_class != "text"
+}
+
 async fn recorded<T, F>(
     pool: &PgPool,
     task_class: &str,
@@ -51,6 +55,12 @@ async fn recorded_with_context<T, F>(
 where
     F: std::future::Future<Output = Result<T, String>>,
 {
+    // Text calls are implementation details of domain workflows and Agent runs.
+    // Persisting every nested model request creates duplicate, user-visible
+    // tasks such as `universalAi` in addition to the actual workflow task.
+    if !should_record_task(task_class) {
+        return future.await;
+    }
     let id = task_id();
     sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,model,description,state,start_time,progress_current,progress_total) VALUES($1,$2,$3,$4,$5,'running',$6,0,$7)")
         .bind(id).bind(project_id).bind(task_class).bind(model).bind(description).bind(chrono::Utc::now().timestamp_millis()).bind(progress_total)
@@ -81,17 +91,19 @@ async fn recorded_image_with_context<F>(
     pool: &PgPool,
     project_id: Option<i64>,
     model: &str,
+    input: Value,
     future: F,
 ) -> Result<String, String>
 where
     F: std::future::Future<Output = Result<String, String>>,
 {
     let id = task_id();
-    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,model,description,state,start_time,progress_current,progress_total) VALUES($1,$2,'image',$3,'图片生成','running',$4,0,1)")
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,model,description,state,start_time,progress_current,progress_total,input) VALUES($1,$2,'image',$3,'图片生成','running',$4,0,1,$5)")
         .bind(id)
         .bind(project_id)
         .bind(model)
         .bind(chrono::Utc::now().timestamp_millis())
+        .bind(input)
         .execute(pool)
         .await
         .map_err(|error| format!("创建 AI 任务记录失败：{error}"))?;
@@ -386,7 +398,7 @@ pub async fn image_with_references(
     size: &str,
     references: Vec<String>,
 ) -> Result<String, String> {
-    image_with_references_for_project(pool, None, configured, prompt, size, references).await
+    image_with_references_for_project(pool, None, configured, prompt, size, references, false).await
 }
 
 pub async fn image_with_references_for_project(
@@ -396,23 +408,45 @@ pub async fn image_with_references_for_project(
     prompt: &str,
     size: &str,
     references: Vec<String>,
+    role_sheet: bool,
 ) -> Result<String, String> {
     let model = model_id(configured, "图片")?;
-    recorded_image_with_context(pool, project_id, &model.to_string(), async move {
+    let canvas = crate::toonflow_image_contract::ImageCanvas::parse(size)?;
+    let mut references = references;
+    let prompt = if role_sheet {
+        references.push(crate::toonflow_image_contract::role_layout_reference(
+            canvas.width as f64 / canvas.height as f64 > 1.75,
+        )?);
+        format!(
+            "{prompt}\n最后一张参考图仅为全身构图控制图：严格采用每个人物从头顶到鞋底的完整占位、人物相对画布的大小以及上下留白，人物高度不得超出该占位。灰色轮廓不含角色身份、服装或画风，也不规定物种和体型，非人类角色仍按原物种完整呈现。不得复制灰色人形、线条或人台外观；面貌与服装完全按当前角色文字设定和其他人物参考图绘制。每一列都必须看见完整双腿和鞋底，不能放大为半身。"
+        )
+    } else {
+        prompt.to_string()
+    };
+    let input = serde_json::json!({"prompt":prompt,"size":size,"referenceCount":references.len(),"roleSheet":role_sheet});
+    recorded_image_with_context(pool, project_id, &model.to_string(), input, async move {
         let mut last_error = String::new();
         for attempt in 1..=3 {
             match rust_toon_ai_server::AiModelFactory::new(pool.clone())
                 .image(
                     model,
                     rust_toon_ai_api::ImageRequest {
-                        prompt: prompt.into(),
+                        prompt: prompt.clone(),
                         size: size.into(),
                         references: references.clone(),
                     },
                 )
                 .await
             {
-                Ok(response) => return Ok(response.url),
+                Ok(response) => {
+                    return crate::toonflow_storage::validate_and_persist_generated_image(
+                        &response.url,
+                        project_id,
+                        canvas,
+                        role_sheet,
+                    )
+                    .await;
+                }
                 Err(error) => {
                     last_error = normalized_app_error(error);
                     if attempt == 3 || !is_transient_model_error(&last_error) {
@@ -580,7 +614,14 @@ pub async fn speech(
 
 #[cfg(test)]
 mod tests {
-    use super::is_transient_model_error;
+    use super::{is_transient_model_error, should_record_task};
+
+    #[test]
+    fn nested_text_requests_are_not_user_visible_tasks() {
+        assert!(!should_record_task("text"));
+        assert!(should_record_task("image"));
+        assert!(should_record_task("speech"));
+    }
 
     #[test]
     fn retries_rate_limits_and_network_failures() {

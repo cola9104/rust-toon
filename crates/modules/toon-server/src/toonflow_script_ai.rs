@@ -1,7 +1,6 @@
 use crate::{
     ToonState, ai_client,
     shared::require,
-    toonflow_asset_description,
     toonflow_character_identity::{normalize_age_stage, normalize_role_name},
     toonflow_prompt_store,
 };
@@ -42,6 +41,7 @@ pub struct ExtractRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtractedAsset {
+    #[serde(default)]
     name: String,
     #[serde(default, alias = "description")]
     desc: String,
@@ -55,13 +55,17 @@ struct ExtractedAsset {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ExtractedAppearance {
+    #[serde(default)]
     role_name: String,
+    #[serde(default)]
     name: String,
     #[serde(default)]
     scenes: Vec<String>,
+    #[serde(default)]
     costume_prompt: String,
     #[serde(default)]
     description: String,
+    #[serde(default)]
     script_id: i64,
     #[serde(default)]
     age_stage: String,
@@ -96,7 +100,7 @@ fn normalized_asset_type(name: &str, description: &str, extracted_type: &str) ->
 
 #[cfg(test)]
 mod classification_tests {
-    use super::normalized_asset_type;
+    use super::{normalized_asset_type, parse_result};
 
     #[test]
     fn wearable_items_are_costumes_not_tools() {
@@ -109,6 +113,30 @@ mod classification_tests {
             "costume"
         );
         assert_eq!(normalized_asset_type("水果刀", "削苹果", "tool"), "tool");
+    }
+
+    #[test]
+    fn missing_required_asset_fields_do_not_reject_the_whole_response() {
+        let parsed = parse_result(
+            r#"{
+                "newAssets": [
+                    {"desc":"缺少名称的异常资产","type":"tool","scriptIds":[1]},
+                    {"name":"水果刀","desc":"银色水果刀","type":"tool","scriptIds":[1]}
+                ],
+                "appearances": [
+                    {"roleName":"小明","scenes":["场1"],"description":"缺少造型名称和服装提示词"}
+                ]
+            }"#,
+        )
+        .expect("a malformed item should not reject otherwise valid extraction JSON");
+
+        assert_eq!(parsed.new_assets.len(), 2);
+        assert!(parsed.new_assets[0].name.is_empty());
+        assert_eq!(parsed.new_assets[1].name, "水果刀");
+        assert_eq!(parsed.appearances.len(), 1);
+        assert!(parsed.appearances[0].name.is_empty());
+        assert!(parsed.appearances[0].costume_prompt.is_empty());
+        assert_eq!(parsed.appearances[0].script_id, 0);
     }
 }
 
@@ -227,7 +255,11 @@ async fn extract_group(
     )
     .await;
     let system_prompt = format!(
-        "{system_prompt}\n\n## Rust 输出适配器（优先级最高）\n不要调用 resultTool 或其他工具。最终只输出完整 JSON 对象，字段为 newAssets、existingAssetRefs、appearances；字段结构必须符合当前 Rust 资产提取接口。"
+        "{system_prompt}\n\n## Rust 输出适配器（优先级最高）\n不要调用 resultTool 或其他工具。最终只输出完整 JSON 对象，字段为 newAssets、existingAssetRefs、appearances。newAssets 和 existingAssetRefs 的每一项必须包含 name、desc、type、scriptIds；appearances 的每一项必须包含 roleName、name、scenes、costumePrompt、description、scriptId、ageStage。无法补全必填字段的条目应从数组中省略，不得省略字段或输出 null。"
+    );
+    let system_prompt = format!(
+        "{system_prompt}\n\n{}\n提取 role 资产时，将采用的人物背景写入 desc：没有明确设定则写明中国人物形象；明确外国、混血或其他背景则保留原设定。已有角色及 appearances 继承基础角色身份，不因换装重新指定人物背景。此规则不适用于 scene、tool、costume，不要为这些资产添加人物。",
+        crate::toonflow_asset_prompt::CHARACTER_IDENTITY_RULE
     );
     let user_prompt = format!("已有资产：{existing}\n\n{content}");
     let mut parse_error = String::new();
@@ -238,7 +270,7 @@ async fn extract_group(
         } else {
             format!("\n\n上一轮 JSON 解析失败：{parse_error}。请修正并只输出完整 JSON 对象。")
         };
-        let output = ai_client::project_text(
+        let output = ai_client::project_text_untracked(
             pool,
             "universalAi",
             project_id,
@@ -272,9 +304,6 @@ async fn extract_group(
         } else {
             asset.name.trim().to_string()
         };
-        if asset_type == "role" {
-            toonflow_asset_description::validate_role_description(&asset.desc)?;
-        }
         let existing_id: Option<i64> = sqlx::query_scalar(
             "SELECT id FROM toonflow.assets WHERE project_id=$1 AND name=$2 AND type=$3 LIMIT 1",
         )
@@ -400,6 +429,10 @@ pub async fn extract_assets(
     if request.script_ids.is_empty() {
         return Err(AppError::bad_request("请先选择剧本"));
     }
+    let task_model = ai_client::project_model_id(&state.pool, "universalAi", request.project_id)
+        .await
+        .map_err(AppError::bad_request)?
+        .to_string();
     let task_id = chrono::Utc::now().timestamp_micros();
     let mut tx = state
         .pool
@@ -413,8 +446,8 @@ pub async fn extract_assets(
     }
     let related_objects = json!({"scriptIds":request.script_ids}).to_string();
     let task_input = json!({"projectId":request.project_id,"scriptIds":request.script_ids,"groupSize":request.group_size.unwrap_or(5).clamp(1,20)});
-    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) SELECT $1,$2,'scriptAssetExtraction',$3,coalesce(chat_model::text,'universalAi'),'剧本资产提取','running',$4,$5,0,$6 FROM toonflow.projects WHERE id=$2")
-        .bind(task_id).bind(request.project_id).bind(related_objects).bind(chrono::Utc::now().timestamp_millis()).bind(task_input).bind(request.script_ids.len() as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to create asset extraction task"))?;
+    sqlx::query("INSERT INTO toonflow.tasks(id,project_id,task_class,related_objects,model,description,state,start_time,input,progress_current,progress_total) SELECT $1,$2,'scriptAssetExtraction',$3,$4,'剧本资产提取','running',$5,$6,0,$7 FROM toonflow.projects WHERE id=$2")
+        .bind(task_id).bind(request.project_id).bind(related_objects).bind(task_model).bind(chrono::Utc::now().timestamp_millis()).bind(task_input).bind(request.script_ids.len() as i32).execute(&mut *tx).await.map_err(|_|AppError::internal("failed to create asset extraction task"))?;
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to queue asset extraction"))?;

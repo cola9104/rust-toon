@@ -1,3 +1,7 @@
+/// Shared production default, independent of a character's name or art style.
+/// Explicit character settings and established references take precedence.
+pub(crate) const CHARACTER_IDENTITY_RULE: &str = "人物形象默认规则：未明确设定人物背景时，默认采用中国人物形象，适用于历史人物和普通虚构角色。这是创作默认值，不是根据姓名推断国籍或族裔。角色明确设定为外国人、混血或其他背景时，必须遵循对应设定，不得被默认值覆盖；明确的非人类角色保持其物种与造型，不强制改成人类。不得把外文名字、海外场景、服饰或欧美画风单独当作外国人设定。人物参考图或基础角色已确立身份时，沿用其面貌；换装、衍生造型和分镜不得用默认值重塑已有面孔，用户明确要求修改人物背景或面貌时按修改要求执行。保留个体脸型、五官比例、年龄、肤色和发型差异，不使用单一模板脸，不把中国人物等同于某一固定脸型或肤色。画风只影响绘画技法、材质和光影，不得改变人物身份。";
+
 pub(crate) fn polish_system_prompt(
     manual: &str,
     extra: &str,
@@ -18,7 +22,16 @@ pub(crate) fn polish_system_prompt(
         "costume" => "按服装视觉手册组织上装、下装、鞋履、配色、面料、层次、纹样和配饰；禁止人物。",
         _ => "只输出可用于资产生成的纯视觉描述。",
     };
-    format!("{manual}\n\n## 当前资产类型规则\n{type_manual}\n\n{extra}")
+    let identity_rule = if asset_type == "role" {
+        format!(
+            "\n{CHARACTER_IDENTITY_RULE}\n将人物背景明确写入最终纯视觉描述：缺省时写明中国人物形象，有明确外国或混血等设定时保留对应背景。保留原始设定的时代、地域和个体外貌，不要只保留姓名或职业称谓。衍生造型继承基础人物身份，不凭缺少背景的服装描述重新指定人物背景。"
+        )
+    } else {
+        String::new()
+    };
+    format!(
+        "{manual}\n\n## 当前资产类型规则\n{type_manual}\n\n{extra}{identity_rule}\n\n最高优先级输出规则：只输出一段可直接使用的纯视觉描述，不输出 Markdown、表格、标题、代码块、自查清单或解释。只描述主体外观；手册中的构图、特写、视图数量、画幅比例和相机取景规则不适用于本步骤，禁止写入描述。最终生图布局由系统独立指定。"
+    )
 }
 
 pub(crate) fn polish_user_prompt(label: &str, name: &str, description: &str) -> String {
@@ -53,12 +66,8 @@ pub(crate) fn image_prompt_with_instruction(
     has_reference: bool,
     managed_instruction: Option<&str>,
 ) -> String {
-    let asymmetric_role = asset_type == "role" && requires_opposite_side_view(visual_description);
-    let visual_description = if asset_type == "role" {
-        role_visual_description(visual_description)
-    } else {
-        visual_description.trim().to_string()
-    };
+    let visual_description = asset_visual_description(asset_type, visual_description);
+    let asymmetric_role = asset_type == "role" && requires_opposite_side_view(&visual_description);
     let visual_description = provider_safe_visual_description(&visual_description);
     let fallback_instruction = match asset_type {
         "role" if derivative => {
@@ -79,22 +88,30 @@ pub(crate) fn image_prompt_with_instruction(
     let subject_instruction = if asset_type == "role" {
         role_layout_instruction(derivative, asymmetric_role)
     } else {
-        managed_instruction
-            .filter(|instruction| !instruction.trim().is_empty())
-            .unwrap_or(fallback_instruction)
-            .to_string()
+        // Custom instructions may add appearance requirements, but cannot
+        // replace the type's layout and completeness contract.
+        let extra = managed_instruction
+            .map(|instruction| asset_visual_description(asset_type, instruction))
+            .unwrap_or_default();
+        format!("{extra}\n{fallback_instruction}")
     };
     let reference_instruction = if has_reference {
-        "\n保持参考图主体的可见特征一致，但不要复制参考图中的文字或标识。"
+        "\n保持参考图主体的可见特征一致，但不要复制参考图中的文字或标识。参考图只约束主体外观，不约束画布比例、景别或布局；即使参考图只有半身，也必须按任务要求补全主体，不得继承裁切。"
     } else {
         ""
     };
+    let identity_instruction = if asset_type == "role" {
+        format!("\n{CHARACTER_IDENTITY_RULE}")
+    } else {
+        String::new()
+    };
     format!(
         "画风：{style}\n类型：{asset_type}\n任务要求：{subject_instruction}\n\
-         纯视觉描述：{visual_description}{reference_instruction}\n\
+         纯视觉描述：{visual_description}{reference_instruction}{identity_instruction}\n\
          将描述中的姓名、化名、编号、代号和称谓仅作为背景语义理解，绝不能把它们画出来。\n\
          画面中禁止出现任何文字、字母、数字、姓名、编号、胸牌、名牌、墙面标牌、字幕、标题、Logo或水印。\n\
-         服装和背景表面保持无字、无编号、无标识。"
+         服装和背景表面保持无字、无编号、无标识。\n\
+         最终构图约束（优先于描述、画风和参考图中的构图文字）：{subject_instruction}"
     )
 }
 
@@ -142,6 +159,30 @@ fn requires_opposite_side_view(description: &str) -> bool {
     MARKERS.iter().any(|marker| description.contains(marker))
 }
 
+pub(crate) fn asset_image_ratio(asset_type: &str, description: &str) -> &'static str {
+    match asset_type {
+        "role" if requires_opposite_side_view(&asset_visual_description("role", description)) => {
+            "2:1"
+        }
+        "role" => "3:2",
+        "scene" => "16:9",
+        _ => "1:1",
+    }
+}
+
+pub(crate) fn role_appearance_anchors(description: &str) -> String {
+    let description = crate::toonflow_face_identity::appearance_description(description);
+    let cleaned = asset_visual_description("role", description);
+    let terms = [
+        "衣", "袍", "裤", "鞋", "帽", "靴", "褂", "衫", "裙", "发", "胡须", "长须",
+    ];
+    cleaned
+        .split(['，', '；'])
+        .filter(|clause| terms.iter().any(|term| clause.contains(term)))
+        .collect::<Vec<_>>()
+        .join("，")
+}
+
 fn role_layout_instruction(derivative: bool, asymmetric: bool) -> String {
     let identity = if derivative {
         "第一张参考图是同一人物的基础资产。严格保持参考人物的脸型、五官、发型、年龄、肤色、体型和人物比例，只改变提示词指定的服装、伤病或形态。"
@@ -154,14 +195,21 @@ fn role_layout_instruction(derivative: bool, asymmetric: bool) -> String {
         "生成标准三视图全身设定图。画面必须恰好并排出现3个同一人物，从左到右固定为：①正面0°，脸和胸口正对镜头；②右侧90°标准侧面，鼻尖、胸口和脚尖全部明确朝画面右侧；③背面180°，后脑和背部正对镜头且不得露出眼睛、鼻子、嘴。禁止增加左侧视图，禁止重复方向，禁止用3/4侧面替代标准90°侧面。"
     };
     format!(
-        "{identity}{layout}所有视图都必须从头顶到脚底完整入画、等高等比例、基线对齐、自然直立、双臂自然下垂；纯净中性背景、均匀柔光；禁止特写、半身、裁切、不同人物、额外人物、文字和尺寸标注。"
+        "{identity}{layout}所有视图都必须从头顶到脚底完整入画、等高等比例、基线对齐、自然直立、双臂自然下垂。每个人物的头发、小腿、双脚和鞋底全部可见；人物身高占画面高度约80%，头顶与画面上缘、鞋底与画面下缘各留至少8%的空白。主体过大时缩小整个人物以完整入画，不得裁去腿脚。Full-length head-to-toe standing figures, entire legs and all shoes visible, camera pulled back, generous empty space above heads and below feet. 纯净中性背景、均匀柔光；禁止特写、半身、裁切、不同人物、额外人物、文字和尺寸标注。"
     )
 }
 
-/// Layout belongs to the managed image-generation instruction. The polished
-/// character prompt only owns appearance, so legacy close-up/turnaround text
-/// cannot conflict with the canonical four full-body views.
-fn role_visual_description(prompt: &str) -> String {
+/// Older polish responses included a complete Markdown manual. Prefer its
+/// ready-to-use fenced prompt, then strip presentation and layout clauses.
+pub(crate) fn asset_visual_description(asset_type: &str, prompt: &str) -> String {
+    let fenced = prompt
+        .split("```")
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .filter_map(|(_, block)| block.split_once('\n').map(|(_, body)| body.trim()))
+        .filter(|body| !body.is_empty())
+        .max_by_key(|body| body.len());
+    let prompt = fenced.unwrap_or(prompt);
     const LAYOUT_MARKERS: &[&str] = &[
         "人像特写",
         "头像特写",
@@ -184,16 +232,56 @@ fn role_visual_description(prompt: &str) -> String {
         "front view",
         "side view",
         "back view",
+        "特写",
+        "半身",
+        "大头照",
+        "胸像",
+        "腰部以上",
+        "头肩",
+        "三视图",
+        "构图",
+        "画幅",
+        "宽高比",
+        "分辨率",
+        "景别",
+        "尺寸",
+        "画面比例",
+        "视图一致性",
+        "head to collarbone",
+        "head-to-collarbone",
+        "close-up",
+        "close up",
+        "closeup",
+        "half body",
+        "half-body",
+        "waist up",
+        "waist-up",
+        "bust shot",
+        "headshot",
+        "turnaround",
+        "character design sheet",
+        "aspect ratio",
+        "16:9",
+        "9:16",
+        "4:1",
+        "3:2",
+        "2:1",
+        "1:1",
     ];
 
     prompt
-        .split(['\n', '。', '；', '，'])
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.starts_with('#') && !line.starts_with("---") && !line.contains("✅"))
+        .flat_map(|line| line.split(['。', '；', '，', ';', ',', '|']))
         .map(str::trim)
         .filter(|clause| {
             !clause.is_empty()
+                && !clause.chars().all(|c| matches!(c, '-' | ':' | ' '))
                 && !LAYOUT_MARKERS
                     .iter()
                     .any(|marker| clause.to_lowercase().contains(&marker.to_lowercase()))
+                && (asset_type != "role" || !clause.contains("拼图"))
         })
         .collect::<Vec<_>>()
         .join("，")
@@ -245,13 +333,68 @@ pub(crate) fn storyboard_generation_prompt(stored_prompt: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "{visual_prompt}\n人物参考图只用于锁定身份、面容、体型和服装；必须严格执行分镜文字中为每个 @图N 指定的姿态、承托物、位置和朝向，不得继承人物设定图中的站姿、四视图或展示构图。\n所有已绑定的参考资产都必须在画面中清晰可见并与描述一一对应；不得遗漏任何出镜人物，不得把应出镜人物裁切成只露手、肩膀或局部身体。\n画面中禁止出现任何文字、字母、数字、对白、字幕、标题、Logo或水印；不得把台词画进图像。"
+        "{visual_prompt}\n{CHARACTER_IDENTITY_RULE}\n人物参考图只用于锁定身份、面容、体型和服装；必须严格执行分镜文字中为每个 @图N 指定的姿态、承托物、位置和朝向，不得继承人物设定图中的站姿、四视图或展示构图。\n所有已绑定的参考资产都必须在画面中清晰可见并与描述一一对应；不得遗漏任何出镜人物，不得把应出镜人物裁切成只露手、肩膀或局部身体。\n画面中禁止出现任何文字、字母、数字、对白、字幕、标题、Logo或水印；不得把台词画进图像。"
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_manual_cannot_leak_closeups_back_into_generation() {
+        let legacy = "# 李晨人物视觉手册\n| 构图 | 人像特写+正视图+侧视图+后视图 |\n## 可直接使用的提示词\n```text\n青年男性，黑色短发，深灰连帽卫衣，深色长裤，运动鞋，\ncharacter design sheet, character turnaround,\nhead to collarbone complete, waist-up portrait,\n全身立像从头顶到脚底完整展示，full body head to toe\n```\n## 自查\n| R8 | 特写头顶到锁骨 | ✅ |";
+        let cleaned = asset_visual_description("role", legacy);
+        assert!(cleaned.contains("深灰连帽卫衣"));
+        assert!(cleaned.contains("运动鞋"));
+        for forbidden in [
+            "```",
+            "自查",
+            "特写",
+            "collarbone",
+            "waist-up",
+            "turnaround",
+            "design sheet",
+        ] {
+            assert!(!cleaned.contains(forbidden), "{forbidden}: {cleaned}");
+        }
+        assert_eq!(asset_image_ratio("role", legacy), "3:2");
+    }
+
+    #[test]
+    fn asset_canvases_match_their_layouts() {
+        assert_eq!(asset_image_ratio("role", "黑色短发"), "3:2");
+        assert_eq!(asset_image_ratio("role", "右眼眼罩"), "2:1");
+        assert_eq!(asset_image_ratio("scene", "武馆"), "16:9");
+        assert_eq!(asset_image_ratio("costume", "长袍"), "1:1");
+        assert_eq!(asset_image_ratio("tool", "长剑"), "1:1");
+    }
+
+    #[test]
+    fn modern_clothes_and_hair_remain_explicit_when_project_style_is_historical() {
+        let anchors = role_appearance_anchors(
+            "二十多岁青年，黑色短发略显凌乱，深灰色连帽卫衣，深色直筒长裤，素色运动鞋\n【角色面部身份 v1】\n脸型与骨骼：长脸\n【角色面部身份结束】",
+        );
+        assert!(anchors.contains("深灰色连帽卫衣"));
+        assert!(anchors.contains("深色直筒长裤"));
+        assert!(anchors.contains("黑色短发略显凌乱"));
+        assert!(!anchors.contains("角色面部身份"));
+    }
+
+    #[test]
+    fn manual_layout_override_cannot_remove_asset_completeness_rules() {
+        let prompt = image_prompt_with_instruction(
+            "写实",
+            "costume",
+            "蓝色长袍",
+            false,
+            false,
+            Some("半身人像特写"),
+        );
+        assert!(prompt.contains("服装完整入画，不裁切"));
+        assert!(!prompt.contains("半身人像特写"));
+        assert!(polish_system_prompt("输出四视图手册", "", "role", false).contains("禁止写入描述"));
+    }
 
     #[test]
     fn image_prompt_does_not_require_an_asset_name() {

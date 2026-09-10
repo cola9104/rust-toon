@@ -30,7 +30,8 @@ const routes: RouteRecordRaw[] = [
           activePath: '/toonflow/projects',
           hideInMenu: true,
           fullPathKey: false,
-          keepAlive: true,
+          noCache: true,
+          keepAlive: false,
         },
       },
       {

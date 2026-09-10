@@ -120,6 +120,12 @@ const someVisibleSelected = computed(() => selectedVisibleCount.value > 0 && !al
 function imagePath(asset: ToonflowApi.LibraryAsset) {
   return asset.imageFilePath || asset.imageUrl || (asset as ToonflowApi.Asset & { filePath?: string }).filePath || '';
 }
+function previewKind(asset: ToonflowApi.LibraryAsset) {
+  const path = imagePath(asset).split(/[?#]/)[0] ?? '';
+  if (/\.(mp4|webm|mov|m4v|ogv)$/i.test(path) || /^data:video\//i.test(path)) return 'video';
+  if (/\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(path) || /^data:audio\//i.test(path)) return 'audio';
+  return 'image';
+}
 
 const assetForm = reactive({
   id: undefined as number | undefined,
@@ -447,7 +453,7 @@ onBeforeUnmount(suspend);
           v-else-if="filteredAssets.length === 0"
           :description="assetSearch ? '没有匹配的资产' : '暂无该类资产'"
         />
-        <Row v-else :gutter="[16, 16]">
+        <Row v-else :gutter="[16, 16]" class="asset-special-grid">
           <Col
             v-for="item in filteredAssets"
             :key="item.id"
@@ -458,40 +464,36 @@ onBeforeUnmount(suspend);
             :xl="6"
             :xs="24"
           >
-            <Card class="asset-card" hoverable>
+            <Card class="asset-card" :class="[`asset-card--${activeCategory}`, { 'asset-card--selected': selectedAssetIds.has(item.id) }]" hoverable>
               <template #cover>
                 <div class="asset-cover">
                   <Checkbox
                     class="asset-selector"
+                    :aria-label="`选择${item.name}`"
                     :checked="selectedAssetIds.has(item.id)"
                     @click.stop
                     @change="toggleAsset(item.id, $event.target.checked)"
                   />
+                  <span class="asset-type-badge">{{ assetTypeLabel(item.type) }}</span>
                   <div v-if="generatingAssetIds.has(item.id)" class="asset-progress"><span />生成中</div>
+                  <video v-if="activeCategory === 'material' && previewKind(item) === 'video'" class="asset-media-player" :src="assetFileUrl(imagePath(item))" controls playsinline preload="metadata" :aria-label="item.name" />
+                  <div v-else-if="activeCategory === 'material' && previewKind(item) === 'audio'" class="asset-audio-preview"><span>音频素材</span><audio :src="assetFileUrl(imagePath(item))" controls preload="none" :aria-label="item.name" /></div>
                   <Image
-                    v-if="imagePath(item) && !failedImageIds.has(item.id)"
+                    v-else-if="imagePath(item) && !failedImageIds.has(item.id)"
                     :alt="item.name"
                     :src="assetFileUrl(imagePath(item))"
                     :preview="true"
                     class="asset-thumb"
                     @error="failedImageIds.add(item.id)"
                   />
-                  <div v-else class="asset-placeholder">{{ assetTypeLabel(item.type) }}</div>
+                  <div v-else class="asset-placeholder"><span>{{ assetTypeLabel(item.type) }}</span><small>{{ failedImageIds.has(item.id) ? '预览加载失败' : '暂无预览' }}</small></div>
                 </div>
               </template>
-              <Card.Meta
-                :description="item.description || '暂无描述'"
-                :title="item.name"
-              />
-              <div v-if="item.prompt" class="asset-prompt" :title="item.prompt">
-                <Tag class="asset-prompt-tag" :bordered="false">AI 提示词</Tag>
-                <span class="asset-prompt-text">{{ item.prompt }}</span>
-              </div>
+                <div class="asset-card-heading"><h3 :title="item.name">{{ item.name }}</h3><span>{{ imagePath(item) ? '已有预览' : '待完善' }}</span></div>
+                <Typography.Paragraph class="asset-description" :ellipsis="{ rows: 2, expandable: true, symbol: '展开' }" :content="item.description || '暂无描述，编辑补充资产特征。'" />
+              <details v-if="item.prompt" class="asset-prompt-details"><summary>查看 AI 提示词</summary><p>{{ item.prompt }}</p></details>
               <Tag v-if="generationFailedIds.has(item.id)" color="error" class="mt-3" :title="item.imageErrorReason">{{ item.imageState === '已取消' ? '已取消' : '生成失败' }}{{ item.imageErrorReason ? `：${item.imageErrorReason}` : '' }}</Tag>
               <Tag v-else-if="failedImageIds.has(item.id)" color="warning" class="mt-3">图片加载失败，可刷新重试</Tag>
-              <div class="asset-meta">
-                <Typography.Text type="secondary">当前项目资产</Typography.Text>
-              </div>
               <div class="asset-actions">
                 <Space wrap :size="4">
                   <Button type="link" @click="openAsset(item)">编辑</Button>
@@ -505,21 +507,18 @@ onBeforeUnmount(suspend);
                     {{ polishingAssetIds.has(item.id) ? '润色中' : 'AI 润色' }}
                   </Button>
                   <Button
+                    v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
                     :loading="generatingAssetIds.has(item.id)"
                     :disabled="!!batchRunning || polishingAssetIds.has(item.id) || loading"
-                    type="link"
+                    type="primary"
+                    class="asset-generate-button"
                     @click="generateAssetPicture(item)"
                   >
-                    {{ generatingAssetIds.has(item.id) ? '生成中' : '生成图片' }}
-                  </Button>
-                  <Button v-if="item.type === 'role'" type="link" @click="matchAssetVoice(item)">
-                    匹配音色
-                  </Button>
-                  <Button v-if="item.type === 'role'" type="link" @click="openDubbing(item)">
-                    生成配音
+                    {{ generatingAssetIds.has(item.id) ? '生成中' : imagePath(item) ? '重新生成' : '生成图片' }}
                   </Button>
                   <Button danger type="link" :disabled="generatingAssetIds.has(item.id) || polishingAssetIds.has(item.id)" @click="removeAsset(item)">删除</Button>
                 </Space>
+                <div v-if="item.type === 'role'" class="asset-voice-actions"><span>角色声音</span><Button size="small" @click="matchAssetVoice(item)">匹配音色</Button><Button size="small" @click="openDubbing(item)">生成配音</Button></div>
               </div>
             </Card>
           </Col>
@@ -663,4 +662,37 @@ onBeforeUnmount(suspend);
   .asset-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
   .asset-workspace { grid-template-columns: 1fr; }.batch-sidebar { position: static; }
 }
+
+/* Cards adapt to the available workspace width, including the sidebar. */
+.asset-special-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); row-gap: 16px; }
+.asset-special-grid > .asset-card-column { max-width: none; width: 100%; padding-bottom: 0 !important; }
+.asset-special-grid .asset-card { border-radius: 12px; border: 1px solid var(--toon-line); box-shadow: none; transition: border-color .2s, box-shadow .2s; }
+.asset-special-grid .asset-card:hover { border-color: var(--asset-primary); box-shadow: var(--asset-shadow); }
+.asset-special-grid .asset-card--selected { border-color: var(--asset-primary); box-shadow: 0 0 0 1px var(--asset-primary); }
+.asset-special-grid .asset-cover { height: auto; aspect-ratio: 4 / 3; padding: 16px; border-bottom: 1px solid var(--toon-line); background: var(--asset-fill-subtle); }
+.asset-special-grid .asset-card--scene .asset-cover { aspect-ratio: 16 / 9; padding: 0; }
+.asset-special-grid .asset-card--costume .asset-cover { aspect-ratio: 1; }
+.asset-special-grid .asset-card--role .asset-cover { aspect-ratio: 4 / 3; padding: 12px; }
+.asset-special-grid .asset-card :deep(.ant-card-body) { min-width: 0; padding: 16px; gap: 12px; }
+.asset-type-badge { position: absolute; z-index: 1; top: 12px; right: 12px; padding: 3px 9px; border: 1px solid var(--toon-line); border-radius: 6px; background: var(--toon-panel); color: var(--toon-muted); font-size: 11px; }
+.asset-special-grid .asset-placeholder { flex-direction: column; gap: 8px; font-size: 18px; }
+.asset-placeholder small { font-size: 12px; color: var(--toon-muted); }
+.asset-media-player { width: 100%; height: 100%; object-fit: contain; }
+.asset-audio-preview { display: flex; height: 100%; flex-direction: column; justify-content: center; gap: 20px; color: var(--toon-muted); text-align: center; }
+.asset-audio-preview audio { width: 100%; min-width: 0; }
+.asset-card-heading { display: flex; align-items: start; gap: 8px; justify-content: space-between; }
+.asset-card-heading h3 { min-width: 0; margin: 0; overflow: hidden; font-size: 15px; font-weight: 600; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+.asset-card-heading > span { flex-shrink: 0; color: var(--toon-muted); font-size: 11px; line-height: 22px; }
+.asset-description { margin: 0 !important; min-height: 40px; color: var(--toon-muted); font-size: 12px; line-height: 20px; overflow-wrap: anywhere; }
+.asset-prompt-details { padding: 8px 10px; border-radius: 6px; background: var(--asset-fill-subtle); font-size: 12px; color: var(--toon-muted); }
+.asset-prompt-details summary { cursor: pointer; color: var(--asset-primary); }
+.asset-prompt-details p { margin: 8px 0 0; max-height: 180px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.asset-special-grid .asset-card :deep(.ant-tag) { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.asset-special-grid .asset-actions { padding-top: 12px; }
+.asset-special-grid .asset-actions :deep(.ant-space) { display: flex; justify-content: space-between; gap: 6px !important; }
+.asset-special-grid .asset-actions :deep(.ant-btn-link) { padding-inline: 2px; font-size: 12px; }
+.asset-special-grid .asset-generate-button { height: 30px; padding-inline: 10px; font-size: 12px; }
+.asset-voice-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; border-top: 1px dashed var(--toon-line); padding-top: 12px; margin-top: 12px; }
+.asset-voice-actions > span { margin-right: auto; color: var(--toon-muted); font-size: 11px; }
+@media (prefers-reduced-motion: reduce) { .asset-special-grid .asset-card { transition: none; } }
 </style>

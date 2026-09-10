@@ -138,7 +138,7 @@ async fn run(
         &toonflow_asset_prompt::polish_user_prompt(label, &item.name, &item.describe),
     )
     .await?;
-    let prompt = prompt.trim().to_string();
+    let prompt = toonflow_asset_prompt::asset_visual_description(&item.type_, &prompt);
     if prompt.is_empty() {
         return Err("AI 润色未生成可用的资产提示词".to_string());
     }
@@ -346,8 +346,25 @@ async fn new_image(
     resolution: &str,
     offset: i64,
 ) -> Result<i64, AppError> {
-    let id = chrono::Utc::now().timestamp_millis() + offset;
-    sqlx::query("INSERT INTO toonflow.images(id,type,assets_id,model,resolution,state) VALUES($1,$2,$3,$4,$5,'生成中')").bind(id).bind(&item.type_).bind(item.id).bind(model).bind(resolution).execute(pool).await.map_err(|_|AppError::internal("failed to create image"))?;
+    // Image editing/upload already uses microseconds. Mixing millisecond IDs
+    // made ORDER BY id DESC permanently prefer an older edited image.
+    static SEQUENCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp_micros() + offset;
+    let previous = SEQUENCE
+        .fetch_update(
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+            |previous| Some(now.max(previous + 1)),
+        )
+        .expect("image ID update always succeeds");
+    let id = now.max(previous + 1);
+    let size = crate::toonflow_image_contract::ImageCanvas::for_quality(
+        resolution,
+        toonflow_asset_prompt::asset_image_ratio(&item.type_, &item.prompt),
+    )
+    .map_err(AppError::bad_request)?
+    .size();
+    sqlx::query("INSERT INTO toonflow.images(id,type,assets_id,model,resolution,state) VALUES($1,$2,$3,$4,$5,'生成中')").bind(id).bind(&item.type_).bind(item.id).bind(model).bind(size).execute(pool).await.map_err(|_|AppError::internal("failed to create image"))?;
     Ok(id)
 }
 async fn make_image(
@@ -358,6 +375,38 @@ async fn make_image(
     item: ImageItem,
     image_id: i64,
 ) -> Result<String, String> {
+    let result = make_image_inner(pool, project_id, model, resolution, item, image_id).await;
+    if let Err(reason) = &result {
+        // Includes prompt/config lookup, download, validation and persistence
+        // errors; never replace a cancellation or an already completed state.
+        let updated = sqlx::query(
+            "UPDATE toonflow.images SET state='生成失败',error_reason=$2 WHERE id=$1 AND state='生成中'",
+        ).bind(image_id).bind(reason).execute(pool).await;
+        if let Err(error) = updated {
+            tracing::error!(image_id, %error, "failed to record asset image failure");
+        }
+    }
+    result
+}
+
+async fn make_image_inner(
+    pool: &sqlx::PgPool,
+    project_id: i64,
+    model: &str,
+    resolution: &str,
+    item: ImageItem,
+    image_id: i64,
+) -> Result<String, String> {
+    let running: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM toonflow.images WHERE id=$1 AND state='生成中')",
+    )
+    .bind(image_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    if !running {
+        return Err("生成任务已取消".into());
+    }
     let style: Option<(String,)> =
         sqlx::query_as("SELECT art_style FROM toonflow.projects WHERE id=$1")
             .bind(project_id)
@@ -365,14 +414,49 @@ async fn make_image(
             .await
             .map_err(|e| e.to_string())?;
     let style = style.ok_or_else(|| "项目为空".to_string())?.0;
-    let derivative: bool =
-        sqlx::query_scalar("SELECT parent_asset_id IS NOT NULL FROM toonflow.assets WHERE id=$1")
-            .bind(item.id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?
-            .unwrap_or(false);
-    let visual_description = item.prompt.clone();
+    let parent_id: Option<i64> = sqlx::query_scalar(
+        "SELECT parent_asset_id FROM toonflow.assets WHERE id=$1 AND project_id=$2 AND type=$3",
+    )
+    .bind(item.id)
+    .bind(project_id)
+    .bind(&item.type_)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "资产不存在、类型不匹配或不属于当前项目".to_string())?;
+    let derivative = parent_id.is_some();
+    let mut references = Vec::new();
+    let (visual_description, face_instruction) = if item.type_ == "role" {
+        if let Some(parent_id) = parent_id {
+            let parent: Option<(String, String)> = sqlx::query_as(
+                "SELECT a.prompt,i.file_path FROM toonflow.assets a JOIN toonflow.images i ON i.id=a.image_id WHERE a.id=$1 AND a.project_id=$2 AND a.type='role' AND i.state='已完成' AND i.file_path IS NOT NULL",
+            ).bind(parent_id).bind(project_id).fetch_optional(pool).await.map_err(|error| error.to_string())?;
+            let (parent_prompt, path) = parent
+                .ok_or_else(|| "请先生成该衍生造型对应的基础角色图片，避免人物换脸".to_string())?;
+            references.push(image_data_url(&path).await?);
+            (
+                item.prompt.clone(),
+                crate::toonflow_face_identity::identity_instruction(&parent_prompt),
+            )
+        } else {
+            let prepared = crate::toonflow_face_identity::prepare_base_identity(
+                pool,
+                project_id,
+                item.id,
+                &item.prompt,
+            )
+            .await?;
+            let identity = crate::toonflow_face_identity::identity_instruction(&prepared);
+            (prepared, identity)
+        }
+    } else {
+        (item.prompt.clone(), String::new())
+    };
+    if let Some(reference) = &item.base64
+        && !references.contains(reference)
+    {
+        references.push(reference.clone());
+    }
     let default_prompt_key = match (item.type_.as_str(), derivative) {
         ("role", false) => "asset_image_role_base",
         ("role", true) => "asset_image_role_derivative",
@@ -406,54 +490,72 @@ async fn make_image(
     } else {
         Some(toonflow_prompt_store::load(pool, prompt_key, "").await)
     };
+    let ratio = toonflow_asset_prompt::asset_image_ratio(&item.type_, &visual_description);
+    let canvas = crate::toonflow_image_contract::ImageCanvas::for_quality(resolution, ratio)?;
+    let active =
+        sqlx::query("UPDATE toonflow.images SET resolution=$2 WHERE id=$1 AND state='生成中'")
+            .bind(image_id)
+            .bind(canvas.size())
+            .execute(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    if active.rows_affected() == 0 {
+        return Err("生成任务已取消".into());
+    }
     let prompt = toonflow_asset_prompt::image_prompt_with_instruction(
         &style,
         &item.type_,
-        &visual_description,
+        crate::toonflow_face_identity::appearance_description(&visual_description),
         derivative,
-        item.base64.is_some(),
+        !references.is_empty(),
         managed_instruction.as_deref(),
     );
-    let references = item.base64.clone().into_iter().collect();
+    let appearance = if item.type_ == "role" {
+        format!(
+            "服装与发型锁定：{}。画风仅决定绘画或摄影技法，不得改变角色描述指定的服装时代、款式和发型；现代卫衣、长裤、运动鞋不得因古风画风改成古装、盘扣褂或武侠服装。",
+            toonflow_asset_prompt::role_appearance_anchors(&visual_description)
+        )
+    } else {
+        String::new()
+    };
+    let prompt = format!(
+        "{prompt}\n{face_instruction}\n{appearance}\n画布宽高比固定为 {ratio}，输出尺寸 {}；按画布缩放完整主体，不得通过裁切主体适配画布。",
+        canvas.size()
+    );
     match ai_client::image_with_references_for_project(
         pool,
         Some(project_id),
         model,
         &prompt,
-        resolution,
+        &canvas.size(),
         references,
+        item.type_ == "role",
     )
     .await
     {
         Ok(path) => {
             let path = persist_remote_image(&path, item.id).await?;
-            let updated = sqlx::query("UPDATE toonflow.images SET file_path=$2,state='已完成' WHERE id=$1 AND state='生成中'")
+            let mut tx = pool.begin().await.map_err(|error| error.to_string())?;
+            let updated = sqlx::query("UPDATE toonflow.images SET file_path=$2,state='已完成',error_reason=NULL WHERE id=$1 AND state='生成中'")
                 .bind(image_id)
                 .bind(&path)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| e.to_string())?;
             if updated.rows_affected() == 0 {
                 return Err("生成任务已取消".into());
             }
-            sqlx::query("UPDATE toonflow.assets SET image_id=$2 WHERE id=$1")
+            sqlx::query("UPDATE toonflow.assets SET image_id=$2 WHERE id=$1 AND project_id=$3")
                 .bind(item.id)
                 .bind(image_id)
-                .execute(pool)
+                .bind(project_id)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| e.to_string())?;
+            tx.commit().await.map_err(|error| error.to_string())?;
             Ok(path)
         }
-        Err(reason) => {
-            let _ = sqlx::query(
-                "UPDATE toonflow.images SET state='生成失败',error_reason=$2 WHERE id=$1",
-            )
-            .bind(image_id)
-            .bind(&reason)
-            .execute(pool)
-            .await;
-            Err(reason)
-        }
+        Err(reason) => Err(reason),
     }
 }
 
@@ -726,6 +828,241 @@ pub async fn poll_images(
 #[cfg(test)]
 mod tests {
     use super::standalone_costume_prompt;
+
+    #[tokio::test]
+    #[ignore = "run with script/test-image-contract.sh (isolated PostgreSQL, no paid model)"]
+    async fn image_contract_rejects_bad_results_without_replacing_assets() {
+        use super::*;
+        use axum::{Router, routing::post};
+        use base64::Engine;
+        use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+        use std::time::Duration;
+
+        let pool = connect(
+            &DatabaseConfig::new(
+                std::env::var("TEST_DATABASE_URL").expect("isolated TEST_DATABASE_URL"),
+                1,
+                5,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        migrate(&pool).await.unwrap();
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2048, 512)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(output.into_inner());
+        let mut cropped = image::RgbImage::from_pixel(2560, 1696, image::Rgb([225, 225, 225]));
+        for x in 300..750 {
+            for y in 100..1696 {
+                cropped.put_pixel(x, y, image::Rgb([35, 35, 35]));
+            }
+        }
+        let mut output = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::from(cropped)
+            .write_to(&mut output, image::ImageFormat::Png)
+            .unwrap();
+        let cropped_encoded = base64::engine::general_purpose::STANDARD.encode(output.into_inner());
+        let image_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let captured = std::sync::Arc::new(tokio::sync::Mutex::new(None::<Value>));
+        let capture = captured.clone();
+        let planned = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let planned_calls = planned.clone();
+        let app = Router::new().route(
+            "/images/generations",
+            post(move |Json(body): Json<Value>| {
+                let capture = capture.clone();
+                let encoded = if image_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0
+                {
+                    encoded.clone()
+                } else {
+                    cropped_encoded.clone()
+                };
+                async move {
+                    *capture.lock().await = Some(body);
+                    Json(json!({"data":[{"b64_json":encoded}]}))
+                }
+            }),
+        );
+        let app = app.route(
+            "/chat/completions",
+            post(move || {
+                planned_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                async {
+                    Json(json!({"choices":[{"message":{"content":json!({
+                    "face_shape":"宽方脸，颌骨宽厚", "brows":"浓密平直眉",
+                    "eyes":"较窄眼裂，眼距适中", "nose":"鼻头饱满，鼻翼较宽",
+                    "mouth":"上薄下厚唇，宽下巴", "skin":"自然青年肤质",
+                    "distinctive_features":"宽颌方下巴与平眉"
+                }).to_string()}}]}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let id = chrono::Utc::now().timestamp_micros();
+        sqlx::query("INSERT INTO toonflow.projects(id,name,art_style,create_time,update_time) VALUES($1,'image contract test','realistic',$1,$1)")
+            .bind(id).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO toonflow.assets(id,project_id,name,type,prompt) VALUES($1,$1,'character','role','young man')")
+            .bind(id).execute(&pool).await.unwrap();
+        let old_image_id = id - 1;
+        sqlx::query("INSERT INTO toonflow.images(id,assets_id,state,file_path) VALUES($1,$2,'已完成','/existing.png')")
+            .bind(old_image_id).bind(id).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE toonflow.assets SET image_id=$2 WHERE id=$1")
+            .bind(id)
+            .bind(old_image_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time) VALUES($1,'image contract mock',$2,'VolcEngine','image','mock-image',$3,0,$1,$1)")
+            .bind(id).bind(format!("image-contract-{id}")).bind(&url).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO ai.model_configs(id,name,key,platform,type,model,url,status,create_time,update_time) VALUES($1,'face mock',$2,'OpenAICompatible','chat','mock-chat',$3,0,$1,$1)")
+            .bind(id+1).bind(format!("face-contract-{id}")).bind(&url).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE toonflow.projects SET chat_model=$2 WHERE id=$1")
+            .bind(id)
+            .bind(id + 1)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let item = ImageItem {
+            id,
+            type_: "role".into(),
+            _name: "character".into(),
+            prompt: "青年男性，深灰卫衣，长裤，运动鞋，head to collarbone complete，半身人像特写"
+                .into(),
+            base64: None,
+        };
+        let image_id = new_image(&pool, &item, &id.to_string(), "2K", 0)
+            .await
+            .unwrap();
+        assert!(
+            image_id > old_image_id,
+            "a new generation must sort after an older edited image"
+        );
+        let error = make_image(&pool, id, &id.to_string(), "2K", item.clone(), image_id)
+            .await
+            .unwrap_err();
+        assert!(error.contains("比例不合格"), "{error}");
+        let body = captured.lock().await.clone().unwrap();
+        assert_eq!(body["size"], "2560x1696");
+        assert!(
+            body["image"][0]
+                .as_str()
+                .unwrap()
+                .starts_with("data:image/png;base64,")
+        );
+        assert!(
+            body["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("最后一张参考图仅为全身构图控制图")
+        );
+        assert!(
+            !body["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("head to collarbone")
+        );
+        let state: (String, Option<String>) =
+            sqlx::query_as("SELECT state,error_reason FROM toonflow.images WHERE id=$1")
+                .bind(image_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state.0, "生成失败");
+        assert!(state.1.unwrap().contains("比例不合格"));
+        let selected: i64 = sqlx::query_scalar("SELECT image_id FROM toonflow.assets WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(selected, old_image_id);
+        let task: (String, Value) = sqlx::query_as("SELECT state,input FROM toonflow.tasks WHERE project_id=$1 AND task_class='image' ORDER BY id DESC LIMIT 1").bind(id).fetch_one(&pool).await.unwrap();
+        assert_eq!(task.0, "failed");
+        assert_eq!(task.1["size"], "2560x1696");
+        let saved: String = sqlx::query_scalar("SELECT prompt FROM toonflow.assets WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(saved.contains("【角色面部身份 v1】"));
+        assert!(
+            body["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("宽方脸，颌骨宽厚")
+        );
+        let reused =
+            crate::toonflow_face_identity::prepare_base_identity(&pool, id, id, &item.prompt)
+                .await
+                .unwrap();
+        assert_eq!(reused, saved);
+        assert_eq!(planned.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // A matching pixel ratio must not allow a cropped body through either.
+        let image_id = new_image(&pool, &item, &id.to_string(), "2K", 0)
+            .await
+            .unwrap();
+        let error = make_image(&pool, id, &id.to_string(), "2K", item.clone(), image_id)
+            .await
+            .unwrap_err();
+        assert!(error.contains("疑似被裁切"), "{error}");
+        let state: String = sqlx::query_scalar("SELECT state FROM toonflow.images WHERE id=$1")
+            .bind(image_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "生成失败");
+        let selected: i64 = sqlx::query_scalar("SELECT image_id FROM toonflow.assets WHERE id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(selected, old_image_id);
+        assert_eq!(planned.load(std::sync::atomic::Ordering::Relaxed), 1);
+
+        // Early failures must also terminate, and retries cannot overwrite cancellation.
+        sqlx::query("UPDATE toonflow.images SET state='生成中',error_reason=NULL WHERE id=$1")
+            .bind(image_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            make_image(&pool, -1, &id.to_string(), "2K", item.clone(), image_id)
+                .await
+                .is_err()
+        );
+        let state: String = sqlx::query_scalar("SELECT state FROM toonflow.images WHERE id=$1")
+            .bind(image_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "生成失败");
+        sqlx::query(
+            "UPDATE toonflow.images SET state='已取消',error_reason='user cancelled' WHERE id=$1",
+        )
+        .bind(image_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            make_image(&pool, id, &id.to_string(), "2K", item, image_id)
+                .await
+                .is_err()
+        );
+        let state: (String, String) =
+            sqlx::query_as("SELECT state,error_reason FROM toonflow.images WHERE id=$1")
+                .bind(image_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, ("已取消".into(), "user cancelled".into()));
+        server.abort();
+    }
 
     #[test]
     fn costume_prompt_is_garment_only_and_uses_neutral_service_wording() {

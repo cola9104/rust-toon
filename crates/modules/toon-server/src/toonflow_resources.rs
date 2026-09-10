@@ -215,7 +215,7 @@ pub async fn list_tasks(
     State(state): State<ToonState>,
 ) -> Result<Json<ApiResponse<Vec<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
+    let rows = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.task_class<>'text' ORDER BY t.start_time DESC NULLS LAST,t.id DESC")
         .fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to list tasks"))?;
     Ok(Json(ApiResponse::new(rows)))
 }
@@ -283,7 +283,8 @@ async fn load_task_page(pool: &sqlx::PgPool, request: TaskQuery) -> Result<TaskP
            LEFT JOIN toonflow.agent_deployments d ON d.key=t.model
            LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END)
            LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects
-           WHERE ($1::text IS NULL OR t.task_class=$1)
+           WHERE t.task_class<>'text'
+             AND ($1::text IS NULL OR t.task_class=$1)
              AND ($2::text IS NULL OR CASE lower(t.state)
                   WHEN 'success' THEN 'completed' WHEN 'error' THEN 'failed'
                   ELSE lower(t.state) END=$2)
@@ -299,7 +300,8 @@ async fn load_task_page(pool: &sqlx::PgPool, request: TaskQuery) -> Result<TaskP
     .await
     .map_err(|_| AppError::internal("failed to query tasks"))?;
     let total: (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM toonflow.tasks WHERE ($1::text IS NULL OR task_class=$1)
+        "SELECT count(*) FROM toonflow.tasks WHERE task_class<>'text'
+         AND ($1::text IS NULL OR task_class=$1)
          AND ($2::text IS NULL OR CASE lower(state) WHEN 'success' THEN 'completed'
               WHEN 'error' THEN 'failed' ELSE lower(state) END=$2)
          AND ($3::bigint IS NULL OR project_id=$3)",
@@ -312,7 +314,8 @@ async fn load_task_page(pool: &sqlx::PgPool, request: TaskQuery) -> Result<TaskP
            count(*) FILTER (WHERE lower(state)='running') AS running,
            count(*) FILTER (WHERE lower(state) IN ('success','completed')) AS success,
            count(*) FILTER (WHERE lower(state) IN ('failed','error')) AS failed
-         FROM toonflow.tasks WHERE ($1::text IS NULL OR task_class=$1)
+         FROM toonflow.tasks WHERE task_class<>'text'
+           AND ($1::text IS NULL OR task_class=$1)
            AND ($2::bigint IS NULL OR project_id=$2)",
     )
     .bind(task_class)
@@ -393,7 +396,8 @@ mod task_pagination_tests {
             (-91104,-91001,'pagination-test','failed',100),
             (-91105,-91001,'pagination-test','running',100),
             (-91106,-91002,'pagination-test','success',100),
-            (-91107,-91001,'other-test','success',100)")
+            (-91107,-91001,'other-test','success',100),
+            (-91108,-91001,'text','success',100)")
             .execute(&pool).await.unwrap();
         for (filter, expected) in [("completed", vec![-91101, -91102]), ("ERROR", vec![-91103, -91104])] {
             for (index, id) in expected.into_iter().enumerate() {
@@ -417,7 +421,7 @@ pub async fn task_details(
     Json(request): Json<TaskId>,
 ) -> Result<Json<ApiResponse<Option<Task>>>, AppError> {
     require(&user, "toon:project:read")?;
-    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.id=$1")
+    let row = sqlx::query_as::<_, Task>("SELECT t.id,t.project_id,p.name project_name,t.task_class,coalesce(n.chapter,t.related_objects) related_objects,coalesce(mc.name,t.model) model,t.description,t.state,t.start_time,t.reason,t.input,t.retry_of_id,t.progress_current,t.progress_total FROM toonflow.tasks t LEFT JOIN toonflow.projects p ON p.id=t.project_id LEFT JOIN toonflow.agent_deployments d ON d.key=t.model LEFT JOIN ai.model_configs mc ON mc.id=coalesce(d.model_config_id,CASE WHEN t.model ~ '^[0-9]+$' THEN t.model::bigint END) LEFT JOIN toonflow.novels n ON t.task_class='novelEvent' AND n.id::text=t.related_objects WHERE t.id=$1 AND t.task_class<>'text'")
         .bind(request.task_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to get task"))?;
     Ok(Json(ApiResponse::new(row)))
 }
@@ -434,7 +438,7 @@ pub async fn task_categories(
 ) -> Result<Json<ApiResponse<Vec<TaskCategory>>>, AppError> {
     require(&user, "toon:project:read")?;
     let rows = sqlx::query_as::<_, TaskCategory>(
-        "SELECT DISTINCT task_class FROM toonflow.tasks WHERE task_class<>'' ORDER BY task_class",
+        "SELECT DISTINCT task_class FROM toonflow.tasks WHERE task_class<>'' AND task_class<>'text' ORDER BY task_class",
     )
     .fetch_all(&state.pool)
     .await

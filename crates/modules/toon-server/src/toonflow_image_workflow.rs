@@ -26,27 +26,9 @@ async fn normalize_image_references(references: Vec<String>) -> Result<Vec<Strin
     Ok(normalized)
 }
 
-fn storyboard_image_size(quality: &str, ratio: &str) -> String {
-    let long_edge = match quality.trim().to_ascii_uppercase().as_str() {
-        "1K" => 1280.0,
-        "4K" => 3840.0,
-        _ => 2560.0,
-    };
-    let Some((width, height)) = ratio.split_once(':').and_then(|(width, height)| {
-        Some((width.parse::<f64>().ok()?, height.parse::<f64>().ok()?))
-    }) else {
-        return quality.to_string();
-    };
-    if width <= 0.0 || height <= 0.0 {
-        return quality.to_string();
-    }
-    let (pixel_width, pixel_height) = if width >= height {
-        (long_edge, long_edge * height / width)
-    } else {
-        (long_edge * width / height, long_edge)
-    };
-    let align = |value: f64| ((value / 32.0).round().max(1.0) * 32.0) as u32;
-    format!("{}x{}", align(pixel_width), align(pixel_height))
+fn storyboard_image_size(quality: &str, ratio: &str) -> Result<String, String> {
+    crate::toonflow_image_contract::ImageCanvas::for_quality(quality, ratio)
+        .map(|canvas| canvas.size())
 }
 
 #[derive(Deserialize)]
@@ -268,6 +250,13 @@ pub async fn generate_flow_image(
     Json(req): Json<FlowImage>,
 ) -> Result<Json<ApiResponse<Value>>, AppError> {
     require(&user, "toon:project:update")?;
+    let ratio = match req.target_type.as_str() {
+        "role" | "costume" | "tool" => {
+            crate::toonflow_asset_prompt::asset_image_ratio(&req.target_type, &req.prompt)
+        }
+        _ => req.ratio.as_str(),
+    };
+    let size = storyboard_image_size(&req.quality, ratio).map_err(AppError::bad_request)?;
     let original_references = req.references.clone().unwrap_or_default();
     let scene_plan = if req.target_type == "storyboard" {
         let storyboard_id = req
@@ -316,7 +305,7 @@ pub async fn generate_flow_image(
     let prompt = toonflow_image_edit_prompt::build(
         toonflow_image_edit_prompt::ImageEditTarget::parse(&req.target_type),
         &req.prompt,
-        &req.ratio,
+        ratio,
         references.len(),
     );
     let prompt = scene_plan
@@ -328,8 +317,9 @@ pub async fn generate_flow_image(
         Some(req.project_id),
         &req.model,
         &prompt,
-        &req.quality,
+        &size,
         references,
+        req.target_type == "role",
     )
     .await
     .map_err(AppError::bad_request)?;
@@ -339,7 +329,8 @@ pub async fn generate_flow_image(
         "storyboardId": req.storyboard_id,
         "model": req.model,
         "quality": req.quality,
-        "ratio": req.ratio,
+        "ratio": ratio,
+        "size": size,
         "prompt": req.prompt,
         "references": req.references,
         "targetType": req.target_type,
@@ -525,16 +516,21 @@ async fn generate_storyboard_job(
     let generation_prompt = reference_plan.apply_to_prompt(
         crate::toonflow_asset_prompt::storyboard_generation_prompt(&job.prompt),
     );
-    match ai_client::image_with_references_for_project(
-        &pool,
-        Some(project_id),
-        &model,
-        &generation_prompt,
-        &storyboard_image_size(&quality, &ratio),
-        references,
-    )
-    .await
-    {
+    let result = async {
+        let size = storyboard_image_size(&quality, &ratio)?;
+        ai_client::image_with_references_for_project(
+            &pool,
+            Some(project_id),
+            &model,
+            &generation_prompt,
+            &size,
+            references,
+            false,
+        )
+        .await
+    }
+    .await;
+    match result {
         Ok(url) => {
             let object_name = format!("storyboard-{}-{}", job.id, uuid::Uuid::new_v4());
             match crate::toonflow_storage::persist_remote_project_image(
@@ -719,9 +715,9 @@ mod prompt_tests {
 
     #[test]
     fn converts_project_ratio_to_provider_dimensions() {
-        assert_eq!(storyboard_image_size("2K", "16:9"), "2560x1440");
-        assert_eq!(storyboard_image_size("2K", "9:16"), "1440x2560");
-        assert_eq!(storyboard_image_size("2K", "1:1"), "2560x2560");
+        assert_eq!(storyboard_image_size("2K", "16:9").unwrap(), "2560x1440");
+        assert_eq!(storyboard_image_size("2K", "9:16").unwrap(), "1440x2560");
+        assert_eq!(storyboard_image_size("2K", "1:1").unwrap(), "2560x2560");
     }
 }
 

@@ -8,6 +8,7 @@ import { Controls } from '@vue-flow/controls';
 import { applyEdgeChanges, applyNodeChanges, Handle, Position, VueFlow } from '@vue-flow/core';
 import { MiniMap } from '@vue-flow/minimap';
 import { Button, Card, Image, Input, Select, Space, Tag } from 'ant-design-vue';
+import { assetFileUrl } from '../assets/asset-types';
 
 interface AssetOption {
   id: number;
@@ -102,7 +103,7 @@ function onEdgesChange(changes: EdgeChange[]) {
       <template #node-upload="{ id, data }">
         <Card class="flow-node" size="small" :title="data.assetName ? `资产参考 · ${data.assetName}` : '图片输入'">
           <template #extra><Button danger size="small" type="link" @click="emit('remove', id)">删除</Button></template>
-          <Image v-if="data.image" :src="data.image" :alt="data.assetName || '参考图'" class="preview-image" />
+          <Image v-if="data.image" :src="assetFileUrl(data.image)" :alt="data.assetName || '参考图'" class="preview-image" />
           <div v-else class="empty">选择资产图、分镜图或本地图片</div>
           <Select
             v-if="data.assetSlot !== undefined"
@@ -135,7 +136,7 @@ function onEdgesChange(changes: EdgeChange[]) {
       <template #node-generated="{ id, data }">
         <Card class="flow-node generated" size="small" title="AI 图片编辑">
           <template #extra><Button danger size="small" type="link" @click="emit('remove', id)">删除</Button></template>
-          <img v-if="data.generatedImage" :src="data.generatedImage" class="preview" />
+          <img v-if="data.generatedImage" :src="assetFileUrl(data.generatedImage)" class="preview" />
           <div v-else class="empty">连接参考图和编辑指令后执行</div>
           <Select v-model:value="data.targetType" class="field" :options="targetOptions" />
           <Input.TextArea v-model:value="data.prompt" :rows="3" placeholder="当前节点补充编辑要求（可选）" />
