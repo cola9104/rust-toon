@@ -32,7 +32,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 16);
+    assert_eq!(applied, 17);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0012_retire_duplicate_request_traces.sql"
@@ -117,6 +117,14 @@ async fn applies_all_migrations_to_empty_postgres() {
     .expect("inspect event extraction prompt");
     assert!(event_prompt.contains("只输出纯 JSON 数组"));
     assert!(!event_prompt.contains("恰好 7 个字段"));
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0017_single_core_event_per_chapter.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("single core event migration is idempotent");
+    assert!(event_prompt.contains("每章只概括一条核心事件"));
+    assert!(!event_prompt.contains("每3000字提取3-5个事件"));
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"

@@ -135,9 +135,9 @@ async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
 - 忠于原文，不推测不脑补，不加入原文未出现的情节
 - 多条平行事件线时，选对主角影响最大的，其余简要带过
 - 对话密集章节，关注对话推动了什么结果，而非复述对话内容
-- 每3000字提取3-5个事件，短章节至少2个"#).await;
+- 每章只概括一条核心事件，以整章为单位，保留主要行动、结果和转折，不按字数或场景拆分"#).await;
     let system = format!(
-        "{system}\n\n## Rust 输出适配器（优先级最高）\n不要调用工具。最终只输出 JSON 数组，字段为 name、detail、characters、mainline、density、duration、mood。"
+        "{system}\n\n## 章节输出约束\n不要调用工具。每章只概括一条核心事件，不按字数或场景拆分。最终只输出包含一个对象的 JSON 数组，字段为 name、detail、characters、mainline、density、duration、mood。"
     );
     match ai_client::project_text_untracked(
         pool,
@@ -177,6 +177,9 @@ async fn save_events(pool: &PgPool, novel_id: i64, raw: &str) -> Result<(), Stri
         serde_json::from_str(cleaned).map_err(|e| format!("事件 JSON 解析失败: {e}"))?;
     if events.is_empty() {
         return Err("事件提取模型返回了空数组，请调整提示词后重试".into());
+    }
+    if events.len() != 1 {
+        return Err(format!("每章应概括一条核心事件，模型返回了 {} 条，请重新提取", events.len()));
     }
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     // Delete old events for this novel (IDs are novel_id * 1000 + 0..999)
