@@ -170,8 +170,14 @@ async fn save_events(pool: &PgPool, novel_id: i64, raw: &str) -> Result<(), Stri
         .trim_start_matches("```")
         .trim_end_matches("```")
         .trim();
+    if cleaned.is_empty() {
+        return Err("事件提取模型返回了空内容，请检查模型输出上限或更换模型后重试".into());
+    }
     let events: Vec<Value> =
         serde_json::from_str(cleaned).map_err(|e| format!("事件 JSON 解析失败: {e}"))?;
+    if events.is_empty() {
+        return Err("事件提取模型返回了空数组，请调整提示词后重试".into());
+    }
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     // Delete old events for this novel (IDs are novel_id * 1000 + 0..999)
     let id_start = novel_id * 1000;

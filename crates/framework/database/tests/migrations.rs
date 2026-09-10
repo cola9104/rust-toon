@@ -32,7 +32,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 15);
+    assert_eq!(applied, 16);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0012_retire_duplicate_request_traces.sql"
@@ -101,6 +101,22 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("inspect retired DouBao platform identifier");
     assert_eq!(legacy_platform_rows, 0);
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0016_align_event_extraction_prompt.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("event extraction prompt alignment migration is idempotent");
+
+    let event_prompt: String = sqlx::query_scalar(
+        "SELECT data FROM toonflow.prompts WHERE source_key='eventExtraction'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect event extraction prompt");
+    assert!(event_prompt.contains("只输出纯 JSON 数组"));
+    assert!(!event_prompt.contains("恰好 7 个字段"));
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"
