@@ -367,7 +367,7 @@ async function submitState() {
 </script>
 
 <template>
-  <Modal
+  <Modal root-class-name="toon-overlay"
     :open="open"
     title="场景一致性"
     width="980px"
@@ -534,7 +534,7 @@ async function submitState() {
     </Spin>
   </Modal>
 
-  <Modal
+  <Modal root-class-name="toon-overlay"
     v-model:open="stateModalOpen"
     :title="stateForm.id ? '编辑场景状态' : '新建场景状态'"
     width="720px"

@@ -34,10 +34,10 @@ async function removeMapping(id: number) { await deleteModelPromptMap(id); mappi
 onMounted(load);
 </script>
 <template>
-  <Page auto-content-height>
-    <Card :bordered="false" title="模型 Prompt 映射">
-      <Space wrap><Select v-model:value="modelId" :options="models" show-search option-filter-prop="label" placeholder="选择 Vendor 模型" style="width:300px" /><Select v-model:value="promptKey" :options="promptOptions" show-search option-filter-prop="label" placeholder="选择 Prompt" style="width:320px" /><Input v-model:value="promptKey" placeholder="或直接输入 Prompt Key" style="width:260px" /><Button type="primary" :loading="saving" @click="addMapping">添加映射</Button><Button :loading="loading" @click="load">刷新</Button></Space>
-      <List class="mt-4" bordered :data-source="mappings"><template #renderItem="{item}"><List.Item><List.Item.Meta :title="`${item.modelName} · ${item.model}`" :description="item.promptKey" /><Tag :color="item.enabled ? 'green' : 'default'">{{ item.enabled ? '启用' : '停用' }}</Tag><Button danger type="link" @click="removeMapping(item.id)">删除</Button></List.Item></template></List>
+  <Page auto-content-height class="toon-page">
+    <Card :bordered="false" class="toonflow-page-card toon-surface"><div class="toon-header"><div><h1 class="toon-title">模型 Prompt 映射</h1><p class="toon-subtitle">为模型选择对应的提示词。</p></div><Button :loading="loading" @click="load">刷新</Button></div>
+      <Space wrap><Select v-model:value="modelId" :options="models" show-search option-filter-prop="label" placeholder="选择 Vendor 模型" style="width:300px" /><Select v-model:value="promptKey" :options="promptOptions" show-search option-filter-prop="label" placeholder="选择 Prompt" style="width:320px" /><Input v-model:value="promptKey" placeholder="或直接输入 Prompt Key" style="width:260px" /><Button type="primary" :loading="saving" @click="addMapping">添加映射</Button></Space>
+      <List v-if="mappings.length || loading" class="mt-4" bordered :data-source="mappings"><template #renderItem="{item}"><List.Item><List.Item.Meta :title="`${item.modelName} · ${item.model}`" :description="item.promptKey" /><Tag :color="item.enabled ? 'green' : 'default'">{{ item.enabled ? '启用' : '停用' }}</Tag><Button danger type="link" @click="removeMapping(item.id)">删除</Button></List.Item></template></List>
       <Empty v-if="!loading && !mappings.length" class="mt-6" description="暂无模型 Prompt 映射" />
     </Card>
   </Page>

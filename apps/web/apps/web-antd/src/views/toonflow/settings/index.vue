@@ -39,20 +39,22 @@ import {
   getPrompts,
   getSkills,
   retryAgent,
-  updateAgentDeployment,
 } from '#/api/toonflow';
 
 import '../shared/page-card.css';
 import '../styles/toon-theme.css';
+import { useDeploymentDrafts } from './useDeploymentDrafts';
+import { useUnsavedChanges } from '../shared/useUnsavedChanges';
 import AgentRuntimeConfigPanel from './AgentRuntimeConfigPanel.vue';
 import AgentRunEventDrawer from '../components/AgentRunEventDrawer.vue';
 
 type ModelType = ToonflowApi.AgentDeployment['modelType'];
 type ModelOption = { label: string; value: number; capabilities?: string[] };
 const loading = ref(false);
-const saving = ref(false);
-const agents = ref<ToonflowApi.AgentDeployment[]>([]);
-const baseline = ref<Record<number, string>>({});
+const drafts = useDeploymentDrafts();
+const { agents, saving, changedRows } = drafts;
+const { confirmDiscard } = useUnsavedChanges(computed(() => changedRows.value.length), saving, drafts.undo);
+async function refreshConfig() { if (await confirmDiscard('刷新配置')) await load(); }
 const router = useRouter();
 const memoryAgent = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
 const memoryProjectId = ref<number>();
@@ -138,20 +140,8 @@ function toOptions(
       .map(([key]) => key),
   }));
 }
-function editable(row: ToonflowApi.AgentDeployment) {
-  return JSON.stringify([
-    row.modelConfigId,
-    row.temperature,
-    row.maxOutputTokens,
-    row.disabled,
-    row.promptSourceKey,
-    row.memoryScope,
-  ]);
-}
-const changedRows = computed(() =>
-  agents.value.filter((row) => baseline.value[row.id] !== editable(row)),
-);
 async function load() {
+  if (loading.value || saving.value) return;
   loading.value = true;
   try {
     const [a, c, i, v, s, p, k] = await Promise.all([
@@ -163,10 +153,9 @@ async function load() {
       getPrompts(),
       getSkills(),
     ]);
-    agents.value = a;
+    drafts.replace(a);
     prompts.value = p;
     skills.value = k;
-    baseline.value = Object.fromEntries(a.map((row) => [row.id, editable(row)]));
     models.value = {
       chat: toOptions(c),
       image: toOptions(i),
@@ -182,27 +171,11 @@ async function saveAll() {
   if (!rows.length) return;
   if (rows.some((row) => !row.modelConfigId))
     return message.warning('变更项必须选择对应类型的模型');
-  saving.value = true;
-  try {
-    await Promise.all(
-      rows.map((row) =>
-        updateAgentDeployment({
-          id: row.id,
-          modelConfigId: row.modelConfigId,
-          temperature: row.temperature,
-          maxOutputTokens: row.maxOutputTokens,
-          disabled: row.disabled,
-          promptSourceKey: row.promptSourceKey,
-          memoryScope: row.memoryScope,
-        }),
-      ),
-    );
-    message.success(`已保存 ${rows.length} 项模型配置`);
-    await load();
-  } finally {
-    saving.value = false;
-  }
+  const result = await drafts.save();
+  if (result.failed) message.warning(`已保存 ${result.saved} 项，${result.failed} 项失败；未保存修改已保留，可再次保存`);
+  else message.success(`已保存 ${result.saved} 项配置`);
 }
+
 async function loadMemories() {
   if (!memoryProjectId.value) return message.warning('请先选择项目');
   memoryLoading.value = true;
@@ -279,7 +252,7 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
           <h1 class="toon-title">Toonflow 设置</h1>
           <p class="toon-subtitle">统一管理模型能力、Agent 运行时、提示词、技能和记忆。</p>
         </div>
-        <Button @click="load" :loading="loading">刷新配置</Button>
+        <Space wrap><Button @click="refreshConfig" :loading="loading" :disabled="saving">刷新配置</Button><Button :disabled="!changedRows.length || saving || loading" @click="drafts.undo">撤销修改</Button><Button type="primary" :loading="saving" :disabled="!changedRows.length || loading" @click="saveAll">保存修改{{ changedRows.length ? `（${changedRows.length}）` : '' }}</Button></Space>
       </div>
       <div class="settings-overview">
         <Card size="small"
@@ -306,14 +279,7 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
                 编排中设置。
               </p>
             </div>
-            <Button
-              class="toon-primary"
-              type="primary"
-              :disabled="changedRows.length === 0"
-              :loading="saving"
-              @click="saveAll"
-              >保存 {{ changedRows.length || '' }}</Button
-            >
+
           </div>
           <Table
             :scroll="{ x: 1100, y: 460 }"
@@ -339,21 +305,21 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
               }}</Tag
               ><Select
                 v-else-if="column.key === 'model'"
-                v-model:value="record.modelConfigId"
+                :disabled="loading" v-model:value="record.modelConfigId"
                 class="w-full"
                 :options="options(record)"
                 :placeholder="`选择${typeLabels[record.modelType as ModelType]}模型`" /><InputNumber
                 v-else-if="column.key === 'temperature' && record.modelType === 'chat'"
-                v-model:value="record.temperature"
+                :disabled="loading" v-model:value="record.temperature"
                 :min="0"
                 :max="2" /><InputNumber
                 v-else-if="column.key === 'tokens' && record.modelType === 'chat'"
-                v-model:value="record.maxOutputTokens"
+                :disabled="loading" v-model:value="record.maxOutputTokens"
                 :min="1" /><span v-else-if="column.key === 'temperature' || column.key === 'tokens'"
                 >—</span
               ><Switch
                 v-else-if="column.key === 'enabled'"
-                :checked="!record.disabled"
+                :disabled="loading" :checked="!record.disabled"
                 @update:checked="record.disabled = !$event" /></template></Table
         ></Tabs.TabPane>
         <Tabs.TabPane key="agents" tab="Agent 编排"
@@ -361,7 +327,7 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
             message="主 Agent → 子 Agent → 监督 Agent"
             description="这里展示指定隔离键下的运行链路。具体子 Agent 工具由后端工作流运行时安全调度，运行结果会写回项目工作区。"
             show-icon
-          /><AgentRuntimeConfigPanel
+          /><AgentRuntimeConfigPanel :disabled="loading"
             class="mt-4"
             :agents="agents"
             :prompts="prompts"
@@ -505,7 +471,7 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
           <Space class="mt-4"
             ><Button type="primary" @click="router.push('/ai/console/model')"
               >前往 AI 模型配置</Button
-            ><Button @click="load">重新读取模型</Button></Space
+            ><Button :disabled="saving" @click="refreshConfig">重新读取模型</Button></Space
           ></Tabs.TabPane
         >
       </Tabs>
@@ -546,7 +512,7 @@ onBeforeUnmount(() => window.clearInterval(eventTimer));
 }
 .toonflow-page-shell :deep(.ant-table-content::-webkit-scrollbar-thumb) {
   border-radius: 4px;
-  background: #cbd5e1;
+  background: var(--toon-line);
 }
 .toon-header {
   display: flex;

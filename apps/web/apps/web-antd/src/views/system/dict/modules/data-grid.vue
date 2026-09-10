@@ -2,7 +2,7 @@
 import type { VxeTableGridOptions } from '#/adapter/vxe-table';
 import type { SystemDictDataApi } from '#/api/system/dict/data';
 
-import { ref, watch } from 'vue';
+import { nextTick, onActivated, ref, watch } from 'vue';
 
 import { confirm, useVbenModal } from '@vben/common-ui';
 import { downloadFileFromBlobPart, isEmpty } from '@vben/utils';
@@ -40,7 +40,10 @@ function handleRefresh() {
 
 /** 导出表格 */
 async function handleExport() {
-  const data = await exportDictData(await gridApi.formApi.getValues());
+  const data = await exportDictData({
+    ...(await gridApi.formApi.getValues()),
+    dictType: props.dictType,
+  });
   downloadFileFromBlobPart({ fileName: '字典数据.xls', source: data });
 }
 
@@ -100,7 +103,7 @@ const [Grid, gridApi] = useVbenVxeGrid({
     schema: useDataGridFormSchema(),
   },
   gridOptions: {
-    id: 'system-dict-data-grid',
+    id: `system-dict-data-grid-${props.dictType}`,
     columns: useDataGridColumns(),
     height: 'auto',
     keepSource: true,
@@ -110,8 +113,8 @@ const [Grid, gridApi] = useVbenVxeGrid({
           return await getDictDataPage({
             pageNo: page.currentPage,
             pageSize: page.pageSize,
-            dictType: props.dictType,
             ...formValues,
+            dictType: props.dictType,
           });
         },
       },
@@ -131,6 +134,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
   },
 });
 
+onActivated(async () => {
+  await nextTick();
+  await gridApi.grid.recalculate?.();
+});
+
 /** 监听 dictType 变化，重新查询 */
 watch(
   () => props.dictType,
@@ -146,12 +154,12 @@ watch(
   <div class="flex h-full flex-col">
     <DataFormModal @success="handleRefresh" />
 
-    <Grid table-title="字典数据列表">
+    <Grid table-title="字典项">
       <template #toolbar-tools>
         <TableAction
           :actions="[
             {
-              label: $t('ui.actionTitle.create', ['字典数据']),
+              label: '新增字典项',
               type: 'primary',
               icon: ACTION_ICON.ADD,
               auth: ['system:dict:create'],

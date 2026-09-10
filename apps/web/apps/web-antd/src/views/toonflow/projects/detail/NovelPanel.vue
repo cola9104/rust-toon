@@ -1,17 +1,76 @@
 <script setup lang="ts">
 import type { TablePaginationConfig } from 'ant-design-vue';
+import type { TableRowSelection } from 'ant-design-vue/es/table/interface';
 
-import { computed, reactive, ref } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 
-import { Button, Form, Input, InputNumber, message, Modal, Popconfirm, Space, Table, Tag, Upload } from 'ant-design-vue';
+import { Button, Checkbox, Form, Input, InputNumber, message, Modal, Popconfirm, Space, Table, Tag, Upload } from 'ant-design-vue';
 
-import { addNovel, updateNovel } from '#/api/toonflow';
+import { addNovel, getNovelData, updateNovel } from '#/api/toonflow';
 
 import { parseNovelText } from '../novel-import';
 
 const props = defineProps<{ context: any }>();
 const modalOpen = ref(false);
 const batchText = ref('');
+const selectedNovelIds = ref<number[]>([]);
+const extracting = ref(false);
+const selectingAll = ref(false);
+const allSelected = computed(() =>
+  props.context.novelTotal > 0 && selectedNovelIds.value.length === props.context.novelTotal,
+);
+const rowSelection = computed<TableRowSelection>(() => ({
+  preserveSelectedRowKeys: true,
+  selectedRowKeys: selectedNovelIds.value,
+  getCheckboxProps: () => ({ disabled: selectingAll.value }),
+  onChange: (keys) => {
+    selectedNovelIds.value = keys.map(Number);
+  },
+}));
+
+watch(
+  () => props.context.projectId,
+  () => { selectedNovelIds.value = []; },
+);
+
+async function toggleSelectAll(checked: boolean) {
+  if (selectingAll.value) return;
+  if (!checked) {
+    selectedNovelIds.value = [];
+    return;
+  }
+  const projectId = props.context.projectId;
+  selectingAll.value = true;
+  try {
+    const chapters = await getNovelData(projectId);
+    if (props.context.projectId === projectId) {
+      selectedNovelIds.value = chapters.map((chapter) => chapter.id);
+    }
+  } finally {
+    selectingAll.value = false;
+  }
+}
+
+async function removeNovel(chapterId: number) {
+  const projectId = props.context.projectId;
+  await props.context.removeNovel({ id: chapterId });
+  if (props.context.projectId === projectId) {
+    selectedNovelIds.value = selectedNovelIds.value.filter((id) => id !== chapterId);
+  }
+}
+
+async function extractSelectedNovelEvents() {
+  if (extracting.value || !selectedNovelIds.value.length) return;
+  extracting.value = true;
+  const ids = [...selectedNovelIds.value];
+  try {
+    await props.context.extractSelectedNovelEvents(ids);
+    selectedNovelIds.value = selectedNovelIds.value.filter((id) => !ids.includes(id));
+  } finally {
+    extracting.value = false;
+  }
+}
+
 const form = reactive({
   chapter: '',
   chapterData: '',
@@ -78,7 +137,21 @@ async function saveNovel() {
           <Button type="primary">导入文件</Button>
         </Upload>
         <Button @click="openNovel()">手动导入</Button>
-        <Button @click="context.extractAllNovelEvents">提取全部待处理事件</Button>
+        <Checkbox
+          :checked="allSelected"
+          :disabled="selectingAll || extracting || !context.novelTotal"
+          :indeterminate="selectedNovelIds.length > 0 && !allSelected"
+          @change="toggleSelectAll(!!$event.target.checked)"
+        >
+          {{ selectingAll ? '正在选择…' : '全选所有章节' }}
+        </Checkbox>
+        <Button
+          :disabled="selectingAll || !selectedNovelIds.length"
+          :loading="extracting"
+          @click="extractSelectedNovelEvents"
+        >
+          提取选中章节事件（{{ selectedNovelIds.length }}）
+        </Button>
       </Space>
     </div>
     <Table
@@ -87,6 +160,7 @@ async function saveNovel() {
       :data-source="context.novels"
       :loading="context.novelLoading"
       :pagination="tablePagination"
+      :row-selection="rowSelection"
       :scroll="{ x: 1408 }"
       row-key="id"
       size="small"
@@ -116,14 +190,14 @@ async function saveNovel() {
         <Space v-if="column.key === 'action'" :size="4" class="novel-actions">
           <Button size="small" type="link" @click="openNovel(record)">编辑</Button>
           <Button size="small" type="link" @click="context.extractNovelEvents(record)">提取事件</Button>
-          <Popconfirm title="确认删除章节？" @confirm="context.removeNovel(record)">
+          <Popconfirm title="确认删除章节？" @confirm="removeNovel(record.id)">
             <Button danger size="small" type="link">删除</Button>
           </Popconfirm>
         </Space>
       </template>
     </Table>
   </section>
-  <Modal v-model:open="modalOpen" title="章节" width="820px" @ok="saveNovel">
+  <Modal root-class-name="toon-overlay" v-model:open="modalOpen" title="章节" width="820px" @ok="saveNovel">
     <Form :label-col="{ span: 4 }">
       <Form.Item label="批量导入">
         <Input.TextArea

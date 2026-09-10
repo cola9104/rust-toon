@@ -17,6 +17,7 @@ const routes: RouteRecordRaw[] = [
         meta: {
           title: '项目工作台',
           icon: 'lucide:layout-dashboard',
+          fullPathKey: false,
         },
       },
       {

@@ -47,6 +47,7 @@ async function generateAccess(options: GenerateMenuAndRoutesOptions) {
 
 function normalizeToonflowTabRoutes(router: Router) {
   const tabRoutes = new Map([
+    ['ToonflowProjects', '/toonflow/projects'],
     ['ToonflowProjectDetail', '/toonflow/projects/:id'],
     ['ToonflowTasks', '/toonflow/tasks'],
   ]);

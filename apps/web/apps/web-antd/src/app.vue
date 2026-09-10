@@ -6,6 +6,7 @@ import { preferences, usePreferences } from '@vben/preferences';
 
 import { App, ConfigProvider, theme } from 'ant-design-vue';
 
+import ToonTheme from '#/views/toonflow/shared/ToonTheme.vue';
 import { antdLocale } from '#/locales';
 
 defineOptions({ name: 'App' });
@@ -33,7 +34,7 @@ const tokenTheme = computed(() => {
 <template>
   <ConfigProvider :locale="antdLocale" :theme="tokenTheme">
     <App>
-      <RouterView />
+      <ToonTheme><RouterView /></ToonTheme>
     </App>
   </ConfigProvider>
 </template>

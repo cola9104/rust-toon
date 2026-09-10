@@ -145,7 +145,10 @@ if grep -q 'must-not-appear' "$work_dir/metrics.txt"; then
   exit 1
 fi
 
-E2E_BASE_URL="http://127.0.0.1:${gateway_port}" \
+docker exec "$postgres_container" psql -U rust_toon -d rust_toon_test -v ON_ERROR_STOP=1 -c \
+  "INSERT INTO toonflow.tasks (id,task_class,state) VALUES (1789003357277804801,'api-contract','completed')" >/dev/null
+
+E2E_TASK_ID="1789003357277804801" E2E_BASE_URL="http://127.0.0.1:${gateway_port}" \
   node script/e2e/gateway-smoke.mjs
 
 sleep 1

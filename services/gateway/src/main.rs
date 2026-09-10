@@ -157,7 +157,7 @@ async fn serve_gateway(
     let listener = TcpListener::bind(addr).await?;
     info!(service = %config.name, address = %addr, "service listening");
 
-    axum::serve(listener, app)
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(shutdown_signal(drain))
         .await?;
 

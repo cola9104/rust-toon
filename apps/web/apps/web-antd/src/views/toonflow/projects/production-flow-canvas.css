@@ -122,8 +122,8 @@
   width: fit-content;
   padding: 5px 10px;
   border-radius: 8px 0;
-  color: #fff;
-  background: #000;
+  color: var(--ant-color-primary-text);
+  background: var(--ant-color-primary-bg);
 }
 
 .flow-stage-node.waiting {

@@ -348,7 +348,7 @@ function restoreOrder() {
       </section>
     </div>
     <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="分镜表确认后，Agent 将写入分镜" />
-    <Modal v-model:open="gridPreviewOpen" title="分镜宫格预览" width="92vw" :footer="null" destroy-on-close>
+    <Modal root-class-name="toon-overlay" v-model:open="gridPreviewOpen" title="分镜宫格预览" width="92vw" :footer="null" destroy-on-close>
       <div class="preview-scale"><span>缩放比例 {{ gridScale }}%</span><Slider v-model:value="gridScale" :min="60" :max="160" /></div>
       <div class="preview-grid" :style="{ '--preview-scale': `${gridScale / 100}` }">
         <figure v-for="item in storyboards" :key="item.id">
@@ -398,5 +398,5 @@ function restoreOrder() {
 .preview-grid figcaption { padding: 7px 9px; }
 @media (max-width: 900px) { .storyboard-card { width: 100%; flex-basis: 100%; } }
 .storyboard-card { width: 300px; flex-basis: 300px; }
-.storyboard-cover img { height: 168px; object-fit: contain; background: #111827; }
+.storyboard-cover img { height: 168px; object-fit: contain; background: var(--toon-ink); }
 </style>

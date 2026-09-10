@@ -178,23 +178,23 @@ function dropOn(targetId: number) {
   flex: 0 0 auto;
   padding: 3px 5px;
   border-radius: 5px;
-  background: #fff;
+  background: var(--toon-panel);
   box-shadow: 0 0 0 1px rgb(15 23 42 / 14%);
 }
 .track-checkbox :deep(.ant-checkbox-inner) {
   width: 16px;
   height: 16px;
-  border: 2px solid #475569;
-  background: #fff;
+  border: 2px solid var(--toon-muted);
+  background: var(--toon-panel);
 }
 .track-checkbox:hover :deep(.ant-checkbox-inner),
 .track-checkbox :deep(.ant-checkbox-input:focus + .ant-checkbox-inner) {
-  border-color: #1677ff;
+  border-color: var(--ant-color-primary);
 }
 .track-checkbox :deep(.ant-checkbox-checked .ant-checkbox-inner),
 .track-checkbox :deep(.ant-checkbox-indeterminate .ant-checkbox-inner) {
-  border-color: #0958d9;
-  background: #0958d9;
+  border-color: var(--ant-color-primary-text);
+  background: var(--ant-color-primary-text);
 }
 .track-checkbox :deep(.ant-checkbox-checked .ant-checkbox-inner::after) {
   border-color: #fff;
@@ -224,7 +224,7 @@ function dropOn(targetId: number) {
   aspect-ratio: 16 / 9;
   overflow: hidden;
   border-radius: 4px;
-  background: #111827;
+  background: var(--toon-ink);
   place-items: center;
 }
 .storyboard-track-shot-media img { display: block; width: 100%; height: 100%; object-fit: contain; }

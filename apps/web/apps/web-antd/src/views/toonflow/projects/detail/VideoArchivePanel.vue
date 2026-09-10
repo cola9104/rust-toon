@@ -349,7 +349,7 @@ onBeforeUnmount(() => {
       </Card>
     </div>
 
-    <Modal
+    <Modal root-class-name="toon-overlay"
       :footer="null"
       :open="!!previewRender"
       :title="
@@ -386,9 +386,9 @@ onBeforeUnmount(() => {
   justify-content: space-between;
   gap: 20px;
   padding: 22px 24px;
-  border: 1px solid var(--toon-line, #e8e8e8);
+  border: 1px solid var(--toon-line);
   border-radius: 18px;
-  background: linear-gradient(135deg, #fff 55%, #f4f6ff);
+  background: linear-gradient(135deg, var(--toon-panel) 55%, var(--ant-color-primary-bg));
 }
 .archive-header h2 {
   margin: 2px 0 5px;
@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
   color: var(--ant-color-text-secondary);
 }
 .archive-kicker {
-  color: #5b5bd6 !important;
+  color: var(--ant-color-primary) !important;
   font-size: 10px;
   font-weight: 800;
   letter-spacing: 0.14em;
@@ -408,16 +408,16 @@ onBeforeUnmount(() => {
   display: grid;
   gap: 16px;
   padding: 24px;
-  border: 1px solid var(--toon-line, #e8e8e8);
+  border: 1px solid var(--toon-line);
   border-radius: 18px;
-  background: #fff;
+  background: var(--toon-panel);
 }
 .episode-list {
   display: grid;
   gap: 18px;
 }
 .episode-card {
-  border: 1px solid var(--toon-line, #e8e8e8);
+  border: 1px solid var(--toon-line);
   border-radius: 18px;
   box-shadow: 0 8px 30px rgb(15 23 42 / 5%);
 }
@@ -450,7 +450,7 @@ onBeforeUnmount(() => {
   gap: 18px;
   padding: 16px;
   border-radius: 14px;
-  background: #f7f7f5;
+  background: var(--toon-canvas);
 }
 .render-cover {
   position: relative;
@@ -541,7 +541,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
   padding: 8px;
-  border: 1px solid var(--toon-line, #e8e8e8);
+  border: 1px solid var(--toon-line);
   border-radius: 12px;
 }
 .render-cover--history {
@@ -581,7 +581,7 @@ onBeforeUnmount(() => {
   display: grid;
   width: 64px;
   height: 50px;
-  color: #9ca3af;
+  color: var(--ant-color-text-tertiary);
   font-size: 32px;
   place-items: center;
 }

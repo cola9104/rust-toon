@@ -1114,6 +1114,12 @@ pub fn routes(state: ToonState) -> Router {
             axum::routing::delete(toonflow_resources::delete_art_style),
         )
         .route("/toonflow/tasks", get(toonflow_resources::list_tasks))
+        // The frontend/reverse proxy strips its /api prefix before forwarding.
+        // Keep these aliases alongside the original /api/task compatibility API.
+        .route("/task/getTaskApi", post(toonflow_resources::query_tasks))
+        .route("/task/taskDetails", post(toonflow_resources::task_details))
+        .route("/task/getTaskCategories", post(toonflow_resources::task_categories))
+        .route("/task/getProject", post(toonflow_resources::task_projects))
         .route(
             "/toonflow/projects/{project_id}/video-archive",
             get(toonflow_episode_renders::project_video_archive),
@@ -1147,6 +1153,7 @@ pub fn routes(state: ToonState) -> Router {
             "/api/setting/skillManagement/saveSkillContent",
             post(toonflow_resources::save_skill_content),
         )
+        .route("/setting/skillManagement/saveSkillContent", post(toonflow_resources::save_skill_content))
         .route(
             "/api/artStyle/getArtStyle",
             post(toonflow_resources::list_art_styles),
@@ -1216,26 +1223,32 @@ pub fn routes(state: ToonState) -> Router {
             "/api/project/addVisualManual",
             post(toonflow_manuals::save_visual),
         )
+        .route("/project/addVisualManual", post(toonflow_manuals::save_visual))
         .route(
             "/api/project/editVisualManual",
             post(toonflow_manuals::save_visual),
         )
+        .route("/project/editVisualManual", post(toonflow_manuals::save_visual))
         .route(
             "/api/project/addDirectorManual",
             post(toonflow_manuals::save_director),
         )
+        .route("/project/addDirectorManual", post(toonflow_manuals::save_director))
         .route(
             "/api/project/editDirectorlManual",
             post(toonflow_manuals::save_director),
         )
+        .route("/project/editDirectorlManual", post(toonflow_manuals::save_director))
         .route(
             "/api/project/deleteVisualManual",
             post(toonflow_manuals::delete_visual),
         )
+        .route("/project/deleteVisualManual", post(toonflow_manuals::delete_visual))
         .route(
             "/api/project/deleteDirectorManual",
             post(toonflow_manuals::delete_director),
         )
+        .route("/project/deleteDirectorManual", post(toonflow_manuals::delete_director))
         .route(
             "/api/novel/event/generateEvents",
             post(toonflow_novel_events::generate),
@@ -1301,6 +1314,7 @@ pub fn routes(state: ToonState) -> Router {
             "/api/assets/uploadClip",
             post(toonflow_materials::upload_clip),
         )
+        .route("/assets/uploadClip", post(toonflow_materials::upload_clip))
         .route(
             "/api/assets/delImage",
             post(toonflow_asset_ai::delete_image),
@@ -2139,4 +2153,42 @@ pub fn routes(state: ToonState) -> Router {
 
 async fn capabilities() -> Json<ApiResponse<ToonCapability>> {
     Json(ApiResponse::new(ToonCapability::default()))
+}
+
+#[cfg(test)]
+mod proxy_route_tests {
+    use super::*;
+    use rust_toon_framework_security::SecurityConfig;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn prefixed_and_proxy_stripped_routes_both_reach_authentication() {
+        // No database or user data is needed: a registered protected route must
+        // return 401 for these requests, not fall through to 404.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused").unwrap();
+        let tokens = TokenService::new(SecurityConfig::new(
+            "route-test-secret-with-at-least-32-bytes", "test", "test", Duration::from_secs(60),
+        ).unwrap());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = routes(ToonState::new(pool, tokens));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
+        let client = reqwest::Client::new();
+        let mut results = Vec::new();
+        for path in [
+            "/task/getTaskApi", "/task/taskDetails", "/task/getTaskCategories", "/task/getProject",
+            "/setting/skillManagement/saveSkillContent", "/assets/uploadClip",
+            "/project/editVisualManual", "/project/addVisualManual", "/project/editDirectorlManual",
+            "/project/addDirectorManual", "/project/deleteVisualManual", "/project/deleteDirectorManual",
+        ] {
+            for prefix in ["", "/api"] {
+                let url = format!("http://{address}{prefix}{path}");
+                let status = client.post(&url).json(&serde_json::json!({})).send().await.unwrap().status();
+                results.push((url, status));
+            }
+        }
+        server.abort();
+        for (url, status) in results { assert_eq!(status, reqwest::StatusCode::UNAUTHORIZED, "{url}"); }
+    }
 }

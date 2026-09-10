@@ -119,7 +119,7 @@ gateway 全局挂 `authenticate_from_database`（`system-server/src/database_aut
 AI 能力域：
 
 - **模型配置**存于 `ai.model_configs` 表（platform / type / model / api_key / url / config），CRUD 路由 `/ai/model/*`。模型类型：chat、image、speech、video、embedding、rerank、transcription、music。
-- **Provider 体系**：`AiModelFactory`（`factory.rs`）按平台分发到 `provider/` 下的实现——OpenAI 兼容协议 Provider（覆盖 OpenAI、通义、星火、DeepSeek、豆包、混元、硅基流动、MiniMax、Moonshot、百川、阶跃、文心、智谱、Grok、Ollama、OpenAICompatible），以及 Anthropic、Gemini、AzureOpenAI、豆包媒体生成等专用 Provider；未实现的平台显式报错。`AiPlatform` 枚举见 `crates/modules/ai-api`。
+- **Provider 体系**：`AiModelFactory`（`factory.rs`）按平台分发到 `provider/` 下的实现——OpenAI 兼容协议 Provider（覆盖 OpenAI、通义、星火、DeepSeek、火山引擎、混元、硅基流动、MiniMax、Moonshot、百川、阶跃、文心、智谱、Grok、Ollama、OpenAICompatible），以及 Anthropic、Gemini、AzureOpenAI、火山引擎媒体生成等专用 Provider；未实现的平台显式报错。`AiPlatform` 枚举见 `crates/modules/ai-api`。
 - **子模块**：`chat`（对话/会话）、`chat_role`、`media`（图片/音乐生成，含 10 秒间隔的音乐任务轮询后台任务）、`midjourney`（含后台同步任务）、`knowledge`（知识库）、`tools`、`write`、`vector`。
 
 ### 5.4 media（`crates/modules/media-server`）

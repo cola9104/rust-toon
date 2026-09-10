@@ -189,7 +189,7 @@ async function saveScript() {
       </article>
     </div>
 
-    <Modal v-model:open="modalOpen" title="剧本" width="900px" @ok="saveScript">
+    <Modal root-class-name="toon-overlay" v-model:open="modalOpen" title="剧本" width="900px" @ok="saveScript">
       <Form :label-col="{ span: 3 }">
         <Form.Item label="名称"><Input v-model:value="form.name" /></Form.Item>
         <Form.Item label="关联资产">

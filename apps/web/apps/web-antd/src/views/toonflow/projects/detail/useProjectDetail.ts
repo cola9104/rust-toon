@@ -7,6 +7,8 @@ import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
+import { useUserStore } from '@vben/stores';
+import { createProjectLocationStore, resolveProjectScript } from './project-location';
 import { downloadFileFromBlob } from '@vben/utils';
 
 import { message, Modal } from 'ant-design-vue';
@@ -40,7 +42,6 @@ import {
   getFlowData,
   getImageFlow,
   getLatestWorkflowNodeRun,
-  getNovelData,
   getNovelPage,
   getProject,
   getProjectStatistics,
@@ -86,12 +87,34 @@ import {
   projectDetailStages,
 } from './project-detail-panels';
 
-export function useProjectDetail() {
+export function useProjectDetail(fixedProjectId?: number) {
 const route = useRoute();
 const router = useRouter();
-const projectId = computed(() => Number(route.params.id));
+const projectId = computed(() => fixedProjectId ?? Number(route.params.id));
+const user = useUserStore();
+const locationStore = createProjectLocationStore(String(user.userInfo?.userId || user.userInfo?.username || 'local'), window.localStorage);
+let savedLocation = locationStore.read(projectId.value);
+const requestedStage = typeof route.query.stage === 'string' && projectDetailStages.some((stage) => stage.key === route.query.stage)
+  ? route.query.stage
+  : undefined;
+let locationReady = false;
+const productionNodeId = ref<string>();
+function persistLocation() {
+  if (!locationReady) return;
+  savedLocation.stage = activeTab.value;
+  savedLocation.scriptId = selectedScriptId.value;
+  locationStore.write(projectId.value, savedLocation);
+}
+function rememberProductionNode(nodeId?: string) {
+  productionNodeId.value = nodeId;
+  if (!locationReady || !selectedScriptId.value) return;
+  if (nodeId) savedLocation.nodes[String(selectedScriptId.value)] = nodeId;
+  else delete savedLocation.nodes[String(selectedScriptId.value)];
+  persistLocation();
+}
 
-const activeTab = ref('novel');
+const activeTab = ref(requestedStage ?? savedLocation.stage);
+const loadError = ref('');
 const stages = projectDetailStages;
 const activePanelComponent = computed(() => projectDetailPanelComponents[activeTab.value] || projectDetailPanelComponents.novel);
 const loading = ref(false);
@@ -118,7 +141,7 @@ const scripts = ref<ToonflowApi.Script[]>([]);
 const assets = ref<ToonflowApi.Asset[]>([]);
 const productionAssets = ref<ToonflowApi.Asset[]>([]);
 const storyboards = ref<ToonflowApi.Storyboard[]>([]);
-const selectedScriptId = ref<number>();
+const selectedScriptId = ref<number | undefined>(savedLocation.scriptId);
 const selectedScript = computed(() =>
   scripts.value.find((item) => item.id === selectedScriptId.value),
 );
@@ -150,7 +173,7 @@ const videoTracks = ref<any[]>([]);
 const trackBindingOpen = ref(false);
 const trackBindingTarget = ref<any>();
 const trackBindingStoryboardIds = ref<number[]>([]);
-const agentType = ref<'productionAgent' | 'scriptAgent'>('scriptAgent');
+const agentType = ref<'productionAgent' | 'scriptAgent'>(activeTab.value === 'production' ? 'productionAgent' : 'scriptAgent');
 const scriptPlan = reactive({ storySkeleton: '', adaptationStrategy: '' });
 
 // Agent workspace tabs - populated in real-time from sub-agent outputs
@@ -359,7 +382,9 @@ const novelColumns = [
 ];
 
 async function loadProject() {
-  const [projectData, statisticData] = await Promise.all([getProject(projectId.value), getProjectStatistics(projectId.value)]);
+  const targetProjectId = projectId.value;
+  const [projectData, statisticData] = await Promise.all([getProject(targetProjectId), getProjectStatistics(targetProjectId)]);
+  if (!detailActive || targetProjectId !== projectId.value) return;
   project.value = projectData;
   Object.assign(statistics, statisticData);
 }
@@ -408,23 +433,17 @@ function changeNovelPage(page: number, pageSize: number) {
 }
 
 async function loadScripts() {
-  scripts.value = await getScripts(projectId.value);
-  const requestedScriptId = Number(route.query.scriptId);
-  const requestedScript = scripts.value.find((script) => script.id === requestedScriptId);
-  const selectionStillExists = scripts.value.some(
-    (script) => script.id === selectedScriptId.value,
-  );
-  if (requestedScript) {
-    selectedScriptId.value = requestedScript.id;
-  } else if (!selectionStillExists && orderedScripts.value.length > 0) {
-    selectedScriptId.value = orderedScripts.value[0]!.id;
-  } else if (!selectionStillExists) {
-    selectedScriptId.value = undefined;
-  }
+  const targetProjectId = projectId.value;
+  const rows = await getScripts(targetProjectId);
+  if (!detailActive || targetProjectId !== projectId.value) return;
+  scripts.value = rows;
+  selectedScriptId.value = resolveProjectScript(orderedScripts.value.map((item) => item.id), selectedScriptId.value, locationReady ? undefined : route.query.scriptId);
 }
 
 async function loadAssets() {
-  assets.value = await getAssets(projectId.value);
+  const targetProjectId = projectId.value;
+  const rows = await getAssets(targetProjectId);
+  if (detailActive && targetProjectId === projectId.value) assets.value = rows;
 }
 
 function isCurrentFlowTarget(targetProjectId: number, targetScriptId: number) {
@@ -470,6 +489,9 @@ async function performLoadFlow() {
   storyboards.value = nextStoryboards;
   loadedFlowProjectId.value = targetProjectId;
   loadedFlowScriptId.value = targetScriptId;
+  const remembered = savedLocation.nodes[String(targetScriptId)];
+  productionNodeId.value = workflow.nodes.some((node) => node.id === remembered) ? remembered : undefined;
+  if (remembered && !productionNodeId.value) delete savedLocation.nodes[String(targetScriptId)];
   for (const key of Object.keys(workflowNodeRuns)) delete workflowNodeRuns[key];
   latestRuns.forEach((run, index) => {
     if (run) workflowNodeRuns[workflow.nodes[index]!.id] = run;
@@ -539,6 +561,7 @@ function scheduleProductionAssetRefresh() {
 
 let refreshingAll = false;
 async function loadAll() {
+  if (loading.value || !detailActive) return;
   if (!Number.isSafeInteger(projectId.value) || projectId.value <= 0) return;
   loading.value = true;
   refreshingAll = true;
@@ -550,6 +573,12 @@ async function loadAll() {
       loadAssets(),
     ]);
     await loadFlow();
+    if (!detailActive) return;
+    locationReady = true;
+    persistLocation();
+    loadError.value = '';
+  } catch (error) {
+    if (detailActive) loadError.value = error instanceof Error ? error.message : '项目加载失败，请重试';
   } finally {
     refreshingAll = false;
     loading.value = false;
@@ -594,11 +623,9 @@ async function extractNovelEvents(row: any) {
   window.setTimeout(loadNovels, 2000);
 }
 
-async function extractAllNovelEvents() {
-  const allNovels = await getNovelData(projectId.value);
-  const ids = allNovels.filter((chapter) => chapter.eventState !== 1).map((chapter) => chapter.id);
+async function extractSelectedNovelEvents(ids: number[]) {
   if (!ids.length) {
-    message.info('没有待提取事件的章节');
+    message.info('请先选择章节');
     return;
   }
   await generateNovelEvents(projectId.value, ids);
@@ -1822,8 +1849,9 @@ function openProductionForScript(scriptId: number) {
 
 const panelContext = reactive({
   projectId, project, imageQuality, videoMode, novels, novelColumns, novelLoading,
+  productionNodeId, rememberProductionNode,
   novelPage, novelPageSize, novelTotal, changeNovelPage, importNovelFile,
-  extractAllNovelEvents, formatEventDisplay, extractNovelEvents, removeNovel, reloadNovels: loadNovels,
+  extractSelectedNovelEvents, formatEventDisplay, extractNovelEvents, removeNovel, reloadNovels: loadNovels,
   scriptChatMessages, onAgentToolResult, resetAgentWorkspace, openScriptGeneration,
   clearScriptAgentMemory,
   saveAgentWorkspace, workspaceActiveTab, workspaceTabs, renderMarkdown,
@@ -1864,6 +1892,8 @@ const panelContext = reactive({
 });
 
 watch(selectedScriptId, () => {
+  productionNodeId.value = selectedScriptId.value ? savedLocation.nodes[String(selectedScriptId.value)] : undefined;
+  persistLocation();
   // The selected episode changes synchronously while its workspace loads
   // asynchronously. Keep consumers from parsing the previous episode's plan
   // or assets during that gap.
@@ -1881,6 +1911,7 @@ watch(selectedScriptId, () => {
 });
 
 watch(activeTab, (tab) => {
+  persistLocation();
   if (tab === 'script-agent') agentType.value = 'scriptAgent';
   if (tab === 'production') agentType.value = 'productionAgent';
   if (tab !== 'production') {
@@ -1899,6 +1930,7 @@ onMounted(() => {
   void loadAll();
 });
 onBeforeUnmount(() => {
+  persistLocation();
   detailActive = false;
   loadFlowQueued = false;
   novelLoadVersion += 1;
@@ -1909,10 +1941,14 @@ onBeforeUnmount(() => {
   stopProductionAgentSync();
 });
 watch(projectId, () => {
+  locationReady = false;
+  savedLocation = locationStore.read(projectId.value);
+  activeTab.value = savedLocation.stage;
+  selectedScriptId.value = savedLocation.scriptId;
   loadedFlowProjectId.value = undefined;
   loadedFlowScriptId.value = undefined;
   void loadAll();
 });
 
-return reactive({ activeTab, stages, activePanelComponent, loading, project, statistics, router, loadAll, panelContext });
+return reactive({ loadError, activeTab, stages, activePanelComponent, loading, project, statistics, router, loadAll, panelContext });
 }

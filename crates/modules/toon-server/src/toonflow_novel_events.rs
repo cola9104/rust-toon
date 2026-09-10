@@ -48,7 +48,7 @@ pub async fn generate(
     Ok(Json(ApiResponse::new("生成事件成功")))
 }
 
-pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
+async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
     let chapter: Option<(String, String)> = sqlx::query_as(
         "SELECT chapter,chapter_data FROM toonflow.novels WHERE id=$1 AND project_id=$2",
     )
@@ -67,8 +67,8 @@ pub(crate) async fn process_chapter(pool: &PgPool, project_id: i64, id: i64) {
         .await
         .map(|model| model.to_string())
         .unwrap_or_else(|_| "universalAi".to_string());
-    // addNovel 会自动触发提取，旧客户端也可能紧接着调用 generate。用章节级
-    // advisory lock + running 检查保证同一章节不会并发创建两个任务。
+    // 手动提取可能重复提交，用章节级 advisory lock + running 检查
+    // 保证同一章节不会并发创建两个任务。
     let mut task_tx = match pool.begin().await {
         Ok(tx) => tx,
         Err(_) => return,

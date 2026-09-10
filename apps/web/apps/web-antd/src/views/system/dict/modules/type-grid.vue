@@ -7,7 +7,7 @@ import { ref } from 'vue';
 import { confirm, useVbenModal } from '@vben/common-ui';
 import { downloadFileFromBlobPart, isEmpty } from '@vben/utils';
 
-import { message } from 'ant-design-vue';
+import { Button, message } from 'ant-design-vue';
 
 import { ACTION_ICON, TableAction, useVbenVxeGrid } from '#/adapter/vxe-table';
 import {
@@ -21,7 +21,7 @@ import { $t } from '#/locales';
 import { useTypeGridColumns, useTypeGridFormSchema } from '../data';
 import TypeForm from './type-form.vue';
 
-const emit = defineEmits(['select']);
+const emit = defineEmits<{ select: [dict: SystemDictTypeApi.DictType] }>();
 
 const [TypeFormModal, typeFormModalApi] = useVbenModal({
   connectedComponent: TypeForm,
@@ -121,9 +121,6 @@ const [Grid, gridApi] = useVbenVxeGrid({
     },
   } as VxeTableGridOptions<SystemDictTypeApi.DictType>,
   gridEvents: {
-    cellClick: ({ row }: { row: SystemDictTypeApi.DictType }) => {
-      emit('select', row.type);
-    },
     checkboxAll: handleRowCheckboxChange,
     checkboxChange: handleRowCheckboxChange,
   },
@@ -134,6 +131,11 @@ const [Grid, gridApi] = useVbenVxeGrid({
   <div class="h-full">
     <TypeFormModal @success="handleRefresh" />
     <Grid table-title="字典类型列表">
+      <template #name="{ row }">
+        <Button type="link" class="!h-auto !p-0" @click.stop="emit('select', row)">
+          {{ row.name }}
+        </Button>
+      </template>
       <template #toolbar-tools>
         <TableAction
           :actions="[

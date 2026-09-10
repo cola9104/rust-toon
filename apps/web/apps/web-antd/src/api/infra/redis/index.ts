@@ -171,7 +171,8 @@ export namespace InfraRedisApi {
   export interface RedisCommandStats {
     command: string;
     calls: number;
-    usec: number;
+    usec?: number;
+    failedCalls?: number;
   }
 
   /** Redis 监控信息 */

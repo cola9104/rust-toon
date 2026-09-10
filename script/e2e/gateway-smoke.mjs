@@ -50,6 +50,22 @@ const token = login?.data?.access_token;
 assert.ok(token, 'login response did not contain an access token');
 const authenticated = { authorization: `Bearer ${token}` };
 
+// Vite/Nginx removes the browser's /api prefix. Exercise that path as well
+// as the original compatibility URL so direct-backend tests cannot hide 404s.
+for (const prefix of ['', '/api']) {
+  const post = (path, body = {}) => request(`${prefix}/task/${path}`, {
+    method: 'POST', headers: authenticated, body: JSON.stringify(body),
+  });
+  const page = (await post('getTaskApi', { page: 1, limit: 1 })).data;
+  assert.ok(Array.isArray(page.data) && page.data.length <= 1);
+  assert.equal(page.total, page.stats.total);
+  assert.ok(Array.isArray((await post('getTaskCategories')).data));
+  assert.ok(Array.isArray((await post('getProject')).data));
+  const id = page.data[0]?.id ?? 0;
+  if (process.env.E2E_TASK_ID) assert.equal(id, process.env.E2E_TASK_ID);
+  assert.equal((await post('taskDetails', { taskId: id })).data?.id ?? 0, id);
+}
+
 const me = await request('/system/auth/me', { headers: authenticated });
 assert.equal(me?.data?.username, 'admin');
 

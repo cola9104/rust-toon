@@ -113,6 +113,7 @@ export function useTypeGridColumns(): VxeTableGridOptions['columns'] {
       field: 'name',
       title: '字典名称',
       minWidth: 200,
+      slots: { default: 'name' },
     },
     {
       field: 'type',

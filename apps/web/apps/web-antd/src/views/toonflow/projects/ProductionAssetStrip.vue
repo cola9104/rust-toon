@@ -215,7 +215,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 <style scoped>
 .production-assets {
-  --production-link-color: var(--ant-color-primary, #1677ff);
+  --production-link-color: var(--ant-color-primary);
 
   overflow: hidden;
   background: var(--ant-color-bg-container);
@@ -270,7 +270,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
 
 .production-asset-columns i { font-size: 10px; font-style: normal; color: var(--ant-color-warning); text-align: center; }
 
-.production-asset-columns span:last-child { color: #d46b08; }
+.production-asset-columns span:last-child { color: var(--ant-color-warning-text); }
 
 .production-asset-row {
   display: flex;
@@ -406,7 +406,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
   border-color: var(--ant-color-primary);
 }
 
-.production-asset-generate { color: #d46b08; }
+.production-asset-generate { color: var(--ant-color-warning-text); }
 
 .production-asset-connector {
   position: relative;

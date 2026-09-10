@@ -1,41 +1,30 @@
-.toon-page {
-  --toon-ink: #171717;
-  --toon-muted: #737373;
-  --toon-line: #e8e8e8;
-  --toon-panel: #fff;
-  --toon-canvas: #f5f5f3;
-  --toon-dot: #c9c9c5;
-  --toon-primary: #171717;
-  --toon-primary-hover: #333;
-  --toon-primary-text: #fff;
-  --toon-preview-badge: #1f2937;
-  min-height: 100%;
+.toon-page, .toon-overlay {
+  --toon-ink: var(--ant-color-text, hsl(var(--foreground)));
+  --toon-muted: var(--ant-color-text-secondary, hsl(var(--muted-foreground)));
+  --toon-line: var(--ant-color-border-secondary, hsl(var(--border)));
+  --toon-panel: var(--ant-color-bg-container, hsl(var(--card)));
+  --toon-canvas: var(--ant-color-fill-quaternary, hsl(var(--muted)));
+  --toon-dot: var(--ant-color-border, hsl(var(--border)));
+  --toon-primary: var(--ant-color-primary, hsl(var(--primary)));
+  --toon-primary-hover: var(--ant-color-primary-hover, hsl(var(--primary)));
+  --toon-primary-text: var(--ant-color-text-light-solid, hsl(var(--primary-foreground)));
+  --toon-preview-badge: var(--toon-primary);
   color: var(--toon-ink);
 }
-
-.dark .toon-page {
-  --toon-ink: hsl(var(--foreground));
-  --toon-muted: hsl(var(--muted-foreground));
-  --toon-line: hsl(var(--border));
-  --toon-panel: hsl(var(--card));
-  --toon-canvas: hsl(var(--muted));
-  --toon-dot: hsl(var(--border));
-  --toon-primary: hsl(var(--primary));
-  --toon-primary-hover: hsl(var(--primary) / 85%);
-  --toon-primary-text: hsl(var(--primary-foreground));
-  --toon-preview-badge: hsl(var(--primary));
-}
+.toon-page { min-height: 100%; }
 
 .toon-page .toon-surface {
   border: 1px solid var(--toon-line);
-  border-radius: 20px;
+  border-radius: 16px;
   background: var(--toon-panel);
-  box-shadow: 0 14px 40px rgb(0 0 0 / 4%);
+  box-shadow: var(--ant-box-shadow-tertiary);
 }
 
 .toon-page .toon-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 20px;
@@ -44,7 +33,7 @@
 .toon-page .toon-title {
   margin: 0;
   font-size: 24px;
-  font-weight: 760;
+  font-weight: 650;
   letter-spacing: -.03em;
 }
 
@@ -66,14 +55,14 @@
   background-size: 18px 18px;
 }
 
-.toon-page .toon-primary.ant-btn-primary {
+.toon-page .toon-primary.ant-btn-primary:not(:disabled) {
   border-color: var(--toon-primary);
   color: var(--toon-primary-text);
   background: var(--toon-primary);
   box-shadow: none;
 }
 
-.toon-page .toon-primary.ant-btn-primary:hover {
+.toon-page .toon-primary.ant-btn-primary:not(:disabled):hover {
   border-color: var(--toon-primary-hover);
   background: var(--toon-primary-hover);
 }
@@ -91,3 +80,11 @@
   .toon-page .toon-header { align-items: flex-start; flex-direction: column; }
   .toon-page .toon-grid { grid-template-columns: 1fr; }
 }
+
+.toon-page .toon-header > .ant-space { flex-wrap: wrap; }
+.toon-page .ant-empty { display: grid; justify-items: center; align-content: center; min-height: 200px; padding: 24px; color: var(--toon-muted); }
+.toon-page .ant-empty-description { color: var(--toon-muted); }
+.toon-page .ant-empty .ant-empty-image { opacity: .8; }
+.toon-page .detail-header { flex-wrap: wrap; }
+.toon-page .toon-header > div:first-child { min-width: 0; }
+.toon-page .toon-title { overflow-wrap: anywhere; }

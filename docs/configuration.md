@@ -229,6 +229,23 @@ Worker 提供 `/livez` 和 `/readyz`。负载均衡器或编排器应使用 `/re
 
 `VITE_GLOB_API_URL=/api` 表示浏览器请求路径；开发环境中的 HTTP 与 WebSocket 请求由 Vite 代理到 `VITE_BASE_URL`。Gateway 改用其他端口时，只需同步修改 `VITE_BASE_URL`。也可以把 `VITE_GLOB_API_URL` 设置为完整后端地址直接连接，此时本地开发需要启用 `WEB_PERMISSIVE_CORS=true`。生产环境应使用同源反向代理，不要启用宽松 CORS。
 
+### 前后端路径约定
+
+Vite 和生产 Nginx 都去掉浏览器路径最前面的一个 `/api`；业务 API 文件写 Gateway 实际接收的路径，不自行拼接 `/api`。
+
+| 层级 | 任务分页示例 |
+| --- | --- |
+| 前端 `requestClient.post` | `/task/getTaskApi` |
+| 浏览器请求 | `POST /api/task/getTaskApi` |
+| Vite / Nginx 转发给 Gateway | `POST /task/getTaskApi` |
+| Rust 注册路由 | `/task/getTaskApi`，绑定 `post(query_tasks)` |
+
+旧 Toonflow 客户端仍可直连 `/api/task/getTaskApi`。兼容路由与去掉前缀的路由必须使用同一处理函数和鉴权，不能只注册旧路径后假定代理会保留前缀。新 Toonflow 接口优先使用 `/toonflow/...` 命名空间；前端声明和 Rust 路由在同一次变更中提交。
+
+任务列表及详情的 `id`、`retryOfId` 使用十进制字符串传输，避免 Snowflake ID 超过 JavaScript 安全整数范围后丢失精度。详情请求的 `taskId` 应原样传回，不使用 `Number()` 转换；后端同时接受旧客户端的整数输入。新增大整数标识字段也应采用字符串契约。
+
+`apps/web/apps/web-antd/src/api/toonflow/routes.test.ts` 自动比对前端所有请求的 HTTP 方法和路径与 Rust 注册表，并展开条件路径、动态 ID 和下载方法。该测试随前端 unit 检查进入 CI。Rust `proxy_route_tests` 验证兼容路径实际匹配到鉴权；Gateway E2E 同时验证原始路径和代理去掉前缀后的任务接口。代理部署后仍需通过浏览器域名检查接口，不能只测试 Gateway 端口。
+
 ### 2.2 生产（`.env.production`）
 
 `VITE_BASE=/`、`VITE_BASE_URL=http://127.0.0.1:8080`、`VITE_GLOB_API_URL=/api`、`VITE_UPLOAD_TYPE=server`、`VITE_COMPRESS=none`、`VITE_PWA=false`、`VITE_ROUTER_HISTORY=hash`、`VITE_INJECT_APP_LOADING=true`、`VITE_ARCHIVER=true`（构建后额外产出 `dist.zip`）、`VITE_APP_CAPTCHA_ENABLE=false`。

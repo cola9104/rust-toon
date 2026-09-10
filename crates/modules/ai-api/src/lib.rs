@@ -89,7 +89,7 @@ impl AiPlatform {
             Self::DeepSeek => "DeepSeek",
             Self::ZhiPu => "智谱清言",
             Self::XingHuo => "讯飞星火",
-            Self::DouBao => "豆包",
+            Self::DouBao => "火山引擎",
             Self::HunYuan => "腾讯混元",
             Self::SiliconFlow => "硅基流动",
             Self::MiniMax => "MiniMax",

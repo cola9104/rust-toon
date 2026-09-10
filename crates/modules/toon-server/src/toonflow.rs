@@ -168,14 +168,6 @@ pub async fn add_novel(
     tx.commit()
         .await
         .map_err(|_| AppError::internal("failed to add novel chapters"))?;
-    let pool = state.pool.clone();
-    let project_id = request.project_id;
-    let event_ids = ids.clone();
-    tokio::spawn(async move {
-        for id in event_ids {
-            crate::toonflow_novel_events::process_chapter(&pool, project_id, id).await;
-        }
-    });
     Ok(Json(ApiResponse::with_message(
         json!({ "ids": ids }),
         "新增原文成功",

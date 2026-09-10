@@ -24,6 +24,7 @@ use rust_toon_framework_web::AppError;
 use rust_toon_infra_api::InfraCapability;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 mod excel;
@@ -70,6 +71,16 @@ pub struct QueryParams {
     page_no: Option<i64>,
     #[serde(default, rename = "pageSize")]
     page_size: Option<i64>,
+    #[serde(default, rename = "userId")]
+    user_id: Option<i64>,
+    #[serde(default, rename = "userType")]
+    user_type: Option<i16>,
+    #[serde(default, rename = "applicationName")]
+    application_name: Option<String>,
+    #[serde(default)]
+    duration: Option<i32>,
+    #[serde(default, rename = "resultCode")]
+    result_code: Option<i32>,
 }
 
 pub fn routes(state: InfraState) -> Router {
@@ -1164,7 +1175,23 @@ async fn api_access_log_page(
     State(state): State<InfraState>,
     Query(params): Query<QueryParams>,
 ) -> Result<Json<ApiResponse<Page<Value>>>, AppError> {
-    page(&state.pool, "SELECT count(*) FROM infra_api_access_log WHERE deleted=0", "SELECT jsonb_build_object('id', id, 'traceId', trace_id, 'userId', user_id, 'userType', user_type, 'applicationName', application_name, 'requestMethod', request_method, 'requestUrl', request_url, 'requestParams', request_params, 'responseBody', response_body, 'userIp', user_ip, 'userAgent', user_agent, 'operateModule', operate_module, 'operateName', operate_name, 'operateType', operate_type, 'beginTime', begin_time, 'endTime', end_time, 'duration', duration, 'resultCode', result_code, 'resultMsg', result_msg, 'createTime', create_time) FROM infra_api_access_log WHERE deleted=0 ORDER BY id DESC LIMIT $1 OFFSET $2", params).await
+    let page_no = params.page_no.unwrap_or(1).max(1);
+    let page_size = params.page_size.unwrap_or(10).clamp(1, 200);
+    let offset = (page_no - 1) * page_size;
+    let mut count = QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT count(*) FROM infra_api_access_log WHERE deleted=0",
+    );
+    let mut list = QueryBuilder::<sqlx::Postgres>::new(
+        "SELECT jsonb_build_object('id', id, 'traceId', trace_id, 'userId', user_id, 'userType', user_type, 'applicationName', application_name, 'requestMethod', request_method, 'requestUrl', request_url, 'requestParams', request_params, 'responseBody', response_body, 'userIp', user_ip, 'userAgent', user_agent, 'operateModule', operate_module, 'operateName', operate_name, 'operateType', operate_type, 'beginTime', begin_time, 'endTime', end_time, 'duration', duration, 'resultCode', result_code, 'resultMsg', result_msg, 'createTime', create_time) FROM infra_api_access_log WHERE deleted=0",
+    );
+    if let Some(value) = params.user_id { count.push(" AND user_id=").push_bind(value); list.push(" AND user_id=").push_bind(value); }
+    if let Some(value) = params.user_type { count.push(" AND user_type=").push_bind(value); list.push(" AND user_type=").push_bind(value); }
+    if let Some(value) = params.application_name.as_deref().filter(|value| !value.is_empty()) { count.push(" AND application_name ILIKE ").push_bind(format!("%{value}%")); list.push(" AND application_name ILIKE ").push_bind(format!("%{value}%")); }
+    if let Some(value) = params.duration { count.push(" AND duration=").push_bind(value); list.push(" AND duration=").push_bind(value); }
+    if let Some(value) = params.result_code { count.push(" AND result_code=").push_bind(value); list.push(" AND result_code=").push_bind(value); }
+    let total: i64 = count.build_query_scalar().fetch_one(&state.pool).await.map_err(|_| AppError::internal("failed to count records"))?;
+    let list = list.push(" ORDER BY id DESC LIMIT ").push_bind(page_size).push(" OFFSET ").push_bind(offset).build_query_scalar::<Value>().fetch_all(&state.pool).await.map_err(|_| AppError::internal("failed to list records"))?;
+    Ok(Json(ApiResponse::new(Page { list, total })))
 }
 
 async fn api_error_log_page(
@@ -1213,9 +1240,15 @@ async fn redis_monitor_info_value() -> Result<Value, String> {
         .query_async(&mut connection)
         .await
         .map_err(|error| error.to_string())?;
+    // Default INFO does not include the commandstats section.
+    let command_text: String = redis::cmd("INFO")
+        .arg("commandstats")
+        .query_async(&mut connection)
+        .await
+        .map_err(|error| error.to_string())?;
     let mut info = serde_json::Map::new();
     let mut command_stats = Vec::new();
-    for line in info_text.lines() {
+    for line in info_text.lines().chain(command_text.lines()) {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -1228,7 +1261,12 @@ async fn redis_monitor_info_value() -> Result<Value, String> {
                 .find_map(|part| part.strip_prefix("calls="))
                 .and_then(|calls| calls.parse::<i64>().ok())
                 .unwrap_or(0);
-            command_stats.push(json!({"command": command, "calls": calls}));
+            let usec = value
+                .split(',')
+                .find_map(|part| part.strip_prefix("usec="))
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0);
+            command_stats.push(json!({"command": command, "calls": calls, "usec": usec}));
         } else {
             info.insert(key.to_owned(), json!(value));
         }

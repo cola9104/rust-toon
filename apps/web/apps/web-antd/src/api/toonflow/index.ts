@@ -229,7 +229,7 @@ export namespace ToonflowApi {
   }
 
   export interface ArtStyle { id: number; name: string; fileUrl: string; label: string; prompt: string; createTime: number }
-  export interface Task { id: number; projectId?: number; projectName?: string; taskClass: string; relatedObjects: string; model: string; description: string; state: string; startTime?: number; reason?: string; input?: Record<string, any>; retryOfId?: number; progressCurrent?: number; progressTotal?: number }
+  export interface Task { id: string | number; projectId?: number; projectName?: string; taskClass: string; relatedObjects: string; model: string; description: string; state: string; startTime?: number; reason?: string; input?: Record<string, any>; retryOfId?: string | number; progressCurrent?: number; progressTotal?: number }
   export interface Prompt { id: number; name: string; type: string; data: string; useData?: string; sourceKey?: string }
   export interface Skill { id: string; name: string; description: string; type: string; path: string; state: number; createTime: number; updateTime: number }
   export interface ProjectStatistics { roleCount: number; scriptCount: number; videoCount: number; storyboardCount: number }
@@ -276,6 +276,20 @@ export const getArtStyles = () => requestClient.get<ToonflowApi.ArtStyle[]>('/to
 export const saveArtStyle = (data: Partial<ToonflowApi.ArtStyle> & { name: string }) => requestClient.post('/toonflow/art-styles', data);
 export const deleteArtStyle = (id: number) => requestClient.delete(`/toonflow/art-styles/${id}`);
 export const getTasks = () => requestClient.get<ToonflowApi.Task[]>('/toonflow/tasks');
+export interface TaskQuery {
+  page: number;
+  limit: number;
+  taskClass?: string;
+  state?: string;
+  projectId?: number;
+}
+export interface TaskStats { total: number; running: number; success: number; failed: number }
+export const getTaskPage = (query: TaskQuery) => requestClient.post<{
+  data: ToonflowApi.Task[]; total: number; stats: TaskStats;
+}>('/task/getTaskApi', query);
+export const getTaskDetails = (taskId: string | number) => requestClient.post<ToonflowApi.Task | null>('/task/taskDetails', { taskId });
+export const getTaskCategories = () => requestClient.post<Array<{ taskClass: string }>>('/task/getTaskCategories');
+export const getTaskProjects = () => requestClient.post<Array<{ id: number; name: string }>>('/task/getProject');
 export const getPrompts = () => requestClient.get<ToonflowApi.Prompt[]>('/toonflow/prompts');
 export const savePrompt = (data: Partial<ToonflowApi.Prompt> & { name: string; type: string }) => requestClient.post('/toonflow/prompts', data);
 export const deletePrompt = (id: number) => requestClient.delete(`/toonflow/prompts/${id}`);

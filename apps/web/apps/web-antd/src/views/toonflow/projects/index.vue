@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onMounted, reactive, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 import { AiModelTypeEnum } from '@vben/constants';
@@ -36,6 +36,7 @@ import ToonCard from '../components/ToonCard.vue';
 defineOptions({ name: 'ToonflowProjects' });
 
 const router = useRouter();
+const route = useRoute();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -185,7 +186,29 @@ async function openProject(project: { id?: number }) {
   }
 }
 
-onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
+let routeReady = false;
+async function handleRouteIntent() {
+  if (!routeReady || route.path !== '/toonflow/projects') return;
+  if (route.query.create === '1') {
+    resetForm();
+    modalOpen.value = true;
+  } else if (typeof route.query.edit === 'string') {
+    const project = projects.value.find((item) => String(item.id) === route.query.edit);
+    if (project) await openEdit(project);
+  }
+  if (route.query.create || route.query.edit) {
+    const { create: _create, edit: _edit, ...query } = route.query;
+    await router.replace({ query });
+  }
+}
+
+watch(() => [route.query.create, route.query.edit], handleRouteIntent);
+
+onMounted(async () => {
+  await Promise.all([loadProjects(), loadManuals(), loadModels()]);
+  routeReady = true;
+  await handleRouteIntent();
+});
 </script>
 
 <template>
@@ -222,7 +245,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
       </div>
     </div>
 
-    <Modal
+    <Modal root-class-name="toon-overlay"
       v-model:open="modalOpen"
       :confirm-loading="saving"
       :title="form.id ? '编辑项目' : '新建项目'"
@@ -291,7 +314,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
 }
 
 .project-intro {
-  color: #6b7280;
+  color: var(--toon-muted);
   font-size: 12px;
   line-height: 20px;
   max-width: 420px;
@@ -299,7 +322,7 @@ onMounted(() => Promise.all([loadProjects(), loadManuals(), loadModels()]));
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.project-loading { display: grid; min-height: 280px; color: #737373; place-items: center; }
+.project-loading { display: grid; min-height: 280px; color: var(--toon-muted); place-items: center; }
 .project-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)) !important; gap: 18px; }
 .project-card { display: flex; min-height: 372px; flex-direction: column; padding: 0 !important; overflow: hidden; border: 1px solid var(--toon-line) !important; border-radius: 18px !important; background: var(--toon-panel) !important; box-shadow: 0 8px 26px rgb(0 0 0 / 10%) !important; }
 .project-card:hover { border-color: var(--ant-color-primary-border) !important; box-shadow: 0 14px 34px rgb(0 0 0 / 16%) !important; transform: translateY(-3px); }

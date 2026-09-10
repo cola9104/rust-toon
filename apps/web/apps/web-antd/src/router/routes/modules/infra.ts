@@ -149,11 +149,11 @@ const routes: RouteRecordRaw[] = [
       },
       {
         path: '/infra/traces',
-        component: () => import('#/views/infra/skywalking/index.vue'),
-        name: 'InfraRequestTraces',
+        redirect: '/infra/api-access-log',
+        name: 'InfraRequestTracesLegacy',
         meta: {
-          title: '请求链路',
-          icon: 'lucide:route',
+          title: '访问日志',
+          hideInMenu: true,
         },
       },
       {

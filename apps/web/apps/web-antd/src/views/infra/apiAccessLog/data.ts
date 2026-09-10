@@ -12,6 +12,11 @@ import { formatDateTime } from '@vben/utils';
 import { DictTag } from '#/components/dict-tag';
 import { getRangePickerDefaultProps } from '#/utils';
 
+function isSuccessfulStatus(value: unknown) {
+  const code = Number(value);
+  return Number.isFinite(code) && code >= 200 && code < 400;
+}
+
 /** 列表的搜索表单 */
 export function useGridFormSchema(): VbenFormSchema[] {
   return [
@@ -77,6 +82,11 @@ export function useGridFormSchema(): VbenFormSchema[] {
 export function useGridColumns(): VxeTableGridOptions['columns'] {
   return [
     {
+      field: 'traceId',
+      title: '链路编号',
+      minWidth: 240,
+    },
+    {
       field: 'id',
       title: '日志编号',
       minWidth: 100,
@@ -85,6 +95,7 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       field: 'userId',
       title: '用户编号',
       minWidth: 100,
+      formatter: ({ cellValue }) => cellValue ?? '未记录身份',
     },
     {
       field: 'userType',
@@ -111,8 +122,20 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       minWidth: 300,
     },
     {
+      field: 'userIp',
+      title: '来源 IP',
+      minWidth: 130,
+      formatter: ({ cellValue }) => cellValue || '未采集',
+    },
+    {
       field: 'beginTime',
       title: '请求时间',
+      minWidth: 180,
+      formatter: 'formatDateTime',
+    },
+    {
+      field: 'endTime',
+      title: '完成时间',
       minWidth: 180,
       formatter: 'formatDateTime',
     },
@@ -127,7 +150,26 @@ export function useGridColumns(): VxeTableGridOptions['columns'] {
       title: '操作结果',
       minWidth: 150,
       formatter: ({ row }) => {
-        return row.resultCode === 0 ? '成功' : `失败(${row.resultMsg})`;
+        return isSuccessfulStatus(row.resultCode)
+          ? `成功(${row.resultCode})`
+          : `失败(${row.resultCode ?? '-'}${row.resultMsg ? `：${row.resultMsg}` : ''})`;
+      },
+    },
+    {
+      field: 'resultMsg',
+      title: '结果说明',
+      minWidth: 180,
+      showOverflow: 'tooltip',
+    },
+    {
+      field: 'responseBody',
+      title: '响应摘要',
+      minWidth: 220,
+      showOverflow: 'tooltip',
+      formatter: ({ cellValue }) => {
+        if (!cellValue) return '';
+        const text = String(cellValue).replace(/\s+/g, ' ');
+        return text.length > 120 ? `${text.slice(0, 120)}…` : text;
       },
     },
     {
@@ -176,11 +218,13 @@ export function useDetailSchema(): DescriptionItemSchema[] {
     {
       field: 'userId',
       label: '用户Id',
+      render: (val) => val ?? '未记录身份（历史日志或未登录请求）',
     },
     {
       field: 'userType',
       label: '用户类型',
       render: (val) => {
+        if (val === null || val === undefined) return '未记录身份';
         return h(DictTag, {
           type: DICT_TYPE.USER_TYPE,
           value: val,
@@ -190,6 +234,7 @@ export function useDetailSchema(): DescriptionItemSchema[] {
     {
       field: 'userIp',
       label: '用户 IP',
+      render: (val) => val || '未采集',
     },
     {
       field: 'userAgent',
@@ -210,8 +255,14 @@ export function useDetailSchema(): DescriptionItemSchema[] {
       label: '请求参数',
       render: (val) => {
         if (val) {
+          let value: unknown = val;
+          try {
+            value = JSON.parse(val);
+          } catch {
+            // Some clients send plain text parameters.
+          }
           return h(JsonViewer, {
-            value: JSON.parse(val),
+            value,
             previewMode: true,
           });
         }
@@ -243,10 +294,10 @@ export function useDetailSchema(): DescriptionItemSchema[] {
       label: '操作结果',
       field: 'resultCode',
       render: (val, data) => {
-        if (val === 0) {
-          return '正常';
-        } else if (val > 0 && data?.resultMsg) {
-          return `失败 | ${val} | ${data.resultMsg}`;
+        if (isSuccessfulStatus(val)) {
+          return `正常 | ${val}`;
+        } else if (data?.resultMsg) {
+          return `失败 | ${val ?? '-'} | ${data.resultMsg}`;
         }
         return '';
       },

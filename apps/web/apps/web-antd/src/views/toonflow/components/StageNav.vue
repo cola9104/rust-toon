@@ -30,25 +30,18 @@ defineEmits<{ 'update:modelValue': [value: string] }>();
 
 <style scoped>
 .stage-nav {
-  --menu-item-color: hsl(var(--accent-foreground));
-  --menu-item-background-color: hsl(var(--menu));
-  --menu-item-hover-color: var(--menu-item-color);
-  --menu-item-hover-background-color: hsl(var(--accent));
-  --menu-item-active-color: hsl(var(--primary));
-  --menu-item-active-background-color: hsl(var(--primary) / 15%);
+  --menu-item-color: var(--toon-muted);
+  --menu-item-background-color: var(--toon-panel);
+  --menu-item-hover-color: var(--toon-ink);
+  --menu-item-hover-background-color: var(--toon-canvas);
+  --menu-item-active-color: var(--toon-primary);
+  --menu-item-active-background-color: var(--ant-color-primary-bg);
 
   display: flex;
   gap: 8px;
   align-items: stretch;
   padding: 4px 2px 14px;
   overflow-x: auto;
-}
-
-:global(.dark) .stage-nav {
-  --menu-item-color: hsl(var(--foreground) / 80%);
-  --menu-item-hover-color: hsl(var(--accent-foreground));
-  --menu-item-active-color: hsl(var(--accent-foreground));
-  --menu-item-active-background-color: hsl(var(--accent));
 }
 
 .stage-nav__item {

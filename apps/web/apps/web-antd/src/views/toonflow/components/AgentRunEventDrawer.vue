@@ -31,7 +31,7 @@ onBeforeUnmount(stopPolling);
 </script>
 
 <template>
-  <Drawer :open="open" :title="title" width="560" @close="emit('close')">
+  <Drawer root-class-name="toon-overlay" :open="open" :title="title" width="560" @close="emit('close')">
     <div class="run-meta"><Tag :color="stateColor">{{ stateLabel }}</Tag><span v-if="state === 'running'">Agent 正在执行，可继续等待</span><span v-else>事件 {{ events.length }} 条</span><a @click="emit('refresh')">刷新状态</a></div>
     <Empty v-if="!loading && events.length === 0" :description="state === 'running' ? 'Agent 已启动，等待第一条运行事件…' : '暂无运行事件'" />
     <List v-else :data-source="events" :loading="loading" item-layout="vertical">
@@ -40,4 +40,4 @@ onBeforeUnmount(stopPolling);
   </Drawer>
 </template>
 
-<style scoped>.run-meta{display:flex;align-items:center;gap:10px;margin-bottom:14px;color:#8c8c8c;font-size:12px}.run-meta a{margin-left:auto;cursor:pointer}.event-data{max-height:260px;overflow:auto;margin:0;padding:10px;border-radius:8px;white-space:pre-wrap;background:#f7f7f5;font:12px/1.6 monospace}</style>
+<style scoped>.run-meta{display:flex;align-items:center;gap:10px;margin-bottom:14px;color:var(--ant-color-text-tertiary);font-size:12px}.run-meta a{margin-left:auto;cursor:pointer}.event-data{max-height:260px;overflow:auto;margin:0;padding:10px;border-radius:8px;white-space:pre-wrap;background:var(--toon-canvas);font:12px/1.6 monospace}</style>

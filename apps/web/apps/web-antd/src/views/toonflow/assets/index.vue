@@ -3,12 +3,13 @@ import type { AssetCategory } from './asset-types';
 
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
 import {
+  Alert,
   Button,
   Card,
   Checkbox,
@@ -24,21 +25,17 @@ import {
   Space,
   Tabs,
   Tag,
+  theme,
   Typography,
 } from 'ant-design-vue';
 
 import {
   batchBindAudio,
-  cancelAssetImage,
   deleteAssets,
   generateAssetDubbing,
   getAssetLibrary,
   getProject,
   getProjects,
-  pollAssetImages,
-  polishAssetPrompt,
-  queueAssetImages,
-  retryAssetImages,
   saveAsset,
   uploadMaterial,
 } from '#/api/toonflow';
@@ -50,11 +47,25 @@ import {
   isAssetInCategory,
 } from './asset-types';
 
+import { useAssetGeneration } from './useAssetGeneration';
+
 import '../shared/page-card.css';
 import '../styles/toon-theme.css';
 
 const route = useRoute();
 const router = useRouter();
+const { token } = theme.useToken();
+const pageColors = computed(() => ({
+  '--toon-ink': token.value.colorText,
+  '--toon-muted': token.value.colorTextSecondary,
+  '--toon-line': token.value.colorBorderSecondary,
+  '--toon-panel': token.value.colorBgContainer,
+  '--asset-fill': token.value.colorFillSecondary,
+  '--asset-fill-subtle': token.value.colorFillQuaternary,
+  '--asset-primary': token.value.colorPrimary,
+  '--asset-primary-bg': token.value.colorPrimaryBg,
+  '--asset-shadow': token.value.boxShadowTertiary,
+}));
 const projects = ref<ToonflowApi.Project[]>([]);
 const assets = ref<ToonflowApi.LibraryAsset[]>([]);
 const selectedProjectId = ref<number>();
@@ -65,14 +76,16 @@ const assetModalOpen = ref(false);
 const dubbingModalOpen = ref(false);
 const dubbingResult = ref('');
 const failedImageIds = reactive(new Set<number>());
-const generatingAssetIds = reactive(new Set<number>());
-const polishingAssetIds = reactive(new Set<number>());
 const activeCategory = ref<AssetCategory>('role');
 const assetSearch = ref('');
 const selectedAssetIds = reactive(new Set<number>());
 const batchResolution = ref('2K');
-const batchRunning = ref<'image' | 'prompt'>();
-const batchProgress = ref({ current: 0, total: 0 });
+const generation = useAssetGeneration(selectedProjectId, project, assets, (id) => failedImageIds.delete(id));
+const { generationFailedIds, generatingAssetIds, polishingAssetIds, batchRunning, batchProgress,
+  batchProjectName, submitting, cancelling, statusError, cancelBatchImages } = generation;
+const loadError = ref('');
+let loadVersion = 0;
+let pageActive = true;
 
 const projectOptions = computed(() =>
   projects.value.map((item) => ({ label: item.name, value: item.id })),
@@ -100,7 +113,7 @@ const categoryCounts = computed(() =>
   ) as Record<AssetCategory, number>,
 );
 const selectedAssets = computed(() => assets.value.filter((asset) => selectedAssetIds.has(asset.id)));
-const failedSelectedAssets = computed(() => selectedAssets.value.filter((asset) => failedImageIds.has(asset.id)));
+const failedSelectedAssets = computed(() => selectedAssets.value.filter((asset) => generationFailedIds.value.has(asset.id)));
 const selectedVisibleCount = computed(() => filteredAssets.value.filter((asset) => selectedAssetIds.has(asset.id)).length);
 const allVisibleSelected = computed(() => filteredAssets.value.length > 0 && selectedVisibleCount.value === filteredAssets.value.length);
 const someVisibleSelected = computed(() => selectedVisibleCount.value > 0 && !allVisibleSelected.value);
@@ -124,27 +137,39 @@ const dubbingForm = reactive({
 });
 
 async function loadAssets() {
-  if (!selectedProjectId.value) {
+  const targetProjectId = selectedProjectId.value;
+  const version = ++loadVersion;
+  if (!targetProjectId || !pageActive) {
     assets.value = [];
     project.value = undefined;
+    loading.value = false;
     return;
   }
   loading.value = true;
   try {
-    failedImageIds.clear();
-    [assets.value, project.value] = await Promise.all([
-      getAssetLibrary(selectedProjectId.value),
-      getProject(selectedProjectId.value),
+    const [nextAssets, nextProject] = await Promise.all([
+      getAssetLibrary(targetProjectId), getProject(targetProjectId),
     ]);
+    if (!pageActive || version !== loadVersion || selectedProjectId.value !== targetProjectId) return;
+    assets.value = nextAssets;
+    project.value = nextProject;
+    failedImageIds.clear(); // Image display failures are separate from generation failures.
+    const ids = new Set(nextAssets.map((asset) => asset.id));
+    for (const id of selectedAssetIds) if (!ids.has(id)) selectedAssetIds.delete(id);
+    loadError.value = '';
+    await generation.refreshStatuses();
+  } catch (error) {
+    if (pageActive && version === loadVersion) loadError.value = error instanceof Error ? error.message : '资产加载失败，请重试';
   } finally {
-    loading.value = false;
+    if (version === loadVersion) loading.value = false;
   }
 }
 
 async function selectProject(projectId?: number) {
   selectedProjectId.value = projectId;
+  const pending = loadAssets();
   await router.replace({ query: projectId ? { projectId } : {} });
-  await loadAssets();
+  await pending;
 }
 
 function handleProjectChange(value: unknown) {
@@ -180,6 +205,7 @@ async function saveAssetForm() {
 }
 
 async function uploadMaterialFile(event: Event) {
+  const targetProjectId = selectedProjectId.value;
   if (!selectedProjectId.value) {
     message.warning('请先选择项目');
     return;
@@ -194,8 +220,9 @@ async function uploadMaterialFile(event: Event) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+  if (!pageActive || targetProjectId !== selectedProjectId.value || !targetProjectId) return;
   await uploadMaterial({
-    projectId: selectedProjectId.value,
+    projectId: targetProjectId,
     base64Data,
     type: 'clip',
     name: file.name,
@@ -204,116 +231,11 @@ async function uploadMaterialFile(event: Event) {
   await loadAssets();
 }
 
-async function polishAsset(asset: ToonflowApi.Asset) {
-  if (!selectedProjectId.value) return;
-  if (polishingAssetIds.has(asset.id)) return;
-  const messageKey = `polish-asset-${asset.id}`;
-  polishingAssetIds.add(asset.id);
-  message.loading({
-    content: `正在润色“${asset.name}”的提示词…`,
-    duration: 0,
-    key: messageKey,
-  });
-  try {
-    const result = await polishAssetPrompt({
-      assetsId: asset.id,
-      projectId: selectedProjectId.value,
-      type: asset.type,
-      name: asset.name,
-      describe: asset.description || '',
-    });
-    asset.prompt = result.prompt;
-    message.success({
-      content: `“${asset.name}”提示词润色完成`,
-      duration: 3,
-      key: messageKey,
-    });
-  } catch (error) {
-    message.error({
-      content: error instanceof Error ? error.message : `“${asset.name}”提示词润色失败`,
-      duration: 5,
-      key: messageKey,
-    });
-  } finally {
-    polishingAssetIds.delete(asset.id);
-  }
+function polishAsset(asset: ToonflowApi.Asset) {
+  return generation.polish([asset]);
 }
-
-async function generateAssetPicture(asset: ToonflowApi.Asset) {
-  if (!selectedProjectId.value || !project.value?.imageModel) {
-    message.warning('请先选择项目并配置图片模型');
-    return;
-  }
-  if (generatingAssetIds.has(asset.id)) return;
-  const messageKey = `generate-asset-${asset.id}`;
-  generatingAssetIds.add(asset.id);
-  message.loading({
-    content: `正在生成“${asset.name}”的图片，请稍候…`,
-    duration: 0,
-    key: messageKey,
-  });
-  try {
-    let visualPrompt = asset.prompt;
-    if (!visualPrompt) {
-      const polished = await polishAssetPrompt({
-        assetsId: asset.id,
-        projectId: selectedProjectId.value,
-        type: asset.type,
-        name: asset.name,
-        describe: asset.description || '',
-      });
-      visualPrompt = polished.prompt;
-    }
-    const [current] = await pollAssetImages([asset.id]);
-    if (current?.state !== '生成中') {
-      await queueAssetImages({
-        projectId: selectedProjectId.value,
-        model: String(project.value.imageModel),
-        resolution: imageQuality.value,
-        concurrentCount: 1,
-        items: [{
-          id: asset.id,
-          type: asset.type,
-          name: asset.name,
-          prompt: visualPrompt,
-        }],
-      });
-    }
-    let completed = false;
-    for (let attempt = 0; attempt < 180; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2000));
-      const [result] = await pollAssetImages([asset.id]);
-      if (!result || result.state === '生成中') continue;
-      if (result.state !== '已完成') {
-        throw new Error(result.errorReason || `“${asset.name}”图片生成失败`);
-      }
-      completed = true;
-      break;
-    }
-    if (!completed) {
-      message.info({
-        content: `“${asset.name}”仍在后台生成，可稍后刷新查看`,
-        duration: 5,
-        key: messageKey,
-      });
-      return;
-    }
-    failedImageIds.delete(asset.id);
-    await loadAssets();
-    message.success({
-      content: `“${asset.name}”图片生成完成`,
-      duration: 3,
-      key: messageKey,
-    });
-  } catch (error) {
-    message.error({
-      content: error instanceof Error ? error.message : `“${asset.name}”图片生成失败`,
-      duration: 5,
-      key: messageKey,
-    });
-  } finally {
-    generatingAssetIds.delete(asset.id);
-  }
+function generateAssetPicture(asset: ToonflowApi.Asset) {
+  return generation.generate([asset], imageQuality.value ?? '2K');
 }
 
 function selectVisible(mode: 'all' | 'empty' | 'invert' | 'missing') {
@@ -338,131 +260,14 @@ function toggleAsset(id: number, checked: boolean) {
   checked ? selectedAssetIds.add(id) : selectedAssetIds.delete(id);
 }
 
-async function batchPolish() {
-  if (!selectedProjectId.value || !selectedAssets.value.length) return message.warning('请先选择资产');
-  batchRunning.value = 'prompt';
-  batchProgress.value = { current: 0, total: selectedAssets.value.length };
-  try {
-    await Promise.all(selectedAssets.value.map(async (asset) => {
-      polishingAssetIds.add(asset.id);
-      try {
-        const result = await polishAssetPrompt({ assetsId: asset.id, projectId: selectedProjectId.value!, type: asset.type, name: asset.name, describe: asset.description || '' });
-        asset.prompt = result.prompt;
-      } finally { polishingAssetIds.delete(asset.id); batchProgress.value.current += 1; }
-    }));
-    message.success(`已生成 ${selectedAssets.value.length} 条提示词`);
-  } finally { batchRunning.value = undefined; batchProgress.value = { current: 0, total: 0 }; }
+function batchPolish() {
+  return generation.polish([...selectedAssets.value], true);
 }
-
-async function batchGenerateImages() {
-  if (!selectedProjectId.value || !project.value?.imageModel || !selectedAssets.value.length) return message.warning('请选择资产并配置图片模型');
-  batchRunning.value = 'image';
-  const targets = [...selectedAssets.value];
-  batchProgress.value = { current: 0, total: targets.length };
-  targets.forEach((asset) => generatingAssetIds.add(asset.id));
-  try {
-    const items = await Promise.all(targets.map(async (asset) => {
-      let prompt = asset.prompt;
-      if (!prompt) {
-        const result = await polishAssetPrompt({ assetsId: asset.id, projectId: selectedProjectId.value!, type: asset.type, name: asset.name, describe: asset.description || '' });
-        prompt = result.prompt;
-        asset.prompt = prompt;
-      }
-      return { id: asset.id, type: asset.type, name: asset.name, prompt };
-    }));
-    await queueAssetImages({ projectId: selectedProjectId.value, model: String(project.value.imageModel), resolution: batchResolution.value, concurrentCount: 5, items });
-    const pending = new Set(targets.map((asset) => asset.id));
-    for (let attempt = 0; attempt < 180 && pending.size; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2000));
-      const results = await pollAssetImages([...pending]);
-      for (const result of results) {
-        if (result.state === '生成中') continue;
-        pending.delete(result.id);
-        batchProgress.value.current += 1;
-        generatingAssetIds.delete(result.id);
-        if (result.state !== '已完成') failedImageIds.add(result.id);
-      }
-    }
-    // 超过轮询窗口仍未返回终态时，按失败处理，保证用户可以显式重试。
-    for (const id of pending) {
-      failedImageIds.add(id);
-      generatingAssetIds.delete(id);
-    }
-    await loadAssets();
-    const failedCount = targets.filter((asset) => failedImageIds.has(asset.id)).length;
-    if (failedCount) {
-      message.warning(`批量图片任务完成，${failedCount} 项失败，可在左侧重试`);
-    } else {
-      message.success('批量图片任务已完成');
-    }
-  } finally {
-    targets.forEach((asset) => generatingAssetIds.delete(asset.id));
-    batchRunning.value = undefined;
-    batchProgress.value = { current: 0, total: 0 };
-  }
+function batchGenerateImages() {
+  return generation.generate([...selectedAssets.value], batchResolution.value);
 }
-
-async function cancelBatchImages() {
-  if (batchRunning.value !== 'image') return;
-  const ids = [...generatingAssetIds];
-  if (!ids.length) return;
-  try {
-    await Promise.all(ids.map((id) => cancelAssetImage(id)));
-    ids.forEach((id) => {
-      generatingAssetIds.delete(id);
-      failedImageIds.add(id);
-    });
-    message.success(`已取消 ${ids.length} 项图片任务，可稍后重试`);
-  } catch (error) {
-    message.error(error instanceof Error ? error.message : '批量取消失败');
-  } finally {
-    batchRunning.value = undefined;
-    batchProgress.value = { current: 0, total: 0 };
-  }
-}
-
-async function retryFailedImages() {
-  const failedTargets = [...failedSelectedAssets.value];
-  if (!failedTargets.length) return message.info('当前没有失败的批量图片任务');
-  const previousSelection = new Set(selectedAssetIds);
-  selectedAssetIds.clear();
-  failedTargets.forEach((asset) => selectedAssetIds.add(asset.id));
-  failedTargets.forEach((asset) => failedImageIds.delete(asset.id));
-  batchRunning.value = 'image';
-  batchProgress.value = { current: 0, total: failedTargets.length };
-  failedTargets.forEach((asset) => generatingAssetIds.add(asset.id));
-  try {
-    await retryAssetImages({ projectId: selectedProjectId.value!, ids: failedTargets.map((asset) => asset.id), concurrentCount: 5 });
-    const pending = new Set(failedTargets.map((asset) => asset.id));
-    for (let attempt = 0; attempt < 180 && pending.size; attempt += 1) {
-      await new Promise((resolve) => window.setTimeout(resolve, 2000));
-      const results = await pollAssetImages([...pending]);
-      for (const result of results) {
-        if (result.state === '生成中') continue;
-        pending.delete(result.id);
-        batchProgress.value.current += 1;
-        generatingAssetIds.delete(result.id);
-        if (result.state !== '已完成') failedImageIds.add(result.id);
-      }
-    }
-    for (const id of pending) {
-      failedImageIds.add(id);
-      generatingAssetIds.delete(id);
-    }
-    await loadAssets();
-    const failedCount = failedTargets.filter((asset) => failedImageIds.has(asset.id)).length;
-    if (failedCount) message.warning(`${failedCount} 项图片重试失败，请稍后再次尝试`);
-    else message.success(`已重试 ${failedTargets.length} 项失败图片`);
-  } catch (error) {
-    failedTargets.forEach((asset) => failedImageIds.add(asset.id));
-    message.error(error instanceof Error ? error.message : '失败图片重试未提交');
-  } finally {
-    failedTargets.forEach((asset) => generatingAssetIds.delete(asset.id));
-    batchRunning.value = undefined;
-    batchProgress.value = { current: 0, total: 0 };
-    selectedAssetIds.clear();
-    previousSelection.forEach((id) => selectedAssetIds.add(id));
-  }
+function retryFailedImages() {
+  return generation.generate([...failedSelectedAssets.value], batchResolution.value, true);
 }
 
 async function matchAssetVoice(asset: ToonflowApi.Asset) {
@@ -517,6 +322,7 @@ async function createDubbing() {
 
 onMounted(async () => {
   projects.value = await getProjects();
+  if (!pageActive) return;
   const queryProjectId = Number(route.query.projectId);
   selectedProjectId.value = Number.isFinite(queryProjectId) && queryProjectId > 0
     ? queryProjectId
@@ -531,10 +337,33 @@ watch(() => route.query.projectId, (value) => {
     void loadAssets();
   }
 });
+watch(selectedProjectId, () => {
+  loadVersion += 1;
+  assets.value = [];
+  project.value = undefined;
+  selectedAssetIds.clear();
+  failedImageIds.clear();
+  assetModalOpen.value = false;
+  dubbingModalOpen.value = false;
+  loadError.value = '';
+}, { flush: 'sync' });
+onActivated(() => {
+  const wasInactive = !pageActive;
+  pageActive = true;
+  generation.start();
+  if (wasInactive) void loadAssets();
+});
+function suspend() {
+  pageActive = false;
+  loadVersion += 1;
+  generation.stop();
+}
+onDeactivated(suspend);
+onBeforeUnmount(suspend);
 </script>
 
 <template>
-  <Page auto-content-height class="toon-page">
+  <Page auto-content-height class="toon-page" :style="pageColors">
     <div class="toonflow-page-shell">
       <div class="toon-header asset-header">
         <div class="asset-heading"><div class="asset-heading-title"><h1 class="toon-title">资产库</h1><Tag :bordered="false">{{ assets.length }} 项项目资产</Tag></div><p class="toon-subtitle">按项目管理角色、场景、道具和服装资产。</p></div>
@@ -542,6 +371,7 @@ watch(() => route.query.projectId, (value) => {
           <Select
             :options="projectOptions"
             :value="selectedProjectId"
+            :disabled="submitting"
             placeholder="选择项目"
             style="width: 220px"
             @change="handleProjectChange"
@@ -553,8 +383,9 @@ watch(() => route.query.projectId, (value) => {
             type="file"
             @change="uploadMaterialFile"
           />
-          <Button :disabled="!selectedProjectId" @click="materialInput?.click()">上传素材</Button>
-          <Button :disabled="!selectedProjectId" type="primary" @click="openAsset()">新增资产</Button>
+          <Button :loading="loading" :disabled="!selectedProjectId" @click="loadAssets">刷新资产</Button>
+          <Button :disabled="!project || loading" @click="materialInput?.click()">上传素材</Button>
+          <Button :disabled="!project || loading" type="primary" @click="openAsset()">新增资产</Button>
         </Space>
       </div>
 
@@ -562,6 +393,11 @@ watch(() => route.query.projectId, (value) => {
         资产按项目隔离；选择项目后，只显示并使用该项目创建的资产。
       </Typography.Paragraph>
 
+      <Alert v-if="loadError" type="error" show-icon :message="loadError" class="mb-3" />
+      <Alert v-if="statusError" type="warning" show-icon :message="`生成状态同步失败：${statusError}`" class="mb-3">
+        <template #action><Button size="small" @click="generation.refreshStatuses">重新同步</Button></template>
+      </Alert>
+      <Alert v-if="generatingAssetIds.size" type="info" show-icon message="生成任务会在所属项目后台继续执行，切回项目后自动同步进度。" class="mb-3" />
       <Empty v-if="!selectedProjectId" description="请先选择项目" />
       <template v-else>
         <div class="asset-workspace">
@@ -575,10 +411,10 @@ watch(() => route.query.projectId, (value) => {
             <Button block @click="selectVisible('invert')">反选当前分类</Button>
             <label>统一模型</label><Input :value="project?.imageModel ? `项目模型 #${project.imageModel}` : '未配置'" disabled />
             <label>分辨率</label><Select v-model:value="batchResolution" :options="['1K','2K','4K'].map(value=>({label:value,value}))" />
-            <div v-if="batchRunning" class="batch-progress">{{ batchRunning === 'image' ? '图片生成' : '提示词生成' }}：{{ batchProgress.current }}/{{ batchProgress.total }}</div>
-            <Button v-if="batchRunning === 'image'" block danger @click="cancelBatchImages">取消当前图片任务</Button>
+            <div v-if="batchRunning" class="batch-progress">项目：{{ batchProjectName }} · {{ batchRunning === 'image' ? '图片生成' : '提示词生成' }}：{{ batchProgress.current }}/{{ batchProgress.total }}</div>
+            <Button v-if="batchRunning === 'image'" block danger :disabled="submitting" :loading="cancelling" @click="cancelBatchImages">取消当前图片任务</Button>
             <Button block :loading="batchRunning==='prompt'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchPolish">批量生成提示词</Button>
-            <Button block class="toon-primary" type="primary" :loading="batchRunning==='image'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchGenerateImages">批量生成图片</Button>
+            <Button block type="primary" :loading="batchRunning==='image'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchGenerateImages">批量生成图片</Button>
             <Button v-if="failedSelectedAssets.length" block danger :disabled="!!batchRunning" @click="retryFailedImages">重试失败图片（{{ failedSelectedAssets.length }}）</Button>
           </aside>
           <main class="asset-content">
@@ -648,9 +484,11 @@ watch(() => route.query.projectId, (value) => {
                 :title="item.name"
               />
               <div v-if="item.prompt" class="asset-prompt" :title="item.prompt">
-                <Tag color="blue">AI 提示词</Tag>
+                <Tag class="asset-prompt-tag" :bordered="false">AI 提示词</Tag>
                 <span class="asset-prompt-text">{{ item.prompt }}</span>
               </div>
+              <Tag v-if="generationFailedIds.has(item.id)" color="error" class="mt-3" :title="item.imageErrorReason">{{ item.imageState === '已取消' ? '已取消' : '生成失败' }}{{ item.imageErrorReason ? `：${item.imageErrorReason}` : '' }}</Tag>
+              <Tag v-else-if="failedImageIds.has(item.id)" color="warning" class="mt-3">图片加载失败，可刷新重试</Tag>
               <div class="asset-meta">
                 <Typography.Text type="secondary">当前项目资产</Typography.Text>
               </div>
@@ -660,6 +498,7 @@ watch(() => route.query.projectId, (value) => {
                   <Button
                     v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
                     :loading="polishingAssetIds.has(item.id)"
+                    :disabled="!!batchRunning || loading"
                     type="link"
                     @click="polishAsset(item)"
                   >
@@ -667,6 +506,7 @@ watch(() => route.query.projectId, (value) => {
                   </Button>
                   <Button
                     :loading="generatingAssetIds.has(item.id)"
+                    :disabled="!!batchRunning || polishingAssetIds.has(item.id) || loading"
                     type="link"
                     @click="generateAssetPicture(item)"
                   >
@@ -678,7 +518,7 @@ watch(() => route.query.projectId, (value) => {
                   <Button v-if="item.type === 'role'" type="link" @click="openDubbing(item)">
                     生成配音
                   </Button>
-                  <Button danger type="link" @click="removeAsset(item)">删除</Button>
+                  <Button danger type="link" :disabled="generatingAssetIds.has(item.id) || polishingAssetIds.has(item.id)" @click="removeAsset(item)">删除</Button>
                 </Space>
               </div>
             </Card>
@@ -689,7 +529,7 @@ watch(() => route.query.projectId, (value) => {
       </template>
     </div>
 
-    <Modal v-model:open="assetModalOpen" title="资产" width="760px" @ok="saveAssetForm">
+    <Modal root-class-name="toon-overlay" v-model:open="assetModalOpen" title="资产" width="760px" @ok="saveAssetForm">
       <Form :label-col="{ span: 4 }">
         <Form.Item label="名称"><Input v-model:value="assetForm.name" /></Form.Item>
         <Form.Item label="类型">
@@ -708,7 +548,7 @@ watch(() => route.query.projectId, (value) => {
       </Form>
     </Modal>
 
-    <Modal
+    <Modal root-class-name="toon-overlay"
       v-model:open="dubbingModalOpen"
       :title="`生成配音 · ${dubbingForm.assetName}`"
       width="720px"
@@ -741,7 +581,9 @@ watch(() => route.query.projectId, (value) => {
 .asset-heading { min-width: 0; }
 .asset-heading-title { display: flex; align-items: center; gap: 10px; }
 .asset-heading-title .toon-title { margin: 0; }
-.asset-heading-title .ant-tag { margin: 0; border-radius: 999px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); }
+.asset-heading-title .ant-tag { margin: 0; border-radius: 999px; }
+.asset-heading-title .ant-tag,
+.asset-prompt-tag { color: var(--asset-primary); background: var(--asset-primary-bg); }
 .asset-library-tip { margin-bottom: 16px; }.asset-category-tabs { margin-bottom: 4px; }
 .category-count { margin-inline-end: 0; }
 .asset-toolbar {
@@ -750,7 +592,7 @@ watch(() => route.query.projectId, (value) => {
   justify-content: space-between;
   margin-bottom: 16px;
 }
-.asset-loading { color: var(--ant-color-text-secondary); padding: 64px; text-align: center; }
+.asset-loading { color: var(--toon-muted); padding: 64px; text-align: center; }
 .asset-card-column { display: flex; }
 .asset-card {
   display: flex;
@@ -766,7 +608,7 @@ watch(() => route.query.projectId, (value) => {
   flex-direction: column;
 }
 .asset-cover {
-  background: var(--ant-color-fill-secondary);
+  background: var(--asset-fill);
   box-sizing: border-box;
   height: 200px;
   overflow: hidden;
@@ -786,8 +628,7 @@ watch(() => route.query.projectId, (value) => {
 }
 .asset-placeholder {
   align-items: center;
-  background: var(--ant-color-fill-secondary);
-  color: var(--ant-color-text-secondary);
+  color: var(--toon-muted);
   display: flex;
   height: 100%;
   justify-content: center;
@@ -801,20 +642,20 @@ watch(() => route.query.projectId, (value) => {
   margin-top: 12px;
   padding: 8px;
   border-radius: 6px;
-  background: var(--ant-color-fill-quaternary);
+  background: var(--asset-fill-subtle);
 }
 .asset-prompt-text {
   display: -webkit-box;
   overflow: hidden;
-  color: var(--ant-color-text-secondary);
+  color: var(--toon-muted);
   font-size: 12px;
   line-height: 18px;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
-.asset-actions { border-top: 1px solid var(--ant-color-border-secondary); margin-top: auto; padding-top: 8px; }
-.asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 220px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 16px; z-index: 4; display: grid; max-height: calc(100vh - 132px); overflow: auto; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: color-mix(in srgb, #fafaf8 92%, transparent); box-shadow: 0 8px 24px rgb(15 23 42 / 7%); gap: 8px; }.batch-title,.batch-selection { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.batch-selection { padding: 6px 0 9px; border-bottom: 1px solid var(--toon-line); }.batch-selection span { color: #8c8c8c; font-size: 11px; white-space: nowrap; }.batch-progress { padding: 7px 9px; border-radius: 7px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); font-size: 12px; text-align: center; }.batch-sidebar label { margin-top: 7px; color: #8c8c8c; font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: rgb(255 255 255 / 90%); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
+.asset-actions { border-top: 1px solid var(--toon-line); margin-top: auto; padding-top: 8px; }
+.asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 220px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 16px; z-index: 4; display: grid; max-height: calc(100vh - 132px); overflow: auto; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: var(--toon-panel); box-shadow: var(--asset-shadow); gap: 8px; }.batch-title,.batch-selection { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.batch-selection { padding: 6px 0 9px; border-bottom: 1px solid var(--toon-line); }.batch-selection > span { color: var(--toon-muted); font-size: 11px; white-space: nowrap; }.batch-progress { padding: 7px 9px; border-radius: 7px; color: var(--asset-primary); background: var(--asset-primary-bg); font-size: 12px; text-align: center; }.batch-sidebar > label { margin-top: 7px; color: var(--toon-muted); font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: var(--toon-panel); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
 @media (max-width: 640px) {
   .asset-header { align-items: stretch; flex-direction: column; }
   .asset-header > .ant-space { width: 100%; }

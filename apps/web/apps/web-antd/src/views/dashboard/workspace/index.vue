@@ -1,287 +1,85 @@
-<script lang="ts" setup>
-import type {
-  WorkbenchProjectItem,
-  WorkbenchQuickNavItem,
-  WorkbenchTodoItem,
-  WorkbenchTrendItem,
-} from '@vben/common-ui';
-
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue';
+<script setup lang="ts">
+import type { DashboardProject } from '../toonflow-dashboard';
+import { computed } from 'vue';
 import { useRouter } from 'vue-router';
+import { Page } from '@vben/common-ui';
+import { IconifyIcon } from '@vben/icons';
+import { Alert, Button, Empty, Skeleton, Tag } from 'ant-design-vue';
+import { formatDashboardTime, taskState, taskTypeLabel, useToonflowDashboard } from '../toonflow-dashboard';
 
-import {
-  AnalysisChartCard,
-  WorkbenchHeader,
-  WorkbenchProject,
-  WorkbenchQuickNav,
-  WorkbenchTodo,
-  WorkbenchTrends,
-} from '@vben/common-ui';
-import { preferences } from '@vben/preferences';
-import { useUserStore } from '@vben/stores';
-import { openWindow } from '@vben/utils';
-
-const AnalyticsVisitsSource = defineAsyncComponent(
-  () => import('../analytics/analytics-visits-source.vue'),
-);
-
-const userStore = useUserStore();
-const chartContainer = ref<HTMLElement>();
-const chartReady = ref(false);
-let chartObserver: IntersectionObserver | undefined;
-
-onMounted(() => {
-  if (!chartContainer.value || typeof IntersectionObserver === 'undefined') {
-    chartReady.value = true;
-    return;
-  }
-  chartObserver = new IntersectionObserver(
-    ([entry]) => {
-      if (!entry?.isIntersecting) return;
-      chartReady.value = true;
-      chartObserver?.disconnect();
-      chartObserver = undefined;
-    },
-    { threshold: 0.1 },
-  );
-  chartObserver.observe(chartContainer.value);
-});
-
-onBeforeUnmount(() => chartObserver?.disconnect());
-
-// 这是一个示例数据，实际项目中需要根据实际情况进行调整
-// url 也可以是内部路由，在 navTo 方法中识别处理，进行内部跳转
-// 例如：url: /dashboard/workspace
-const projectItems: WorkbenchProjectItem[] = [
-  {
-    color: '#6DB33F',
-    content: 'github.com/YunaiV/ruoyi-vue-pro',
-    date: '2025-01-02',
-    group: 'Spring Boot 单体架构',
-    icon: 'simple-icons:springboot',
-    title: 'ruoyi-vue-pro',
-    url: 'https://github.com/YunaiV/ruoyi-vue-pro',
-  },
-  {
-    color: '#409EFF',
-    content: 'github.com/yudaocode/yudao-ui-admin-vue3',
-    date: '2025-02-03',
-    group: 'Vue3 + element-plus 管理后台',
-    icon: 'ep:element-plus',
-    title: 'yudao-ui-admin-vue3',
-    url: 'https://github.com/yudaocode/yudao-ui-admin-vue3',
-  },
-  {
-    color: '#ff4d4f',
-    content: 'github.com/yudaocode/yudao-mall-uniapp',
-    date: '2025-03-04',
-    group: 'Vue3 + uniapp 商城手机端',
-    icon: 'icon-park-outline:mall-bag',
-    title: 'yudao-mall-uniapp',
-    url: 'https://github.com/yudaocode/yudao-mall-uniapp',
-  },
-  {
-    color: '#1890ff',
-    content: 'github.com/YunaiV/yudao-cloud',
-    date: '2025-04-05',
-    group: 'Spring Cloud 微服务架构',
-    icon: 'material-symbols:cloud-outline',
-    title: 'yudao-cloud',
-    url: 'https://github.com/YunaiV/yudao-cloud',
-  },
-  {
-    color: '#e18525',
-    content: 'github.com/yudaocode/yudao-ui-admin-vben',
-    date: '2025-05-06',
-    group: 'Vue3 + vben5(antd) 管理后台',
-    icon: 'devicon:antdesign',
-    title: 'yudao-ui-admin-vben',
-    url: 'https://github.com/yudaocode/yudao-ui-admin-vben',
-  },
-  {
-    color: '#2979ff',
-    content: 'github.com/yudaocode/yudao-ui-admin-uniapp',
-    date: '2025-06-01',
-    group: 'Vue3 + uniapp 管理手机端',
-    icon: 'ant-design:mobile',
-    title: 'yudao-ui-admin-uniapp',
-    url: 'https://github.com/yudaocode/yudao-ui-admin-uniapp',
-  },
-];
-
-// 同样，这里的 url 也可以使用以 http 开头的外部链接
-const quickNavItems: WorkbenchQuickNavItem[] = [
-  {
-    color: '#1fdaca',
-    icon: 'ion:home-outline',
-    title: '首页',
-    url: '/',
-  },
-  {
-    color: '#ff6b6b',
-    icon: 'lucide:shopping-bag',
-    title: '商城中心',
-    url: '/mall',
-  },
-  {
-    color: '#7c3aed',
-    icon: 'tabler:ai',
-    title: 'AI 大模型',
-    url: '/ai',
-  },
-  {
-    color: '#3fb27f',
-    icon: 'simple-icons:erpnext',
-    title: 'ERP 系统',
-    url: '/erp',
-  },
-  {
-    color: '#4daf1bc9',
-    icon: 'simple-icons:civicrm',
-    title: 'CRM 系统',
-    url: '/crm',
-  },
-  {
-    color: '#1a73e8',
-    icon: 'fa-solid:hdd',
-    title: 'IoT 物联网',
-    url: '/iot',
-  },
-];
-
-const todoItems = ref<WorkbenchTodoItem[]>([
-  {
-    completed: false,
-    content: `系统支持 JDK 8/17/21，Vue 2/3`,
-    date: '2024-07-15 09:30:00',
-    title: '技术兼容性',
-  },
-  {
-    completed: false,
-    content: `后端提供 Spring Boot 2.7/3.2 + Cloud 双架构`,
-    date: '2024-08-30 14:20:00',
-    title: '架构灵活性',
-  },
-  {
-    completed: false,
-    content: `全部开源，个人与企业可 100% 直接使用，无需授权`,
-    date: '2024-07-25 16:45:00',
-    title: '开源免授权',
-  },
-  {
-    completed: false,
-    content: `国内使用最广泛的快速开发平台，远超 10w+ 企业使用`,
-    date: '2024-07-10 11:15:00',
-    title: '广泛企业认可',
-  },
-]);
-const trendItems: WorkbenchTrendItem[] = [
-  {
-    avatar: 'svg:avatar-1',
-    content: `在 <a>开源组</a> 创建了项目 <a>Vue</a>`,
-    date: '刚刚',
-    title: '威廉',
-  },
-  {
-    avatar: 'svg:avatar-2',
-    content: `关注了 <a>威廉</a> `,
-    date: '1个小时前',
-    title: '艾文',
-  },
-  {
-    avatar: 'svg:avatar-3',
-    content: `发布了 <a>个人动态</a> `,
-    date: '1天前',
-    title: '克里斯',
-  },
-  {
-    avatar: 'svg:avatar-4',
-    content: `发表文章 <a>如何编写一个Vite插件</a> `,
-    date: '2天前',
-    title: 'Vben',
-  },
-  {
-    avatar: 'svg:avatar-1',
-    content: `回复了 <a>杰克</a> 的问题 <a>如何进行项目优化？</a>`,
-    date: '3天前',
-    title: '皮特',
-  },
-  {
-    avatar: 'svg:avatar-2',
-    content: `关闭了问题 <a>如何运行项目</a> `,
-    date: '1周前',
-    title: '杰克',
-  },
-  {
-    avatar: 'svg:avatar-3',
-    content: `发布了 <a>个人动态</a> `,
-    date: '1周前',
-    title: '威廉',
-  },
-  {
-    avatar: 'svg:avatar-4',
-    content: `推送了代码到 <a>Github</a>`,
-    date: '2021-04-01 20:00',
-    title: '威廉',
-  },
-  {
-    avatar: 'svg:avatar-4',
-    content: `发表文章 <a>如何编写使用 Admin Vben</a> `,
-    date: '2021-03-01 20:00',
-    title: 'Vben',
-  },
-];
-
+defineOptions({ name: 'Workspace' });
 const router = useRouter();
-
-// 这是一个示例方法，实际项目中需要根据实际情况进行调整
-// This is a sample method, adjust according to the actual project requirements
-function navTo(nav: WorkbenchProjectItem | WorkbenchQuickNavItem) {
-  if (nav.url?.startsWith('http')) {
-    openWindow(nav.url);
-    return;
-  }
-  if (nav.url?.startsWith('/')) {
-    router.push(nav.url).catch((error) => {
-      console.error('Navigation failed:', error);
-    });
-  } else {
-    console.warn(`Unknown URL for navigation item: ${nav.title} -> ${nav.url}`);
-  }
+const { load, loading, loadError, projects, tasks, taskStats, totals, failures, updatedAt } = useToonflowDashboard();
+const recentProjects = computed(() => projects.value.slice(0, 4));
+const featured = computed(() => recentProjects.value[0]);
+const missing = computed(() => projects.value.filter((project) => project.missingModels.length));
+const shortcuts = [
+  { icon: 'lucide:folders', label: '全部项目', path: '/toonflow/projects' },
+  { icon: 'lucide:images', label: '资产中心', path: '/toonflow/assets' },
+  { icon: 'lucide:bot', label: '模型与 Agent', path: '/toonflow/settings' },
+  { icon: 'lucide:notebook-tabs', label: '创作手册', path: '/toonflow/manuals' },
+];
+function continueProject(project: DashboardProject) {
+  // Omit stage so the existing per-user project location restores the last visit.
+  void router.push({ name: 'ToonflowProjectDetail', params: { id: String(project.id) } });
+}
+function nextStep(project: DashboardProject) {
+  void router.push({ name: 'ToonflowProjectDetail', params: { id: String(project.id) }, query: project.nextStage ? { stage: project.nextStage } : undefined });
 }
 </script>
 
 <template>
-  <div class="p-5">
-    <WorkbenchHeader
-      :avatar="userStore.userInfo?.avatar || preferences.app.defaultAvatar"
-    >
-      <template #title>
-        早安, {{ userStore.userInfo?.nickname }}, 开始您一天的工作吧！
-      </template>
-      <template #description> 今日晴，20℃ - 32℃！ </template>
-    </WorkbenchHeader>
+  <Page class="toon-page studio-dashboard">
+    <div class="studio-shell">
+      <header class="studio-header">
+        <div><span class="studio-eyebrow">TOONFLOW / WORKSPACE</span><h1>创作工作台</h1><p>继续手上的故事，让下一步更清楚。</p></div>
+        <div class="studio-actions"><span class="studio-sync">{{ updatedAt ? `更新于 ${formatDashboardTime(updatedAt)}` : '读取创作数据' }}</span><Button :loading="loading" @click="load">刷新</Button><Button type="primary" @click="router.push({ name: 'ToonflowProjects', query: { create: '1' } })">＋ 新建项目</Button></div>
+      </header>
+      <Alert v-if="loadError" :message="loadError" show-icon type="warning" />
+      <Skeleton v-if="loading && !updatedAt" active :paragraph="{ rows: 8 }" />
+      <template v-else>
+        <div class="workspace-layout">
+          <main class="studio-column">
+            <section v-if="featured" class="studio-panel feature-project">
+              <div class="feature-top"><span class="studio-eyebrow">最近更新的项目</span><Tag color="processing">{{ featured.stageLabel }}</Tag></div>
+              <h2>{{ featured.name }}</h2>
+              <p class="feature-intro">{{ featured.intro || '从原文、剧本到分镜，让故事逐步成为画面。' }}</p>
+              <div class="project-milestones" aria-label="项目现有内容">
+                <span :class="{ present: featured.chapters }"><i />原文<b>{{ featured.chapters ?? '—' }}</b></span>
+                <span :class="{ present: featured.statistics?.scriptCount }"><i />剧本<b>{{ featured.statistics?.scriptCount ?? '—' }}</b></span>
+                <span :class="{ present: featured.statistics?.storyboardCount }"><i />分镜<b>{{ featured.statistics?.storyboardCount ?? '—' }}</b></span>
+                <span :class="{ present: featured.renders }"><i />成片剧集<b>{{ featured.renders ?? '—' }}</b></span>
+              </div>
+              <div class="next-step"><IconifyIcon icon="lucide:arrow-right" /><div><b>建议下一步 · {{ featured.nextAction }}</b><p>{{ featured.nextHint }}</p></div></div>
+              <div class="feature-footer"><Button type="primary" size="large" @click="continueProject(featured)">继续创作 <span aria-hidden="true">→</span></Button><Button type="text" @click="nextStep(featured)">{{ featured.nextAction }}</Button><span>自动恢复上次创作位置</span></div>
+            </section>
+            <section v-else class="studio-panel"><Empty description="第一部作品，从一个故事开始"><Button type="primary" @click="router.push({ name: 'ToonflowProjects', query: { create: '1' } })">创建项目</Button></Empty></section>
 
-    <div class="flex flex-col lg:flex-row">
-      <div class="mr-4 w-full lg:w-3/5">
-        <WorkbenchProject :items="projectItems" title="项目" @click="navTo" />
-        <WorkbenchTrends :items="trendItems" class="mt-5" title="最新动态" />
-      </div>
-      <div class="w-full lg:w-2/5">
-        <WorkbenchQuickNav
-          :items="quickNavItems"
-          class="lg:mt-0"
-          title="快捷导航"
-          @click="navTo"
-        />
-        <WorkbenchTodo :items="todoItems" class="mt-5" title="待办事项" />
-        <div ref="chartContainer">
-          <AnalysisChartCard class="mt-5" title="访问来源">
-            <AnalyticsVisitsSource v-if="chartReady" />
-            <div v-else class="h-[300px]" aria-hidden="true"></div>
-          </AnalysisChartCard>
+            <section class="studio-panel">
+              <div class="studio-section-head"><div><h2>最近生成活动</h2><p>最近 6 条记录，点击查看任务详情</p></div><Button type="link" @click="router.push({ name: 'ToonflowTasks' })">全部任务 →</Button></div>
+              <Empty v-if="!tasks.length" :description="taskStats ? '还没有生成任务' : '任务数据暂不可用'" />
+              <div v-else class="activity-list"><button v-for="task in tasks.slice(0, 6)" :key="task.id" type="button" @click="router.push({ name: 'ToonflowTasks', query: { taskId: String(task.id) } })"><span class="studio-icon"><IconifyIcon :icon="task.taskClass === 'novelEvent' ? 'lucide:book-open' : task.taskClass.toLowerCase().includes('video') ? 'lucide:film' : 'lucide:image'" /></span><span class="activity-copy"><b>{{ task.description || taskTypeLabel(task.taskClass) }}</b><small>{{ task.projectName || '未关联项目' }} · {{ taskTypeLabel(task.taskClass) }}</small></span><span class="activity-meta"><Tag :color="taskState(task.state).color">{{ taskState(task.state).label }}</Tag><time>{{ formatDashboardTime(task.startTime) }}</time></span></button></div>
+            </section>
+
+            <section v-if="recentProjects.length > 1" class="studio-panel"><div class="studio-section-head"><h2>其他最近项目</h2><Button type="link" @click="router.push('/toonflow/projects')">全部项目 →</Button></div><div class="other-projects"><button v-for="project in recentProjects.slice(1)" :key="project.id" type="button" @click="continueProject(project)"><span class="project-letter">{{ project.name.slice(0, 1) }}</span><span><b>{{ project.name }}</b><small>{{ project.stageLabel }}</small></span><IconifyIcon icon="lucide:arrow-up-right" /></button></div></section>
+          </main>
+
+          <aside class="studio-column">
+            <section class="studio-panel">
+              <div class="studio-section-head"><h2>任务与配置</h2><span class="subtle">当前状态</span></div>
+              <div class="task-mini-stats"><button type="button" @click="router.push({ name: 'ToonflowTasks', query: { state: 'running' } })"><strong>{{ taskStats?.running ?? '—' }}</strong><span>正在处理</span></button><button type="button" @click="router.push({ name: 'ToonflowTasks', query: { state: 'failed' } })"><strong>{{ taskStats?.failed ?? '—' }}</strong><span>历史失败记录</span></button></div>
+              <p class="studio-note">失败次数包含历史尝试，不代表同等数量的未解决问题。</p>
+              <div v-if="failures.length" class="attention-box"><span class="attention-label"><IconifyIcon icon="lucide:circle-alert" />近期常见异常</span><p>{{ failures[0]!.message }}</p><small>最近 {{ tasks.length }} 条任务中出现 {{ failures[0]!.count }} 次</small><Button type="link" @click="router.push({ name: 'ToonflowTasks', query: { taskId: String(failures[0]!.task.id), state: 'failed' } })">查看原因与处理入口 →</Button></div>
+              <div v-for="project in missing.slice(0, 3)" :key="project.id" class="configuration-row"><b>{{ project.name }}</b><p>尚未选择{{ project.missingModels.join('、') }}模型</p><Button size="small" @click="router.push({ name: 'ToonflowProjects', query: { edit: String(project.id) } })">配置项目模型</Button></div>
+              <p v-if="!missing.length && projects.length" class="configuration-ok"><IconifyIcon icon="lucide:check" />所有项目均已选择三类模型</p>
+            </section>
+            <section class="studio-panel"><div class="studio-section-head"><h2>创作入口</h2></div><div class="studio-shortcuts"><button v-for="item in shortcuts" :key="item.path" type="button" @click="router.push(item.path)"><IconifyIcon :icon="item.icon" /><span>{{ item.label }}</span><IconifyIcon icon="lucide:chevron-right" /></button></div></section>
+            <section class="studio-panel library-summary"><div class="studio-section-head"><h2>作品概览</h2><Button type="link" @click="router.push('/analytics')">制作分析 →</Button></div><dl><div><dt>创作项目</dt><dd>{{ projects.length }}</dd></div><div><dt>已保存剧本</dt><dd>{{ totals.scripts ?? '—' }} <small>集</small></dd></div><div><dt>已导出成片</dt><dd>{{ totals.renders ?? '—' }} <small>集</small></dd></div></dl></section>
+          </aside>
         </div>
-      </div>
+      </template>
     </div>
-  </div>
+  </Page>
 </template>
+
+<style scoped src="../dashboard.css" />

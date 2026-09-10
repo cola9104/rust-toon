@@ -5,6 +5,7 @@ import { computed } from 'vue';
 import { Card, Select, Space, Table, Tag } from 'ant-design-vue';
 
 const props = defineProps<{
+  disabled?: boolean;
   agents: ToonflowApi.AgentDeployment[];
   prompts: ToonflowApi.Prompt[];
   skills: ToonflowApi.Skill[];
@@ -35,12 +36,12 @@ const columns = [
     <Table :columns="columns" :data-source="agents" :pagination="false" row-key="id" size="small">
       <template #bodyCell="{ column, record }">
         <Tag v-if="column.key === 'role'" :color="role(record.key) === '监督 Agent' ? 'orange' : record.key.includes(':') ? 'blue' : 'green'">{{ role(record.key) }}</Tag>
-        <Select v-else-if="column.key === 'prompt'" v-model:value="record.promptSourceKey" :options="promptOptions" allow-clear placeholder="选择 Prompt" style="width: 175px" />
-        <Select v-else-if="column.key === 'memory'" v-model:value="record.memoryScope" :options="[{ label: '项目', value: 'project' }, { label: '剧本', value: 'script' }, { label: '节点', value: 'node' }]" style="width: 105px" />
+        <Select v-else-if="column.key === 'prompt'" :disabled="disabled" v-model:value="record.promptSourceKey" :options="promptOptions" allow-clear placeholder="选择 Prompt" style="width: 175px" />
+        <Select v-else-if="column.key === 'memory'" :disabled="disabled" v-model:value="record.memoryScope" :options="[{ label: '项目', value: 'project' }, { label: '剧本', value: 'script' }, { label: '节点', value: 'node' }]" style="width: 105px" />
       </template>
     </Table>
     <Space class="panel-hint">Prompt 可按 Agent 覆盖；Skill 按 Toonflow-app 规则由 Agent 类型和项目上下文自动加载，不在这里绑定。</Space>
   </Card>
 </template>
 
-<style scoped>.panel-hint{margin-top:12px;color:#8c8c8c;font-size:12px}.runtime-summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.runtime-summary span{padding:7px 10px;border:1px solid var(--ant-color-border-secondary);border-radius:8px;color:var(--ant-color-text-secondary);font-size:12px}.runtime-summary b{margin-right:3px;color:var(--ant-color-primary);font-size:16px}</style>
+<style scoped>.panel-hint{margin-top:12px;color:var(--ant-color-text-tertiary);font-size:12px}.runtime-summary{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.runtime-summary span{padding:7px 10px;border:1px solid var(--ant-color-border-secondary);border-radius:8px;color:var(--ant-color-text-secondary);font-size:12px}.runtime-summary b{margin-right:3px;color:var(--ant-color-primary);font-size:16px}</style>

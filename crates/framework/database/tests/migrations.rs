@@ -32,7 +32,54 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 9);
+    assert_eq!(applied, 14);
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0012_retire_duplicate_request_traces.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("request trace retirement migration is idempotent");
+
+    let trace_menu: (i16, bool) = sqlx::query_as(
+        "SELECT deleted, visible FROM public.system_menu WHERE id=1077",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect retired request trace menu");
+    assert_eq!(trace_menu, (1, false));
+
+    let api_log_menu: (i16, bool) = sqlx::query_as(
+        "SELECT deleted, visible FROM public.system_menu WHERE id=1078",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect API access log menu");
+    assert_eq!(api_log_menu, (0, true));
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0010_volcengine_platform_label.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("Volcengine platform label migration is idempotent");
+
+    let platform_label: String = sqlx::query_scalar(
+        "SELECT label FROM ai.model_platforms WHERE platform='DouBao'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect Volcengine platform label");
+    assert_eq!(platform_label, "火山引擎");
+
+    let dictionary_labels: Vec<String> = sqlx::query_scalar(
+        "SELECT label FROM public.system_dict_data WHERE dict_type='ai_platform' AND value='DouBao'",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect Volcengine dictionary labels");
+    assert!(!dictionary_labels.is_empty());
+    assert!(dictionary_labels.iter().all(|label| label == "火山引擎"));
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"
@@ -2122,11 +2169,72 @@ async fn applies_all_migrations_to_empty_postgres() {
     .fetch_one(&pool)
     .await
     .expect("read dictionary baseline");
+    assert_eq!(dictionary_baseline.0, 40, "only current product dictionaries remain active");
     assert!(dictionary_baseline.0 >= dictionary_baseline.1);
     assert_eq!(
         dictionary_baseline.2, 0,
         "every dictionary must have a type"
     );
+
+    // An upgrade also retires existing options, while an unrelated custom
+    // dictionary sharing a legacy prefix must remain usable.
+    sqlx::raw_sql(
+        "UPDATE system_dict_type SET deleted=0 WHERE type='crm_customer_industry';
+         UPDATE system_dict_data SET deleted=0 WHERE dict_type='crm_customer_industry';
+         INSERT INTO system_dict_type(id,name,type,status)
+         VALUES(-9001101,'Custom dictionary','crm_custom_dictionary',0);
+         INSERT INTO system_dict_data(id,label,value,dict_type,status)
+         VALUES(-9001102,'Custom option','custom','crm_custom_dictionary',0);",
+    )
+    .execute(&pool)
+    .await
+    .expect("prepare dictionary cleanup upgrade and custom dictionary fixtures");
+
+    for _ in 0..2 {
+        sqlx::raw_sql(include_str!(
+            "../../../../sql/postgresql/0011_retire_unrelated_business_dictionaries.sql"
+        ))
+        .execute(&pool)
+        .await
+        .expect("dictionary cleanup migration upgrades and reruns safely");
+    }
+
+    let retired_dictionary: (i64, i64, i64) = sqlx::query_as(
+        "SELECT
+           (SELECT count(*) FROM system_dict_type WHERE type='crm_customer_industry' AND deleted=0),
+           (SELECT count(*) FROM system_dict_data WHERE dict_type='crm_customer_industry' AND deleted=0),
+           (SELECT count(*) FROM system_dict_data WHERE dict_type='crm_customer_industry' AND deleted=1)",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect retired dictionary and recoverable options");
+    assert_eq!(retired_dictionary.0, 0);
+    assert_eq!(retired_dictionary.1, 0);
+    assert!(retired_dictionary.2 > 0);
+
+    let preserved_dictionaries: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM system_dict_type WHERE deleted=0 AND type IN
+           ('common_status','system_user_sex','infra_config_type','ai_platform','crm_custom_dictionary')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect preserved system and custom dictionaries");
+    assert_eq!(preserved_dictionaries, 5);
+
+    let custom_option: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM system_dict_data WHERE id=-9001102 AND deleted=0",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect preserved custom option");
+    assert_eq!(custom_option, 1);
+    sqlx::raw_sql(
+        "DELETE FROM system_dict_data WHERE id=-9001102;
+         DELETE FROM system_dict_type WHERE id=-9001101;",
+    )
+    .execute(&pool)
+    .await
+    .expect("remove custom dictionary fixtures");
 
     let legacy_schema_exists: bool =
         sqlx::query_scalar("SELECT to_regnamespace('system') IS NOT NULL")

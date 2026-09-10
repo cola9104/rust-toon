@@ -3,7 +3,7 @@ import type { Connection, Edge, Node } from '@vue-flow/core';
 import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
 import type { ProductionWorkflowDefinition } from './production-workflow';
 
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Background } from '@vue-flow/background';
@@ -52,6 +52,7 @@ import {
 import StoryboardPanel from './StoryboardPanel.vue';
 
 const props = defineProps<{
+  selectedNodeId?: string;
   assets: ToonflowApi.Asset[];
   storyboardBusy?: boolean;
   storyboardProgressCurrent?: number;
@@ -70,6 +71,7 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
+  'update:selectedNodeId': [nodeId: string | undefined];
   batchDeleteStoryboards: [ids: number[]];
   batchGenerateVideoPrompts: [tracks: any[]];
   batchGenerateVideos: [tracks: any[]];
@@ -112,6 +114,7 @@ const flowInstance = ref<any>();
 const spacePressed = ref(false);
 const editorOpen = ref(false);
 const selectedNodeId = ref<string>();
+watch(selectedNodeId, (id) => emit('update:selectedNodeId', id));
 const selectedNodeIds = ref<string[]>([]);
 const nodeConfigDraft = ref<Record<string, any>>({});
 const layoutHistory = ref<Record<string, { x: number; y: number }>[]>([]);
@@ -185,7 +188,7 @@ const edges = computed<Edge[]>(() =>
   workflow.value.edges.map((edge) => ({
     ...edge,
     animated: false,
-    style: { stroke: '#64748b', strokeWidth: 3 },
+    style: { stroke: 'var(--toon-muted)', strokeWidth: 3 },
   })),
 );
 
@@ -433,14 +436,16 @@ function redoLayout() {
 }
 
 function focusNode(nodeId: string) {
-  selectedNodeId.value = nodeId;
-  flowInstance.value?.setCenter?.(
-    workflow.value.nodes.find((node) => node.id === nodeId)?.position?.x ?? 0,
-    workflow.value.nodes.find((node) => node.id === nodeId)?.position?.y ?? 0,
-    { zoom: 0.8, duration: 350 },
-  );
+  const node = workflow.value.nodes.find((item) => item.id === nodeId);
+  if (!node) return;
+  selectNode({ node: { id: nodeId } as Node });
+  void flowInstance.value?.fitView?.({ nodes: [nodeId], maxZoom: 0.8, padding: 0.2, duration: 350 });
 }
 
+watch([() => props.selectedNodeId, () => props.flowText, flowInstance], () => {
+  if (props.selectedNodeId && props.selectedNodeId !== selectedNodeId.value && workflow.value.nodes.some((node) => node.id === props.selectedNodeId)) focusNode(props.selectedNodeId);
+}, { immediate: true, flush: 'post' });
+watch(flowInstance, () => { if (selectedNodeId.value) focusNode(selectedNodeId.value); });
 defineExpose({ focusNode, focusStage });
 
 function handleSpaceDown(event: KeyboardEvent) {
@@ -542,7 +547,7 @@ onBeforeUnmount(() => {
       @selection-change="updateSelection"
       @node-drag-stop="saveNodePositions"
     >
-      <Background :gap="18" :size="1" pattern-color="#cbd5e1" />
+      <Background :gap="18" :size="1" pattern-color="var(--toon-dot)" />
       <Controls position="bottom-left" />
       <MiniMap pannable zoomable position="bottom-right" />
 
@@ -672,7 +677,7 @@ onBeforeUnmount(() => {
         </section>
       </template>
     </VueFlow>
-    <Drawer
+    <Drawer root-class-name="toon-overlay"
       :open="Boolean(selectedWorkflowNode)"
       :title="selectedNodeMeta.label"
       placement="right"
@@ -807,7 +812,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </Drawer>
-    <Modal v-model:open="editorOpen" :title="editorKey === 'scriptPlan' ? '编辑导演规划' : '编辑分镜表'" width="90vw" @ok="saveEditor">
+    <Modal root-class-name="toon-overlay" v-model:open="editorOpen" :title="editorKey === 'scriptPlan' ? '编辑导演规划' : '编辑分镜表'" width="90vw" @ok="saveEditor">
       <Input.TextArea v-model:value="editorValue" :auto-size="{ minRows: 18, maxRows: 32 }" />
     </Modal>
   </div>
