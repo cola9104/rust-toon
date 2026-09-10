@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -133,7 +133,7 @@ function toOptions(
   }>,
 ) {
   return items.map((x) => ({
-    label: `${x.name} (${x.platform})`,
+    label: x.name,
     value: x.id,
     capabilities: Object.entries(x.config?.capabilities ?? {})
       .filter(([, enabled]) => enabled)
@@ -165,6 +165,20 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+async function refreshModelOptions() {
+  const [chat, image, video, speech] = await Promise.all([
+    getModelSimpleList(AiModelTypeEnum.CHAT),
+    getModelSimpleList(AiModelTypeEnum.IMAGE),
+    getModelSimpleList(AiModelTypeEnum.VIDEO),
+    getModelSimpleList(AiModelTypeEnum.VOICE),
+  ]);
+  models.value = {
+    chat: toOptions(chat),
+    image: toOptions(image),
+    video: toOptions(video),
+    speech: toOptions(speech),
+  };
 }
 async function saveAll() {
   const rows = changedRows.value;
@@ -242,6 +256,11 @@ async function loadMemoryScripts() {
 watch(memoryProjectId, () => void loadMemoryScripts());
 watch(memoryAgent, () => { if (memoryAgent.value === 'scriptAgent') memoryScriptId.value = undefined; });
 onMounted(() => { void load(); void loadMemoryProjects(); });
+let activationCount = 0;
+onActivated(() => {
+  activationCount += 1;
+  if (activationCount > 1) void refreshModelOptions();
+});
 onBeforeUnmount(() => window.clearInterval(eventTimer));
 </script>
 <template>

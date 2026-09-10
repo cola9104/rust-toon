@@ -32,7 +32,7 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 14);
+    assert_eq!(applied, 15);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0012_retire_duplicate_request_traces.sql"
@@ -64,22 +64,43 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("Volcengine platform label migration is idempotent");
 
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0015_rename_doubao_platform_to_volcengine.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("VolcEngine platform identifier migration is idempotent");
+
     let platform_label: String = sqlx::query_scalar(
-        "SELECT label FROM ai.model_platforms WHERE platform='DouBao'",
+        "SELECT label FROM ai.model_platforms WHERE platform='VolcEngine'",
     )
     .fetch_one(&pool)
     .await
-    .expect("inspect Volcengine platform label");
+    .expect("inspect canonical VolcEngine platform");
     assert_eq!(platform_label, "火山引擎");
 
     let dictionary_labels: Vec<String> = sqlx::query_scalar(
-        "SELECT label FROM public.system_dict_data WHERE dict_type='ai_platform' AND value='DouBao'",
+        "SELECT label FROM public.system_dict_data
+         WHERE dict_type='ai_platform' AND value='VolcEngine'",
     )
     .fetch_all(&pool)
     .await
-    .expect("inspect Volcengine dictionary labels");
+    .expect("inspect canonical VolcEngine dictionary labels");
     assert!(!dictionary_labels.is_empty());
     assert!(dictionary_labels.iter().all(|label| label == "火山引擎"));
+
+    let legacy_platform_rows: i64 = sqlx::query_scalar(
+        "SELECT
+           (SELECT count(*) FROM ai.model_platforms WHERE platform='DouBao') +
+           (SELECT count(*) FROM ai.model_catalog WHERE platform='DouBao') +
+           (SELECT count(*) FROM ai.model_configs WHERE platform='DouBao') +
+           (SELECT count(*) FROM public.system_dict_data
+              WHERE dict_type='ai_platform' AND value='DouBao')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect retired DouBao platform identifier");
+    assert_eq!(legacy_platform_rows, 0);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0002_episode_renders.sql"

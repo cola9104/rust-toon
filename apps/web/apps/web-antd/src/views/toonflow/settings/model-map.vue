@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, ref } from 'vue';
+import { computed, onActivated, onMounted, ref } from 'vue';
 import { Page } from '@vben/common-ui';
 import { Button, Card, Empty, Input, List, Select, Space, Tag, message } from 'ant-design-vue';
 import { deleteModelPromptMap, getModelPromptMaps, getModelSimpleList, saveModelPromptMap } from '#/api/ai/model/model';
@@ -32,6 +32,11 @@ async function addMapping() {
 }
 async function removeMapping(id: number) { await deleteModelPromptMap(id); mappings.value = mappings.value.filter((item) => item.id !== id); message.success('映射已删除'); }
 onMounted(load);
+let activationCount = 0;
+onActivated(() => {
+  activationCount += 1;
+  if (activationCount > 1) void load();
+});
 </script>
 <template>
   <Page auto-content-height class="toon-page">

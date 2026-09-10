@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { computed, onActivated, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -208,6 +208,11 @@ onMounted(async () => {
   await Promise.all([loadProjects(), loadManuals(), loadModels()]);
   routeReady = true;
   await handleRouteIntent();
+});
+let activationCount = 0;
+onActivated(() => {
+  activationCount += 1;
+  if (activationCount > 1) void loadModels();
 });
 </script>
 

@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onActivated, onMounted, ref, watch } from 'vue';
 
 import { AiModelTypeEnum } from '@vben/constants';
 
@@ -715,13 +715,19 @@ watch(editorVolume, (volume) => {
   if (editorPlayer.value) editorPlayer.value.volume = volume / 100;
 });
 
-onMounted(async () => {
+async function loadVideoModels() {
   try {
     const models = await getModelSimpleList(AiModelTypeEnum.VIDEO);
     videoModelOptions.value = models.map((model) => ({ label: model.name || model.model, value: model.id, supportsAudio: model.config?.capabilities ? (model.config.capabilities as any).audio !== false : true }));
   } catch {
     if (props.videoModel) videoModelOptions.value = [{ label: `项目模型 #${props.videoModel}`, value: props.videoModel, supportsAudio: true }];
   }
+}
+onMounted(loadVideoModels);
+let activationCount = 0;
+onActivated(() => {
+  activationCount += 1;
+  if (activationCount > 1) void loadVideoModels();
 });
 </script>
 

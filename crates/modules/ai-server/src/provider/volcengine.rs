@@ -1,7 +1,7 @@
 use rust_toon_ai_api::{MediaResponse, ModelConfig};
 use serde_json::{Map, Value, json};
 
-pub struct DouBaoMediaProvider;
+pub struct VolcEngineMediaProvider;
 
 const SEEDREAM_MIN_PIXELS: u64 = 3_686_400;
 
@@ -30,7 +30,7 @@ fn normalize_seedance_duration(model: &str, duration: i64) -> i64 {
     }
 }
 
-impl DouBaoMediaProvider {
+impl VolcEngineMediaProvider {
     fn client(&self, config: &ModelConfig) -> reqwest::Client {
         let _ = config;
         super::http_client()
@@ -209,7 +209,7 @@ impl DouBaoMediaProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{DouBaoMediaProvider, normalize_seedance_duration, normalize_seedream_size};
+    use super::{VolcEngineMediaProvider, normalize_seedance_duration, normalize_seedream_size};
     use rust_toon_ai_api::ModelConfig;
     use serde_json::json;
 
@@ -218,7 +218,7 @@ mod tests {
             id: 1,
             name: "Seedance".into(),
             key: "seedance".into(),
-            platform: "DouBao".into(),
+            platform: "VolcEngine".into(),
             type_: "video".into(),
             model: "doubao-seedance-2-0-260128".into(),
             api_key: "key".into(),
@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn converts_toonflow_payload_to_seedance_content() {
-        let body = DouBaoMediaProvider::video_body(&config(), json!({"prompt":"镜头推进","references":["https://example.com/first.png"],"aspect_ratio":"16:9","audio":true})).unwrap();
+        let body = VolcEngineMediaProvider::video_body(&config(), json!({"prompt":"镜头推进","references":["https://example.com/first.png"],"aspect_ratio":"16:9","audio":true})).unwrap();
         assert_eq!(body["model"], "doubao-seedance-2-0-260128");
         assert_eq!(body["content"][1]["role"], "first_frame");
         assert_eq!(body["ratio"], "16:9");
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn assigns_first_and_last_frame_roles_without_reference_media() {
-        let body = DouBaoMediaProvider::video_body(
+        let body = VolcEngineMediaProvider::video_body(
             &config(),
             json!({
                 "prompt":"镜头推进",
@@ -277,7 +277,7 @@ mod tests {
 
     #[test]
     fn assigns_a_single_required_end_frame_to_the_last_frame_role() {
-        let body = DouBaoMediaProvider::video_body(
+        let body = VolcEngineMediaProvider::video_body(
             &config(),
             json!({
                 "prompt":"镜头推进",
@@ -291,7 +291,7 @@ mod tests {
 
     #[test]
     fn assigns_a_single_required_start_frame_to_the_first_frame_role() {
-        let body = DouBaoMediaProvider::video_body(
+        let body = VolcEngineMediaProvider::video_body(
             &config(),
             json!({
                 "prompt":"镜头推进",
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn assigns_optional_start_and_required_end_when_both_are_present() {
-        let body = DouBaoMediaProvider::video_body(
+        let body = VolcEngineMediaProvider::video_body(
             &config(),
             json!({
                 "prompt":"镜头推进",
@@ -320,7 +320,7 @@ mod tests {
 
     #[test]
     fn parses_completed_seedance_task() {
-        let result = DouBaoMediaProvider::response(json!({"id":"cgt-1","status":"succeeded","content":{"video_url":"https://example.com/video.mp4"}}), None).unwrap();
+        let result = VolcEngineMediaProvider::response(json!({"id":"cgt-1","status":"succeeded","content":{"video_url":"https://example.com/video.mp4"}}), None).unwrap();
         assert_eq!(result.task_id.as_deref(), Some("cgt-1"));
         assert_eq!(result.url, "https://example.com/video.mp4");
     }

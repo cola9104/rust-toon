@@ -317,14 +317,49 @@ async fn remove(
     Query(query): Query<IdQuery>,
 ) -> Result<Json<ApiResponse<bool>>, AppError> {
     require(&user, "ai:model:delete")?;
+    let mut transaction = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin AI model deletion"))?;
+    sqlx::query(
+        "UPDATE toonflow.projects
+         SET chat_model = CASE WHEN chat_model=$1 THEN NULL ELSE chat_model END,
+             image_model = CASE WHEN image_model=$1 THEN NULL ELSE image_model END,
+             video_model = CASE WHEN video_model=$1 THEN NULL ELSE video_model END,
+             update_time = CASE
+               WHEN chat_model=$1 OR image_model=$1 OR video_model=$1
+               THEN $2 ELSE update_time END
+         WHERE chat_model=$1 OR image_model=$1 OR video_model=$1",
+    )
+    .bind(query.id)
+    .bind(chrono::Utc::now().timestamp_millis())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| AppError::internal("failed to clear ToonFlow model references"))?;
     let result = sqlx::query("DELETE FROM ai.model_configs WHERE id=$1")
         .bind(query.id)
-        .execute(&state.pool)
+        .execute(&mut *transaction)
         .await
-        .map_err(|_| AppError::internal("failed to delete AI model"))?;
+        .map_err(|error| {
+            if error
+                .as_database_error()
+                .and_then(|database_error| database_error.code())
+                .as_deref()
+                == Some("23503")
+            {
+                AppError::bad_request("该模型已有生成记录或知识库引用，不能直接删除")
+            } else {
+                AppError::internal("failed to delete AI model")
+            }
+        })?;
     if result.rows_affected() == 0 {
         return Err(AppError::not_found("AI model not found"));
     }
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit AI model deletion"))?;
     Ok(Json(ApiResponse::new(true)))
 }
 #[derive(Deserialize)]

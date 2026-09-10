@@ -183,11 +183,11 @@ fn ai_resilience_error(error: rust_toon_framework_resilience::ResilienceError) -
 
 mod anthropic;
 mod azure;
-mod doubao;
+mod volcengine;
 mod gemini;
 pub use anthropic::AnthropicProvider;
 pub use azure::AzureOpenAiProvider;
-pub use doubao::DouBaoMediaProvider;
+pub use volcengine::VolcEngineMediaProvider;
 pub use gemini::GeminiProvider;
 
 fn value_as_id(value: &Value) -> Option<String> {
@@ -526,11 +526,11 @@ impl OpenAiCompatibleProvider {
             .get("imageGeneratePath")
             .and_then(Value::as_str)
             .unwrap_or("/images/generations");
-        let size = doubao::normalize_seedream_size(&config.model, &request.size);
+        let size = volcengine::normalize_seedream_size(&config.model, &request.size);
         let mut body = json!({"model":config.model,"prompt":request.prompt,"size":size,"n":1});
         let path = if request.references.is_empty() {
             path
-        } else if config.platform == rust_toon_ai_api::AiPlatform::DouBao.code() {
+        } else if config.platform == rust_toon_ai_api::AiPlatform::VolcEngine.code() {
             body["image"] = json!(request.references);
             path
         } else {

@@ -1,6 +1,7 @@
 use crate::provider::{
-    AnthropicProvider, AzureOpenAiProvider, ChatProvider, DouBaoMediaProvider, GeminiProvider,
+    AnthropicProvider, AzureOpenAiProvider, ChatProvider, GeminiProvider,
     OpenAiCompatibleProvider, provider_app_error,
+    VolcEngineMediaProvider,
 };
 use rust_toon_ai_api::{
     AiModelType, AiPlatform, ChatRequest, ChatResponse, EmbeddingRequest, EmbeddingResponse,
@@ -67,7 +68,7 @@ impl AiModelFactory {
             | AiPlatform::TongYi
             | AiPlatform::XingHuo
             | AiPlatform::DeepSeek
-            | AiPlatform::DouBao
+            | AiPlatform::VolcEngine
             | AiPlatform::HunYuan
             | AiPlatform::SiliconFlow
             | AiPlatform::MiniMax
@@ -136,7 +137,7 @@ impl AiModelFactory {
             | AiPlatform::TongYi
             | AiPlatform::XingHuo
             | AiPlatform::DeepSeek
-            | AiPlatform::DouBao
+            | AiPlatform::VolcEngine
             | AiPlatform::HunYuan
             | AiPlatform::SiliconFlow
             | AiPlatform::MiniMax
@@ -197,7 +198,7 @@ impl AiModelFactory {
             | AiPlatform::TongYi
             | AiPlatform::XingHuo
             | AiPlatform::DeepSeek
-            | AiPlatform::DouBao
+            | AiPlatform::VolcEngine
             | AiPlatform::HunYuan
             | AiPlatform::SiliconFlow
             | AiPlatform::MiniMax
@@ -267,7 +268,7 @@ impl AiModelFactory {
             | AiPlatform::TongYi
             | AiPlatform::XingHuo
             | AiPlatform::DeepSeek
-            | AiPlatform::DouBao
+            | AiPlatform::VolcEngine
             | AiPlatform::HunYuan
             | AiPlatform::SiliconFlow
             | AiPlatform::MiniMax
@@ -347,8 +348,8 @@ impl AiModelFactory {
     }
     pub async fn video(&self, id: i64, payload: Value) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Video).await?;
-        if config.platform == AiPlatform::DouBao.code() {
-            return DouBaoMediaProvider
+        if config.platform == AiPlatform::VolcEngine.code() {
+            return VolcEngineMediaProvider
                 .video(&config, payload)
                 .await
                 .map_err(provider_app_error);
@@ -360,10 +361,10 @@ impl AiModelFactory {
     }
     pub async fn poll_video(&self, id: i64, task_id: &str) -> Result<MediaResponse, AppError> {
         let config = self.typed(id, AiModelType::Video).await?;
-        if config.platform != AiPlatform::DouBao.code() {
+        if config.platform != AiPlatform::VolcEngine.code() {
             return Err(AppError::bad_request("该视频平台不支持任务轮询"));
         }
-        DouBaoMediaProvider
+        VolcEngineMediaProvider
             .poll_video(&config, task_id)
             .await
             .map_err(provider_app_error)
