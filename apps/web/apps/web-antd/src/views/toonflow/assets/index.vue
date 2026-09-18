@@ -78,6 +78,8 @@ const dubbingResult = ref('');
 const failedImageIds = reactive(new Set<number>());
 const activeCategory = ref<AssetCategory>('role');
 const assetSearch = ref('');
+const assetStatus = ref('all');
+const deleting = ref(false);
 const selectedAssetIds = reactive(new Set<number>());
 const batchResolution = ref('2K');
 const generation = useAssetGeneration(selectedProjectId, project, assets, (id) => failedImageIds.delete(id));
@@ -98,6 +100,10 @@ const imageQuality = computed(() =>
 const filteredAssets = computed(() =>
   assets.value.filter((asset) => {
     if (!isAssetInCategory(asset.type, activeCategory.value)) return false;
+    if (assetStatus.value === 'missing' && imagePath(asset)) return false;
+    if (assetStatus.value === 'ready' && !imagePath(asset)) return false;
+    if (assetStatus.value === 'failed' && !generationFailedIds.value.has(asset.id)) return false;
+    if (assetStatus.value === 'running' && !generatingAssetIds.value.has(asset.id)) return false;
     const keyword = assetSearch.value.trim().toLocaleLowerCase();
     if (!keyword) return true;
     return [asset.name, asset.description, asset.prompt]
@@ -191,7 +197,7 @@ function openAsset(asset?: ToonflowApi.LibraryAsset) {
   Object.assign(assetForm, {
     id: asset?.id,
     name: asset?.name ?? '',
-    type: asset?.type ?? 'role',
+    type: asset?.type ?? (activeCategory.value === 'material' ? 'role' : activeCategory.value),
     description: asset?.description ?? '',
     prompt: asset?.prompt ?? '',
     remark: asset?.remark ?? '',
@@ -247,7 +253,7 @@ function generateAssetPicture(asset: ToonflowApi.Asset) {
 function selectVisible(mode: 'all' | 'empty' | 'invert' | 'missing') {
   for (const asset of filteredAssets.value) {
     if (mode === 'invert') selectedAssetIds.has(asset.id) ? selectedAssetIds.delete(asset.id) : selectedAssetIds.add(asset.id);
-    else if (mode === 'all' || (mode === 'empty' && !asset.prompt) || (mode === 'missing' && !asset.imageFilePath)) selectedAssetIds.add(asset.id);
+    else if (mode === 'all' || (mode === 'empty' && !asset.prompt?.trim()) || (mode === 'missing' && !imagePath(asset))) selectedAssetIds.add(asset.id);
   }
 }
 
@@ -284,17 +290,43 @@ async function matchAssetVoice(asset: ToonflowApi.Asset) {
 }
 
 function removeAsset(asset: ToonflowApi.Asset) {
+  removeAssets([asset]);
+}
+
+function removeAssets(items: ToonflowApi.Asset[]) {
+  if (!items.length || deleting.value || loading.value) return;
+  const ids = items.map((item) => item.id);
+  const targetProjectId = selectedProjectId.value;
+  const isBusy = () => ids.some((id) => generatingAssetIds.value.has(id) || polishingAssetIds.has(id));
+  if (isBusy()) {
+    message.warning('所选资产中有正在执行的任务，请先取消任务或取消勾选这些资产');
+    return;
+  }
   Modal.confirm({
-    title: `确认删除“${asset.name}”？`,
-    content: '关联的图片、剧本绑定和人物形态也会一并删除，且无法恢复。',
+    title: items.length === 1 ? `确认删除“${items[0]!.name}”？` : `确认删除所选 ${items.length} 项资产？`,
+    content: `${items.slice(0, 5).map((item) => item.name).join('、')}${items.length > 5 ? '等' : ''}。关联的图片、剧本绑定和人物形态也会一并删除，且无法恢复。`,
     okText: '删除',
     okType: 'danger',
     cancelText: '取消',
     async onOk() {
-      await deleteAssets([asset.id]);
-      failedImageIds.delete(asset.id);
-      await loadAssets();
-      message.success(`“${asset.name}”已删除`);
+      if (targetProjectId !== selectedProjectId.value || !pageActive || isBusy()) {
+        message.warning('项目或任务状态已变化，请重新选择需要删除的资产');
+        return;
+      }
+      deleting.value = true;
+      try {
+        await deleteAssets(ids);
+        if (targetProjectId === selectedProjectId.value) {
+          for (const id of ids) {
+            failedImageIds.delete(id);
+            selectedAssetIds.delete(id);
+          }
+          await loadAssets();
+        }
+        message.success(`已删除 ${ids.length} 项资产`);
+      } finally {
+        deleting.value = false;
+      }
     },
   });
 }
@@ -353,6 +385,7 @@ watch(selectedProjectId, () => {
   dubbingModalOpen.value = false;
   loadError.value = '';
 }, { flush: 'sync' });
+watch([activeCategory, assetSearch, assetStatus], clearSelection);
 onActivated(() => {
   const wasInactive = !pageActive;
   pageActive = true;
@@ -377,7 +410,7 @@ onBeforeUnmount(suspend);
           <Select
             :options="projectOptions"
             :value="selectedProjectId"
-            :disabled="submitting"
+            :disabled="submitting || deleting"
             placeholder="选择项目"
             style="width: 220px"
             @change="handleProjectChange"
@@ -407,46 +440,61 @@ onBeforeUnmount(suspend);
       <Empty v-if="!selectedProjectId" description="请先选择项目" />
       <template v-else>
         <div class="asset-workspace">
-          <aside class="batch-sidebar">
-            <div class="batch-title"><b>批量生产</b><Button type="link" size="small" :disabled="!selectedAssets.length" @click="clearSelection">清空</Button></div>
-            <div class="batch-selection"><Checkbox :checked="allVisibleSelected" :indeterminate="someVisibleSelected" @change="toggleVisible($event.target.checked)">当前分类全选</Checkbox><span>{{ selectedAssets.length }} 项已选</span></div>
-            <label>快捷选择</label>
-            <Button block @click="selectVisible('all')">全选当前分类</Button>
-            <Button block @click="selectVisible('empty')">全选提示词为空</Button>
-            <Button block @click="selectVisible('missing')">全选未生成</Button>
-            <Button block @click="selectVisible('invert')">反选当前分类</Button>
-            <label>统一模型</label><Input :value="project?.imageModel ? `项目模型 #${project.imageModel}` : '未配置'" disabled />
-            <label>分辨率</label><Select v-model:value="batchResolution" :options="['1K','2K','4K'].map(value=>({label:value,value}))" />
-            <div v-if="batchRunning" class="batch-progress">项目：{{ batchProjectName }} · {{ batchRunning === 'image' ? '图片生成' : '提示词生成' }}：{{ batchProgress.current }}/{{ batchProgress.total }}</div>
-            <Button v-if="batchRunning === 'image'" block danger :disabled="submitting" :loading="cancelling" @click="cancelBatchImages">取消当前图片任务</Button>
-            <Button block :loading="batchRunning==='prompt'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchPolish">批量生成提示词</Button>
-            <Button block type="primary" :loading="batchRunning==='image'" :disabled="!!batchRunning || !selectedAssets.length" @click="batchGenerateImages">批量生成图片</Button>
-            <Button v-if="failedSelectedAssets.length" block danger :disabled="!!batchRunning" @click="retryFailedImages">重试失败图片（{{ failedSelectedAssets.length }}）</Button>
-          </aside>
           <main class="asset-content">
-        <Tabs v-model:active-key="activeCategory" class="asset-category-tabs">
-          <Tabs.TabPane
-            v-for="category in ASSET_CATEGORY_OPTIONS"
-            :key="category.value"
-          >
-            <template #tab>
-              <Space :size="6">
-                <span>{{ category.label }}</span>
-                <Tag class="category-count">{{ categoryCounts[category.value] }}</Tag>
-              </Space>
-            </template>
-          </Tabs.TabPane>
-        </Tabs>
-        <div class="asset-toolbar">
-          <Input.Search
-            v-model:value="assetSearch"
-            allow-clear
-            placeholder="搜索名称或描述"
-            style="max-width: 360px"
-          />
-          <Typography.Text type="secondary">
-            当前分类共 {{ filteredAssets.length }} 项资产
-          </Typography.Text>
+        <div class="asset-controls">
+          <div class="asset-browse-row">
+            <Tabs v-model:active-key="activeCategory" class="asset-category-tabs">
+              <Tabs.TabPane
+                v-for="category in ASSET_CATEGORY_OPTIONS"
+                :key="category.value"
+              >
+                <template #tab>
+                  <Space :size="6">
+                    <span>{{ category.label }}</span>
+                    <Tag class="category-count">{{ categoryCounts[category.value] }}</Tag>
+                  </Space>
+                </template>
+              </Tabs.TabPane>
+            </Tabs>
+            <div class="asset-filters">
+              <Input.Search
+                v-model:value="assetSearch"
+                allow-clear
+                placeholder="搜索名称或描述"
+              />
+              <Select v-model:value="assetStatus" aria-label="筛选资产状态" :options="[
+                { label: '全部状态', value: 'all' },
+                { label: '已有图片 / 素材', value: 'ready' },
+                { label: '缺少图片 / 素材', value: 'missing' },
+                { label: '生成失败 / 已取消', value: 'failed' },
+                { label: '正在生成', value: 'running' },
+              ]" />
+            </div>
+          </div>
+          <div class="asset-action-row">
+            <div class="asset-selection-actions">
+              <Checkbox :disabled="loading || deleting || !filteredAssets.length" :checked="allVisibleSelected" :indeterminate="someVisibleSelected" @change="toggleVisible($event.target.checked)">全选</Checkbox>
+              <span class="asset-result-count">{{ filteredAssets.length }} 项</span>
+              <span class="selection-count">已选 {{ selectedAssets.length }} 项</span>
+              <Button size="small" :disabled="loading || deleting || !filteredAssets.length" @click="selectVisible('invert')">反选</Button>
+              <Button size="small" :disabled="loading || deleting || !filteredAssets.length" @click="selectVisible('missing')">选择缺图</Button>
+              <Button v-if="selectedAssets.length" size="small" type="link" :disabled="deleting" @click="clearSelection">取消选择</Button>
+            </div>
+            <div class="asset-batch-actions">
+              <template v-if="activeCategory !== 'material'">
+                <span class="production-label">批量生成</span>
+                <Select v-model:value="batchResolution" aria-label="图片分辨率" :options="['1K','2K','4K'].map(value=>({label:value,value}))" />
+                <Button :loading="batchRunning==='prompt'" :disabled="loading || deleting || !!batchRunning || !selectedAssets.length" @click="batchPolish">提示词</Button>
+                <Button type="primary" :loading="batchRunning==='image'" :disabled="loading || deleting || !!batchRunning || !selectedAssets.length" @click="batchGenerateImages">生成图片</Button>
+                <Button v-if="failedSelectedAssets.length" :disabled="loading || deleting || !!batchRunning" @click="retryFailedImages">重试失败（{{ failedSelectedAssets.length }}）</Button>
+              </template>
+              <Button danger :loading="deleting" :disabled="loading || !selectedAssets.length" @click="removeAssets([...selectedAssets])">批量删除<span v-if="selectedAssets.length">（{{ selectedAssets.length }}）</span></Button>
+            </div>
+          </div>
+          <div v-if="batchRunning" class="batch-progress">
+            <span>{{ batchProjectName }} · {{ batchRunning === 'image' ? '图片生成' : '提示词生成' }} {{ batchProgress.current }}/{{ batchProgress.total }}</span>
+            <Button v-if="batchRunning === 'image'" size="small" danger :disabled="submitting" :loading="cancelling" @click="cancelBatchImages">取消图片任务</Button>
+          </div>
         </div>
         <div v-if="loading" class="asset-loading">资产加载中…</div>
         <Empty
@@ -471,6 +519,7 @@ onBeforeUnmount(suspend);
                     class="asset-selector"
                     :aria-label="`选择${item.name}`"
                     :checked="selectedAssetIds.has(item.id)"
+                    :disabled="deleting"
                     @click.stop
                     @change="toggleAsset(item.id, $event.target.checked)"
                   />
@@ -496,11 +545,11 @@ onBeforeUnmount(suspend);
               <Tag v-else-if="failedImageIds.has(item.id)" color="warning" class="mt-3">图片加载失败，可刷新重试</Tag>
               <div class="asset-actions">
                 <Space wrap :size="4">
-                  <Button type="link" @click="openAsset(item)">编辑</Button>
+                  <Button type="link" :disabled="deleting" @click="openAsset(item)">编辑</Button>
                   <Button
                     v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
                     :loading="polishingAssetIds.has(item.id)"
-                    :disabled="!!batchRunning || loading"
+                    :disabled="deleting || !!batchRunning || loading"
                     type="link"
                     @click="polishAsset(item)"
                   >
@@ -509,14 +558,14 @@ onBeforeUnmount(suspend);
                   <Button
                     v-if="['role', 'scene', 'tool', 'costume'].includes(item.type)"
                     :loading="generatingAssetIds.has(item.id)"
-                    :disabled="!!batchRunning || polishingAssetIds.has(item.id) || loading"
+                    :disabled="deleting || !!batchRunning || polishingAssetIds.has(item.id) || loading"
                     type="primary"
                     class="asset-generate-button"
                     @click="generateAssetPicture(item)"
                   >
                     {{ generatingAssetIds.has(item.id) ? '生成中' : imagePath(item) ? '重新生成' : '生成图片' }}
                   </Button>
-                  <Button danger type="link" :disabled="generatingAssetIds.has(item.id) || polishingAssetIds.has(item.id)" @click="removeAsset(item)">删除</Button>
+                  <Button danger :disabled="deleting || loading || generatingAssetIds.has(item.id) || polishingAssetIds.has(item.id)" @click="removeAsset(item)">删除</Button>
                 </Space>
                 <div v-if="item.type === 'role'" class="asset-voice-actions"><span>角色声音</span><Button size="small" @click="matchAssetVoice(item)">匹配音色</Button><Button size="small" @click="openDubbing(item)">生成配音</Button></div>
               </div>
@@ -583,14 +632,8 @@ onBeforeUnmount(suspend);
 .asset-heading-title .ant-tag { margin: 0; border-radius: 999px; }
 .asset-heading-title .ant-tag,
 .asset-prompt-tag { color: var(--asset-primary); background: var(--asset-primary-bg); }
-.asset-library-tip { margin-bottom: 16px; }.asset-category-tabs { margin-bottom: 4px; }
+.asset-library-tip { margin-bottom: 16px; }
 .category-count { margin-inline-end: 0; }
-.asset-toolbar {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
 .asset-loading { color: var(--toon-muted); padding: 64px; text-align: center; }
 .asset-card-column { display: flex; }
 .asset-card {
@@ -654,16 +697,39 @@ onBeforeUnmount(suspend);
   -webkit-line-clamp: 3;
 }
 .asset-actions { border-top: 1px solid var(--toon-line); margin-top: auto; padding-top: 8px; }
-.asset-workspace { display: grid; align-items: start; gap: 18px; grid-template-columns: 220px minmax(0, 1fr); }.batch-sidebar { position: sticky; top: 16px; z-index: 4; display: grid; max-height: calc(100vh - 132px); overflow: auto; padding: 15px; border: 1px solid var(--toon-line); border-radius: 16px; background: var(--toon-panel); box-shadow: var(--asset-shadow); gap: 8px; }.batch-title,.batch-selection { display: flex; align-items: center; justify-content: space-between; gap: 6px; }.batch-selection { padding: 6px 0 9px; border-bottom: 1px solid var(--toon-line); }.batch-selection > span { color: var(--toon-muted); font-size: 11px; white-space: nowrap; }.batch-progress { padding: 7px 9px; border-radius: 7px; color: var(--asset-primary); background: var(--asset-primary-bg); font-size: 12px; text-align: center; }.batch-sidebar > label { margin-top: 7px; color: var(--toon-muted); font-size: 11px; }.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: var(--toon-panel); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
+.asset-content { min-width: 0; }.asset-cover { position: relative; }.asset-selector { position: absolute; z-index: 3; top: 12px; left: 12px; padding: 5px; border-radius: 7px; background: var(--toon-panel); }.asset-progress { position: absolute; z-index: 2; inset: 0; display: grid; align-content: center; justify-items: center; gap: 8px; color: #fff; background: rgb(0 0 0 / 58%); }.asset-progress span { width: 26px; height: 26px; border: 2px solid rgb(255 255 255 / 35%); border-top-color: #fff; border-radius: 50%; animation: asset-spin .8s linear infinite; }@keyframes asset-spin{to{transform:rotate(360deg)}}
 @media (max-width: 640px) {
   .asset-header { align-items: stretch; flex-direction: column; }
   .asset-header > .ant-space { width: 100%; }
   .asset-header .ant-select { width: 100% !important; }
-  .asset-toolbar { align-items: stretch; flex-direction: column; gap: 8px; }
-  .asset-workspace { grid-template-columns: 1fr; }.batch-sidebar { position: static; }
 }
 
-/* Cards adapt to the available workspace width, including the sidebar. */
+/* Keep selection and destructive actions visible while browsing the grid. */
+.asset-workspace { display: block; }
+.asset-controls { position: sticky; top: 0; z-index: 5; margin-bottom: 20px; padding: 0 16px 12px; border: 1px solid var(--toon-line); border-radius: 12px; background: var(--toon-panel); box-shadow: var(--asset-shadow); }
+.asset-browse-row { display: flex; min-width: 0; align-items: flex-end; gap: 20px; }
+.asset-category-tabs { min-width: 0; flex: 1; margin-bottom: 0; }
+.asset-category-tabs :deep(.ant-tabs-nav) { margin-bottom: 0; }
+.asset-filters { display: grid; width: min(440px, 42%); flex: none; grid-template-columns: minmax(180px, 1fr) 150px; gap: 8px; padding-bottom: 12px; }
+.asset-action-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 16px; padding-top: 10px; border-top: 1px solid var(--toon-line); }
+.asset-selection-actions, .asset-batch-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.asset-result-count { color: var(--toon-muted); font-size: 12px; white-space: nowrap; }
+.selection-count { color: var(--asset-primary); font-weight: 600; white-space: nowrap; }
+.production-label { color: var(--toon-muted); font-size: 12px; }
+.asset-batch-actions .ant-select { width: 78px; }
+.batch-progress { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 8px 10px; border-radius: 6px; color: var(--asset-primary); background: var(--asset-primary-bg); font-size: 12px; }
+@media (max-width: 1100px) {
+  .asset-browse-row { align-items: stretch; flex-direction: column; gap: 8px; }
+  .asset-filters { width: 100%; padding-bottom: 10px; }
+}
+@media (max-width: 640px) {
+  .asset-controls { position: static; padding-inline: 12px; }
+  .asset-filters { grid-template-columns: 1fr; }
+  .asset-action-row { align-items: stretch; flex-direction: column; }
+  .asset-batch-actions { padding-top: 10px; border-top: 1px dashed var(--toon-line); }
+}
+
+/* Cards adapt to the available workspace width. */
 .asset-special-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr)); row-gap: 16px; }
 .asset-special-grid > .asset-card-column { max-width: none; width: 100%; padding-bottom: 0 !important; }
 .asset-special-grid .asset-card { border-radius: 12px; border: 1px solid var(--toon-line); box-shadow: none; transition: border-color .2s, box-shadow .2s; }

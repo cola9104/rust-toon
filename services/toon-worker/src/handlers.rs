@@ -40,6 +40,26 @@ impl HandlerRegistry {
 
 pub struct VideoExportHandler;
 
+pub struct VideoQualityHandler;
+
+#[async_trait]
+impl JobHandler for VideoQualityHandler {
+    fn kind(&self) -> &'static str {
+        rust_toon_toon_server::VIDEO_QUALITY_JOB_KIND
+    }
+
+    async fn execute(&self, store: &JobStore, job: &ClaimedJob) -> Result<Value, String> {
+        rust_toon_toon_server::execute_distributed_quality(
+            store.pool(),
+            job.id,
+            job.task_id,
+            job.lease_token,
+            job.payload.clone(),
+        )
+        .await
+    }
+}
+
 #[async_trait]
 impl JobHandler for VideoExportHandler {
     fn kind(&self) -> &'static str {
@@ -207,12 +227,16 @@ impl JobHandler for TestNoopHandler {
 
 #[cfg(test)]
 mod tests {
-    use super::{HandlerRegistry, ScheduledInfraHandler, VideoExportHandler};
+    use super::{HandlerRegistry, ScheduledInfraHandler, VideoExportHandler, VideoQualityHandler};
     use rust_toon_framework_jobs::INFRA_SCHEDULED_JOB_KIND;
 
     #[test]
     fn registry_exposes_each_job_kind_once() {
         let mut registry = HandlerRegistry::default();
+        registry
+            .register(VideoQualityHandler)
+            .expect("register video quality");
+        assert!(registry.contains(rust_toon_toon_server::VIDEO_QUALITY_JOB_KIND));
         registry
             .register(VideoExportHandler)
             .expect("register video");

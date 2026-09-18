@@ -211,7 +211,10 @@ export namespace ToonflowApi {
     framePolicy: VideoFramePolicy;
     id: number;
     previousTrackId?: number;
+    transitionDurationMs?: number;
     transitionType: VideoTransitionType;
+    trimEndMs?: null | number;
+    trimStartMs?: number;
   }
 
   export interface AgentDeployment {
@@ -712,8 +715,9 @@ export const batchGenerateVideos = (data: Record<string, any>) => requestClient.
 export const reorderVideoTracks = (projectId: number, scriptId: number, trackIds: number[]) => requestClient.post('/production/workbench/reorderTracks', { projectId, scriptId, trackIds });
 export const bindTrackStoryboards = (trackId: number, storyboardIds: number[]) => requestClient.post('/production/workbench/bindStoryboards', { trackId, storyboardIds });
 export const cancelTrackVideo = (id: number) => requestClient.post('/production/workbench/cancelVideo', { id });
+export const inspectTrackVideo = (id: number) => requestClient.post<{ taskId: number }>('/production/workbench/inspectVideo', { id });
 export const retryTrackVideo = (data: Record<string, any>) => requestClient.post<number>('/production/workbench/retryVideo', data);
-export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string; retryOfId?: number }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
+export const pollTrackVideos = (projectId: number, scriptId: number, videoIds: number[]) => requestClient.post<Array<{ id: number; state: string; errorReason?: string; filePath?: string; src?: string; retryOfId?: number; generationContext?: Record<string, unknown> }>>('/production/workbench/checkVideoStateList', { projectId, scriptId, videoIds });
 export const exportFinalVideo = (projectId: number, scriptId: number, videoIds: number[] = []) => requestClient.post<{ taskId: number; state: string }>('/production/workbench/exportVideo', { projectId, scriptId, videoIds });
 export const selectTrackVideo = (trackId: number, videoId: number) => requestClient.post('/production/workbench/selectVideo', { trackId, videoId });
 export const deleteTrackVideo = (id: number) => requestClient.post('/production/workbench/delVideo', { id });

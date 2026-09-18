@@ -77,6 +77,16 @@ async fn main() -> anyhow::Result<()> {
             .map_err(anyhow::Error::msg)?;
     }
     let toon_state = rust_toon_toon_server::ToonState::new(database.clone(), tokens.clone());
+    let resumed_videos =
+        rust_toon_toon_server::resume_interrupted_video_generations(&database).await;
+    let resumed_runs =
+        rust_toon_toon_server::resume_interrupted_workflow_runs(&toon_state).await;
+    if resumed_videos > 0 || resumed_runs > 0 {
+        info!(
+            resumed_videos,
+            resumed_runs, "resumed interrupted video generations and workflow runs"
+        );
+    }
     let media_state = rust_toon_media_server::MediaState::new(database.clone(), tokens);
     system_state.bootstrap().await?;
     let database_auth = system_state.database_auth_state();

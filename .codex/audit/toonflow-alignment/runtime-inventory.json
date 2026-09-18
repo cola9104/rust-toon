@@ -1,0 +1,2044 @@
+{
+  "baseline": {
+    "repository": "HBAI-Ltd/Toonflow-app",
+    "version": "v1.1.8",
+    "commit": "cd3e7c4e83963bea255be2e621eb78d2cd1c2188"
+  },
+  "skills": [
+    {
+      "path": "production_agent_decision.md",
+      "name": "生产 Agent · 决策调度",
+      "state": 1,
+      "md5": "f440bbe475f91aa320a7da15866c1a66",
+      "update_time": 1784620625981,
+      "sha256": "856e4365a0590a46a6bd4b06bb386ae2355f2adb66dffbbf0b003219e1c0c459",
+      "source": "data/skills/production_agent_decision.md",
+      "sourceSha256": "36d6b0057a043241aa06f0ac01d38b15c5678c72cf51e26908fe5100d147974a",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_agent_supervision.md",
+      "name": "生产 Agent · 质量监督",
+      "state": 1,
+      "md5": "411842a0e300392cc88ec5a3c6ec7121",
+      "update_time": 1784620625871,
+      "sha256": "0a9d4b73d471167b6621456863174fc69c742570b4aebb1b22deec2f6d93c875",
+      "source": "data/skills/production_agent_supervision.md",
+      "sourceSha256": "b9b9e1951a7462890ac082ca1e219fd345695a70a572cc1564ba4731a01fafd5",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_derive_assets.md",
+      "name": "衍生资产生成",
+      "state": 1,
+      "md5": "a13bfb4990e38833320bec52bee5207a",
+      "update_time": 1784620625989,
+      "sha256": "1a60857020390a56401ef7feff0bbe13d02fa779c93c23f5a3fd5c4cf3a9bb4f",
+      "source": "data/skills/production_execution_derive_assets.md",
+      "sourceSha256": "2f8b9d5a9c1346061de4cff289d8f6a24bc0b5447b5afad477bac7f7e4ea59a8",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_director_plan.md",
+      "name": "导演计划执行",
+      "state": 1,
+      "md5": "912808f011457f5b346a3d326ef7a073",
+      "update_time": 1788945195390,
+      "sha256": "e07e69fcfb2368faad1b5a3a78520670a97e98efd9fe8e229a7e976427de2365",
+      "source": "data/skills/production_execution_director_plan.md",
+      "sourceSha256": "eb17da43aa4aafc0412a917144605c1e42b8bcbb94a08c2c60ed7b67f0514d82",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_generate_assets.md",
+      "name": "资产生成",
+      "state": 1,
+      "md5": "5b3aeeafe3dbcd0c29478ea5291484da",
+      "update_time": 1784620625989,
+      "sha256": "d4e8d1145b78f5167e181816fd37913ce97b8712644ac590b7115a27edd0119a",
+      "source": "data/skills/production_execution_generate_assets.md",
+      "sourceSha256": "eca64200b83d948107ef535a39c7d23c37ba4d7301bd5d482306980b3a2ec1b5",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_storyboard_gen.md",
+      "name": "分镜生成",
+      "state": 1,
+      "md5": "678cddd7572674d4efa146dcaa9bbc2f",
+      "update_time": 1784620625871,
+      "sha256": "7c6550a67ca4add7f0773ed7a073e8f3e1e92ca0883c3b6c729698aba0eaa061",
+      "source": "data/skills/production_execution_storyboard_gen.md",
+      "sourceSha256": "90550490b8dcd575548aaefbd0c0b4fc73af1b0c70b1b485de544e0f97ccc235",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_storyboard_panel.md",
+      "name": "分镜面板执行",
+      "state": 1,
+      "md5": "ff4424932488da77507ca1046d213608",
+      "update_time": 1788945195391,
+      "sha256": "4d1e991c917a2237db9319bd4a0e299713ee8fcf08f4c2619b5a6988df584ecd",
+      "source": "data/skills/production_execution_storyboard_panel.md",
+      "sourceSha256": "e00998cec47632954a9f451f09d45c17926c9d9fd0f1fa967feee7cbd4fdf92f",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_execution_storyboard_table.md",
+      "name": "分镜表执行",
+      "state": 1,
+      "md5": "0e92b53ab748ab1a6a41c852dcd48e9d",
+      "update_time": 1788945195390,
+      "sha256": "7546a52a1cb86206eacd01cf4755ed40c4ed39b67423a3c0c617a639c330990e",
+      "source": "data/skills/production_execution_storyboard_table.md",
+      "sourceSha256": "02c57fae212b813d2d95cf1423106dd2ba4f20cf27dbc4f858644e7360eb4381",
+      "comparison": "differs-from-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_skills/storyboard_prompt_techniques.md",
+      "name": "分镜提示词技法",
+      "state": 1,
+      "md5": "13fba2f21a1e94f20e2129944ccf9b48",
+      "update_time": 1784260000000,
+      "sha256": "e06aeb0b99436b0a19adcda0f1ded3be721a9bbf819f97b968c90a63e6e70bd7",
+      "source": "data/skills/production_skills/storyboard_prompt_techniques.md",
+      "sourceSha256": "e06aeb0b99436b0a19adcda0f1ded3be721a9bbf819f97b968c90a63e6e70bd7",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "production_skills/storyboard_table_techniques.md",
+      "name": "分镜表设计技法",
+      "state": 1,
+      "md5": "22f62bce0c4ccb89434a30c44e0171c1",
+      "update_time": 1784260000000,
+      "sha256": "9280b6b1c6b391d88338adf916b049168861ee18482fbbbb6fde0368532b96cc",
+      "source": "data/skills/production_skills/storyboard_table_techniques.md",
+      "sourceSha256": "9280b6b1c6b391d88338adf916b049168861ee18482fbbbb6fde0368532b96cc",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "script_agent_decision.md",
+      "name": "剧本 Agent · 决策调度",
+      "state": 1,
+      "md5": "156b2838e6b11ff02fb8fd6ceaf4a0f6",
+      "update_time": 1784620625871,
+      "sha256": "d3f5cc18e4a1d251d486692b99757990e066d32e40cedda94eaea6971c9a6f02",
+      "source": "data/skills/script_agent_decision.md",
+      "sourceSha256": "d3f5cc18e4a1d251d486692b99757990e066d32e40cedda94eaea6971c9a6f02",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "script_agent_supervision.md",
+      "name": "剧本 Agent · 质量监督",
+      "state": 1,
+      "md5": "cf92c93f5f900eecb8544b9c9b7fcec8",
+      "update_time": 1784620625871,
+      "sha256": "2c1551bce3cc22f36e78d52e64dbe0094c18d543ce17cfc390b33c1f2a9caeec",
+      "source": "data/skills/script_agent_supervision.md",
+      "sourceSha256": "2c1551bce3cc22f36e78d52e64dbe0094c18d543ce17cfc390b33c1f2a9caeec",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "script_execution_adaptation.md",
+      "name": "改编策略制定",
+      "state": 1,
+      "md5": "ea358df4b3bcae023859590a1e8f5273",
+      "update_time": 1784620625871,
+      "sha256": "2dee187d2ed331e6b0a614f62abd7b96a63451c01b73359f50b7c02d4ab557aa",
+      "source": "data/skills/script_execution_adaptation.md",
+      "sourceSha256": "2dee187d2ed331e6b0a614f62abd7b96a63451c01b73359f50b7c02d4ab557aa",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "script_execution_script.md",
+      "name": "剧本编写",
+      "state": 1,
+      "md5": "ad89605a059f865555f0663d01ab4131",
+      "update_time": 1784620625871,
+      "sha256": "54667677759fa66a3dcf53182bb7fb2203d141f4930652118ad14064fbd2a426",
+      "source": "data/skills/script_execution_script.md",
+      "sourceSha256": "54667677759fa66a3dcf53182bb7fb2203d141f4930652118ad14064fbd2a426",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    },
+    {
+      "path": "script_execution_skeleton.md",
+      "name": "故事骨架搭建",
+      "state": 1,
+      "md5": "4290b4d6a87103a82e2bea050cf0cae9",
+      "update_time": 1784620625871,
+      "sha256": "8950af81523bbdbedafd4318eebe5881dc669501307307c95bbb14c0d6144603",
+      "source": "data/skills/script_execution_skeleton.md",
+      "sourceSha256": "8950af81523bbdbedafd4318eebe5881dc669501307307c95bbb14c0d6144603",
+      "comparison": "matches-baseline",
+      "userModification": "unknown; content difference does not establish authorship"
+    }
+  ],
+  "manuals": [
+    {
+      "kind": "director",
+      "path": "Comedy_humor",
+      "name": "喜剧搞笑 · 导演叙事手法技能包",
+      "update_time": 1784260000100,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "c11568c6e30b987c61713f7d74d982ceff287a82d1366c6eb5a1cd0cec5b6048",
+          "source": "data/skills/story_skills/Comedy_humor/README.md",
+          "sourceSha256": "c11568c6e30b987c61713f7d74d982ceff287a82d1366c6eb5a1cd0cec5b6048",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "8ce593f9f1479228808859550f86f2cb117148c811deba4a90f08932d16f1865",
+          "source": "data/skills/story_skills/Comedy_humor/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "8ce593f9f1479228808859550f86f2cb117148c811deba4a90f08932d16f1865",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "d1c78c374b167e429994589ed344f3e38776709a4f2366784ddba94dd2a6ba84",
+          "source": "data/skills/story_skills/Comedy_humor/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "d1c78c374b167e429994589ed344f3e38776709a4f2366784ddba94dd2a6ba84",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Coming_of_age",
+      "name": "青春成长 · 导演叙事手法技能包",
+      "update_time": 1784260000101,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "aa26c6aa398d1081719fa7681374bdb8ea380a2a036a50dd2a9fdccecf64392a",
+          "source": "data/skills/story_skills/Coming_of_age/README.md",
+          "sourceSha256": "aa26c6aa398d1081719fa7681374bdb8ea380a2a036a50dd2a9fdccecf64392a",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "26e3152141fcf910acc2033d087e6a96f9495734c6d8858ac022dd9b84080fb3",
+          "source": "data/skills/story_skills/Coming_of_age/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "26e3152141fcf910acc2033d087e6a96f9495734c6d8858ac022dd9b84080fb3",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "844f6802f31863a8885fd8ccbd2ab5475eba842604385047b9e5972d071af945",
+          "source": "data/skills/story_skills/Coming_of_age/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "844f6802f31863a8885fd8ccbd2ab5475eba842604385047b9e5972d071af945",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Family_warmth",
+      "name": "家庭温情 · 导演叙事手法技能包",
+      "update_time": 1784260000102,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "01c1edcae4b86059587c55695e7e7a4f01020559ed449a794fcf69a89c29dd89",
+          "source": "data/skills/story_skills/Family_warmth/README.md",
+          "sourceSha256": "01c1edcae4b86059587c55695e7e7a4f01020559ed449a794fcf69a89c29dd89",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "af8b3bd8618ab2f1d92096f0ee0b2589f9793455c6ace43f6be779d1d0c90e78",
+          "source": "data/skills/story_skills/Family_warmth/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "af8b3bd8618ab2f1d92096f0ee0b2589f9793455c6ace43f6be779d1d0c90e78",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "277746960b32674f63292c1b27a90ddb3f309ca0d2c9b2c64a79f9c502fbf06c",
+          "source": "data/skills/story_skills/Family_warmth/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "277746960b32674f63292c1b27a90ddb3f309ca0d2c9b2c64a79f9c502fbf06c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Historical_epic",
+      "name": "历史史诗 · 导演叙事手法技能包",
+      "update_time": 1784260000103,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "978e83e0876a99504a518991ace6ac7f4d43a47e0493717563ea98078db789fe",
+          "source": "data/skills/story_skills/Historical_epic/README.md",
+          "sourceSha256": "978e83e0876a99504a518991ace6ac7f4d43a47e0493717563ea98078db789fe",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "1247aad1a3ce84408c2d2b3cd7ea03ec009cc79ad476f7b7d55d7f9aa19b98ee",
+          "source": "data/skills/story_skills/Historical_epic/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "1247aad1a3ce84408c2d2b3cd7ea03ec009cc79ad476f7b7d55d7f9aa19b98ee",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "cde5564b80746457af91156d668a662144a3bd0f440f990a9fb70d8cfc31f14b",
+          "source": "data/skills/story_skills/Historical_epic/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "cde5564b80746457af91156d668a662144a3bd0f440f990a9fb70d8cfc31f14b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Horror_supernatural",
+      "name": "恐怖灵异 · 导演叙事手法技能包",
+      "update_time": 1784260000104,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "366d68998e393410b071579d596461ca705c9cae502ecf271b5892222b176f42",
+          "source": "data/skills/story_skills/Horror_supernatural/README.md",
+          "sourceSha256": "366d68998e393410b071579d596461ca705c9cae502ecf271b5892222b176f42",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "4ee9ff6e319fc813bb34fec2eccf85e8ed2a5a176d811c08d1a26458364d9a6c",
+          "source": "data/skills/story_skills/Horror_supernatural/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "4ee9ff6e319fc813bb34fec2eccf85e8ed2a5a176d811c08d1a26458364d9a6c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "62cd3f1bff014ddb67809359d1c5cbcfa4a2e2f97df391272cb94e8bb4e9437e",
+          "source": "data/skills/story_skills/Horror_supernatural/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "62cd3f1bff014ddb67809359d1c5cbcfa4a2e2f97df391272cb94e8bb4e9437e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Hot_blooded_action",
+      "name": "热血少年 · 导演叙事手法技能包",
+      "update_time": 1784260000105,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "73f54131bcf85600b06a0fb4aad310d7117275b7e2d199d0ca50dab09f27c304",
+          "source": "data/skills/story_skills/Hot_blooded_action/README.md",
+          "sourceSha256": "73f54131bcf85600b06a0fb4aad310d7117275b7e2d199d0ca50dab09f27c304",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "458dda9943c61547a61de4a1c95159939328b619a019c7a7af76b5bc70945860",
+          "source": "data/skills/story_skills/Hot_blooded_action/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "458dda9943c61547a61de4a1c95159939328b619a019c7a7af76b5bc70945860",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "4a44671bc2368760df9f8c340e7c570dde9988d84c4b41f904fd0d8ed9e97f62",
+          "source": "data/skills/story_skills/Hot_blooded_action/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "4a44671bc2368760df9f8c340e7c570dde9988d84c4b41f904fd0d8ed9e97f62",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Mystery_thriller",
+      "name": "悬疑推理 · 导演叙事手法技能包",
+      "update_time": 1784260000106,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "158b5724e88e39b7a9fd82e74b286098961df37035ff01c1fcaaaa077b571a31",
+          "source": "data/skills/story_skills/Mystery_thriller/README.md",
+          "sourceSha256": "158b5724e88e39b7a9fd82e74b286098961df37035ff01c1fcaaaa077b571a31",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "faac16791569398af380b440a63c0197058bbc31b69f4f4faa620fd0bb3edddd",
+          "source": "data/skills/story_skills/Mystery_thriller/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "faac16791569398af380b440a63c0197058bbc31b69f4f4faa620fd0bb3edddd",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "130913780c2ca0aac77aabeeef19f90394d20d21637744e364c9cdea5164be18",
+          "source": "data/skills/story_skills/Mystery_thriller/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "130913780c2ca0aac77aabeeef19f90394d20d21637744e364c9cdea5164be18",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Psychological_drama",
+      "name": "心理博弈 · 导演叙事手法技能包",
+      "update_time": 1784260000107,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "bf7fd76411a274650d2daa6bdf9e65ac6635c7cb1245762d1080596abb24c1da",
+          "source": "data/skills/story_skills/Psychological_drama/README.md",
+          "sourceSha256": "bf7fd76411a274650d2daa6bdf9e65ac6635c7cb1245762d1080596abb24c1da",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "5ed89e866af9b98d8ec4d7c2261d019ef4dfd26eea2400cab41430a014589b1d",
+          "source": "data/skills/story_skills/Psychological_drama/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "5ed89e866af9b98d8ec4d7c2261d019ef4dfd26eea2400cab41430a014589b1d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "86e55a6c6f97aab7b81e92cf60a8914b2ee15782e3e50c231a886be951bfb2df",
+          "source": "data/skills/story_skills/Psychological_drama/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "86e55a6c6f97aab7b81e92cf60a8914b2ee15782e3e50c231a886be951bfb2df",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Scifi_post_apocalypse",
+      "name": "科幻末世 · 导演叙事手法技能包",
+      "update_time": 1784260000108,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "22ffdf12d47100b77857709562d2ba9ca7c372a597ff810c7b4181dc12c6f3e8",
+          "source": "data/skills/story_skills/Scifi_post_apocalypse/README.md",
+          "sourceSha256": "22ffdf12d47100b77857709562d2ba9ca7c372a597ff810c7b4181dc12c6f3e8",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "46755d6dc6db0c459cfb269c9d0b1fac09ffc265b2e43140a30be4dbd73c754c",
+          "source": "data/skills/story_skills/Scifi_post_apocalypse/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "46755d6dc6db0c459cfb269c9d0b1fac09ffc265b2e43140a30be4dbd73c754c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "4dce31880afb29c5d01cafb7d964744ed0eec097e71f2da25cd89fe14a872ef6",
+          "source": "data/skills/story_skills/Scifi_post_apocalypse/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "4dce31880afb29c5d01cafb7d964744ed0eec097e71f2da25cd89fe14a872ef6",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Sweet_romance_novel",
+      "name": "甜宠言情 · 导演叙事手法技能包",
+      "update_time": 1784260000109,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "c92959154591bc5290a5076d0117f58bbcbbec499fd8026ca456c332a6d13280",
+          "source": "data/skills/story_skills/Sweet_romance_novel/README.md",
+          "sourceSha256": "c92959154591bc5290a5076d0117f58bbcbbec499fd8026ca456c332a6d13280",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "4a2af74334e6fd4542615560def2db72ae3277eb358e1a12cfac27b77ae99daf",
+          "source": "data/skills/story_skills/Sweet_romance_novel/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "4a2af74334e6fd4542615560def2db72ae3277eb358e1a12cfac27b77ae99daf",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "bb1e3b085e468c4645a886df0cd58320eaadb8b3a0609f42abb36b2a1e7f59d1",
+          "source": "data/skills/story_skills/Sweet_romance_novel/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "bb1e3b085e468c4645a886df0cd58320eaadb8b3a0609f42abb36b2a1e7f59d1",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Urban_workplace_drama",
+      "name": "都市职场 · 导演叙事手法技能包",
+      "update_time": 1784260000110,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "d220566a0107751c03acc64797ac07206876b3b6dd0ddf100739a5747352e456",
+          "source": "data/skills/story_skills/Urban_workplace_drama/README.md",
+          "sourceSha256": "d220566a0107751c03acc64797ac07206876b3b6dd0ddf100739a5747352e456",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "d1b3bc9ae084049adbf87a998fb449de0a5595ad66b0bdf2eb6fb61ab150ffde",
+          "source": "data/skills/story_skills/Urban_workplace_drama/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "d1b3bc9ae084049adbf87a998fb449de0a5595ad66b0bdf2eb6fb61ab150ffde",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "4c4063d83b1d1e11a8bd651367c53d84b155f13e2ee1910c162f8c89fe8621b5",
+          "source": "data/skills/story_skills/Urban_workplace_drama/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "4c4063d83b1d1e11a8bd651367c53d84b155f13e2ee1910c162f8c89fe8621b5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "director",
+      "path": "Xianxia_fantasy",
+      "name": "古风仙侠 · 导演叙事手法技能包",
+      "update_time": 1784260000111,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "e9bb1813d25e0aa60bd5180116ff8d9e1bb0c93e025c6df9d7db2e9ef86cbf96",
+          "source": "data/skills/story_skills/Xianxia_fantasy/README.md",
+          "sourceSha256": "e9bb1813d25e0aa60bd5180116ff8d9e1bb0c93e025c6df9d7db2e9ef86cbf96",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_narrative",
+          "sha256": "3d514bb1ddc22b9014abe997d5b7b4bbec9eb3ef2530381699c07e2ff0b539a3",
+          "source": "data/skills/story_skills/Xianxia_fantasy/driector_skills/director_planning_narrative.md",
+          "sourceSha256": "3d514bb1ddc22b9014abe997d5b7b4bbec9eb3ef2530381699c07e2ff0b539a3",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_narrative",
+          "sha256": "9b28469b53d0c5e5e302a00a95d7c51e575792532cc0fe7dce246334373e59dd",
+          "source": "data/skills/story_skills/Xianxia_fantasy/driector_skills/director_storyboard_table_narrative.md",
+          "sourceSha256": "9b28469b53d0c5e5e302a00a95d7c51e575792532cc0fe7dce246334373e59dd",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "2D_90s_japanese_anime",
+      "name": "90年代日式动画",
+      "update_time": 1784260000000,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "1e64575bdfb7ffe6c3364c5a0756bd8decb65dbaca1c032725475a3a70ab69ce",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/README.md",
+          "sourceSha256": "1e64575bdfb7ffe6c3364c5a0756bd8decb65dbaca1c032725475a3a70ab69ce",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "b3dad06bc04f46a7fef7ffcbd9ac1e8341373f832e9eb0a8beb3c8cdc75713b5",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/prefix.md",
+          "sourceSha256": "b3dad06bc04f46a7fef7ffcbd9ac1e8341373f832e9eb0a8beb3c8cdc75713b5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "349a42ebd569875c8a96760fbe0e4b53a57c16d1a2c71056491a2b2cde3d48c8",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_character.md",
+          "sourceSha256": "349a42ebd569875c8a96760fbe0e4b53a57c16d1a2c71056491a2b2cde3d48c8",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "eff88f883ba87d21f4e74e4b2fce79d107b37ecba7241faf8391085ffdfc8f8b",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_character_derivative.md",
+          "sourceSha256": "eff88f883ba87d21f4e74e4b2fce79d107b37ecba7241faf8391085ffdfc8f8b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "ea33910906ea4fc727a2262292814f3adc3e98af3b60cf035bfbeafaa18a1ce5",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_prop.md",
+          "sourceSha256": "ea33910906ea4fc727a2262292814f3adc3e98af3b60cf035bfbeafaa18a1ce5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "033b029e2623fbcae558ff40a08a1ca617d1374342b8c61f41e3365725554f3e",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "033b029e2623fbcae558ff40a08a1ca617d1374342b8c61f41e3365725554f3e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "45f839f13323312a23e7b6b8e3aa6ca28278bbeb0d11ec72715a025662f2e85f",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_scene.md",
+          "sourceSha256": "45f839f13323312a23e7b6b8e3aa6ca28278bbeb0d11ec72715a025662f2e85f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "908ca3484c02de425e85bde6039e5e751330c94ddbac07721d44c4a75590b124",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "908ca3484c02de425e85bde6039e5e751330c94ddbac07721d44c4a75590b124",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "1301aa4e0c658fa22b5cd6aa1584c1ba3d7dcf9aff5e8eef0ed8db9cf37094f1",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/driector_skills/director_storyboard.md",
+          "sourceSha256": "1301aa4e0c658fa22b5cd6aa1584c1ba3d7dcf9aff5e8eef0ed8db9cf37094f1",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "ccabd6ba6ae419631c4adae62f4d35e8ff2ac2eb16525a07e833d462f38e10f5",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "ccabd6ba6ae419631c4adae62f4d35e8ff2ac2eb16525a07e833d462f38e10f5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "c107ce8e2fde1ff79cc4b218736bbf5465f61dee1f743ead52282af504414c47",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/driector_skills/director_planning_style.md",
+          "sourceSha256": "c107ce8e2fde1ff79cc4b218736bbf5465f61dee1f743ead52282af504414c47",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "0ed959607eb52410f42e6bcce8c3e5d4a8a695434f70ea9f651bd9760104ae2d",
+          "source": "data/skills/art_skills/2D_90s_japanese_anime/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "0ed959607eb52410f42e6bcce8c3e5d4a8a695434f70ea9f651bd9760104ae2d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "2D_chinese_guofeng",
+      "name": "国风二次元",
+      "update_time": 1784260000001,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "8aae717de92e79c83b9bc76710af578e7493dac1eb6c0582da68398d5b9ae5da",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/README.md",
+          "sourceSha256": "8aae717de92e79c83b9bc76710af578e7493dac1eb6c0582da68398d5b9ae5da",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "a1c1e172d9b84d7f4663bbe55b821280e30b92530d4ab155aa99e11fb3867e87",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/prefix.md",
+          "sourceSha256": "a1c1e172d9b84d7f4663bbe55b821280e30b92530d4ab155aa99e11fb3867e87",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "d0a2f2013ff3900dc08a401251d182f71dd21386b00e096ff0631b0b6a23e414",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_character.md",
+          "sourceSha256": "d0a2f2013ff3900dc08a401251d182f71dd21386b00e096ff0631b0b6a23e414",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "c9f0a701e250550ae3d492f22e101976bedb14f8606c692300fcb806f1e84577",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_character_derivative.md",
+          "sourceSha256": "c9f0a701e250550ae3d492f22e101976bedb14f8606c692300fcb806f1e84577",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "4f9c8e14dea07f0ae02561c94cc98647085de19c87c1fd3b3aed04594bb7f3cc",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_prop.md",
+          "sourceSha256": "4f9c8e14dea07f0ae02561c94cc98647085de19c87c1fd3b3aed04594bb7f3cc",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "280ff7839a1afecf72339eb10f7336ccf98eae9fbb0fbabc4ee1072c85ea165c",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "280ff7839a1afecf72339eb10f7336ccf98eae9fbb0fbabc4ee1072c85ea165c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "5d20474dd2366eaf9f3bc769a545c95155d8f4934ab517db0b4d952921723b06",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_scene.md",
+          "sourceSha256": "5d20474dd2366eaf9f3bc769a545c95155d8f4934ab517db0b4d952921723b06",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "6207275ada7f1b6d5e7fbd378b8f14e992e553aac52609d1d802112eef8e231b",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "6207275ada7f1b6d5e7fbd378b8f14e992e553aac52609d1d802112eef8e231b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "d8f0b1b723187b3c5e1c4f01a660b5fc6d551dd15ad243c0f695d938eab5c5bc",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/driector_skills/director_storyboard.md",
+          "sourceSha256": "d8f0b1b723187b3c5e1c4f01a660b5fc6d551dd15ad243c0f695d938eab5c5bc",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "8d784ae1be07f7d651855acb386713cb88821da8dee9918f7461afdf42a84f48",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "8d784ae1be07f7d651855acb386713cb88821da8dee9918f7461afdf42a84f48",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "8679c29afcb07a22e86a92a02ea9e925bf76e1edc82ec7812475b284f598ed4b",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/driector_skills/director_planning_style.md",
+          "sourceSha256": "8679c29afcb07a22e86a92a02ea9e925bf76e1edc82ec7812475b284f598ed4b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "f787ac534999d93365ec04cdc5099ba4240f6ad5edc4e17b646272f78caa0c8e",
+          "source": "data/skills/art_skills/2D_chinese_guofeng/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "f787ac534999d93365ec04cdc5099ba4240f6ad5edc4e17b646272f78caa0c8e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "2D_flat_design",
+      "name": "2D扁平设计",
+      "update_time": 1784260000002,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "b692a62aabdfe9efc848795b428333a1d6030c4ed09e3bbd6887c8253cbbe329",
+          "source": "data/skills/art_skills/2D_flat_design/README.md",
+          "sourceSha256": "b692a62aabdfe9efc848795b428333a1d6030c4ed09e3bbd6887c8253cbbe329",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "f8f5a33d5b152b794808cbac962e4b9ce716096af749ea5e46d7fcc948b8b8b4",
+          "source": "data/skills/art_skills/2D_flat_design/prefix.md",
+          "sourceSha256": "f8f5a33d5b152b794808cbac962e4b9ce716096af749ea5e46d7fcc948b8b8b4",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "4b34711a1ad5a606dad64f413493647a161f8b30e8eac20f0ee342b20b08638e",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_character.md",
+          "sourceSha256": "4b34711a1ad5a606dad64f413493647a161f8b30e8eac20f0ee342b20b08638e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "2b4b12158f49e53b6c3c91db2c3da0810a5589ef4d4e6ccfc12edf896a4781dd",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_character_derivative.md",
+          "sourceSha256": "2b4b12158f49e53b6c3c91db2c3da0810a5589ef4d4e6ccfc12edf896a4781dd",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "7694993609f13c7827daa7dc5a37736e2dd2fcf52ecd5211970fb7864feaa0a5",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_prop.md",
+          "sourceSha256": "7694993609f13c7827daa7dc5a37736e2dd2fcf52ecd5211970fb7864feaa0a5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "40830ce9e440bece5418eb580a528846225916ac1386774967273e320861f344",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "40830ce9e440bece5418eb580a528846225916ac1386774967273e320861f344",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "b928e30a3695204bbbbd2d8c353a5dabe34fc07e842926cab2676778d97029a3",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_scene.md",
+          "sourceSha256": "b928e30a3695204bbbbd2d8c353a5dabe34fc07e842926cab2676778d97029a3",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "bd276b27931c4bd720bb71db3c73f2afb0aa2442ac93c2af527223867d87ae27",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "bd276b27931c4bd720bb71db3c73f2afb0aa2442ac93c2af527223867d87ae27",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "ea4d19838482f90300f6a9d9a949905c29aac7b68d19a90b0b19bdd5e86f08de",
+          "source": "data/skills/art_skills/2D_flat_design/driector_skills/director_storyboard.md",
+          "sourceSha256": "ea4d19838482f90300f6a9d9a949905c29aac7b68d19a90b0b19bdd5e86f08de",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "a5a42bb48d7bb96032eb021c30dd644c5af1ee5ed5b9f4076a5b6acc36bf503e",
+          "source": "data/skills/art_skills/2D_flat_design/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "a5a42bb48d7bb96032eb021c30dd644c5af1ee5ed5b9f4076a5b6acc36bf503e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "1ecc2886b388a82c2311de8548db38a9068963747caa5a083d868c8c8f705e67",
+          "source": "data/skills/art_skills/2D_flat_design/driector_skills/director_planning_style.md",
+          "sourceSha256": "1ecc2886b388a82c2311de8548db38a9068963747caa5a083d868c8c8f705e67",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "dff5e41031934dfdb3e3265f588d9efb9e8d33da8c25cfb8012cc553b39de61f",
+          "source": "data/skills/art_skills/2D_flat_design/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "dff5e41031934dfdb3e3265f588d9efb9e8d33da8c25cfb8012cc553b39de61f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "2D_mature_urban_romance",
+      "name": "成熟都市言情动画",
+      "update_time": 1784260000003,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "32cbfe8398cbfa53d6ab8bc07ef2a606fed063c00cf349b6271e1ed63294ef5c",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/README.md",
+          "sourceSha256": "32cbfe8398cbfa53d6ab8bc07ef2a606fed063c00cf349b6271e1ed63294ef5c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "12f739e756113d64d5df0182f8cc0601961929e8cc581512db6eabc0e5d52dc7",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/prefix.md",
+          "sourceSha256": "12f739e756113d64d5df0182f8cc0601961929e8cc581512db6eabc0e5d52dc7",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "bbe7f708e6e73e9f18ef0f94e77768f054d26da6601ed4ef127c2a5bf6628e3b",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_character.md",
+          "sourceSha256": "bbe7f708e6e73e9f18ef0f94e77768f054d26da6601ed4ef127c2a5bf6628e3b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "fe838be827c1e701661d50ba4a9980aef41f9fe04c102b96f4db07f1172c8e41",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_character_derivative.md",
+          "sourceSha256": "fe838be827c1e701661d50ba4a9980aef41f9fe04c102b96f4db07f1172c8e41",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "7d0a33f4e2f8bd4fb2b74c22f76ab383ce6b0d4bbb641ac2dd1d53a82afda797",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_prop.md",
+          "sourceSha256": "7d0a33f4e2f8bd4fb2b74c22f76ab383ce6b0d4bbb641ac2dd1d53a82afda797",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "11124b37bd6483ccc0e6b82477f17d668eeb8b27eb0a2bd0d16f66481cc80f5c",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "11124b37bd6483ccc0e6b82477f17d668eeb8b27eb0a2bd0d16f66481cc80f5c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "5d2097511a9f3a3bb58da6675bae60050ded9018f088361cf924c6bd7244e386",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_scene.md",
+          "sourceSha256": "5d2097511a9f3a3bb58da6675bae60050ded9018f088361cf924c6bd7244e386",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "98a4e98855d32663e1cfaed19df7e91c489f6d25b98f97c1281c0eaa95567ee0",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "98a4e98855d32663e1cfaed19df7e91c489f6d25b98f97c1281c0eaa95567ee0",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "2a835f19afdb8b15044aaadb31160cdc3edd0cb80a0463862b3cb246506c516d",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/driector_skills/director_storyboard.md",
+          "sourceSha256": "2a835f19afdb8b15044aaadb31160cdc3edd0cb80a0463862b3cb246506c516d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "059e381f1c23f131d106dc9224afd8bef8b05a217684ce25c899849a9299048b",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "059e381f1c23f131d106dc9224afd8bef8b05a217684ce25c899849a9299048b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "3d58023ab1ece2ddfec215a80c17a723f1b9d1a25ab88080906819f323b1a7b6",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/driector_skills/director_planning_style.md",
+          "sourceSha256": "3d58023ab1ece2ddfec215a80c17a723f1b9d1a25ab88080906819f323b1a7b6",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "e06ff3006d3fa104c17d6e3683fa8085ba4ca7fbe07e437ad31d78874b2751e0",
+          "source": "data/skills/art_skills/2D_mature_urban_romance/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "e06ff3006d3fa104c17d6e3683fa8085ba4ca7fbe07e437ad31d78874b2751e0",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "3D_anime_render",
+      "name": "3D动画渲染",
+      "update_time": 1784260000004,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "c69d8f5e416379a03c79abb83a9fdfb0f01931b83147e92974c35f3d05933515",
+          "source": "data/skills/art_skills/3D_anime_render/README.md",
+          "sourceSha256": "c69d8f5e416379a03c79abb83a9fdfb0f01931b83147e92974c35f3d05933515",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "9a0af8de0fa227522fe2e37b853113f08fac8b530c8674ac1b24891623bcf0c3",
+          "source": "data/skills/art_skills/3D_anime_render/prefix.md",
+          "sourceSha256": "9a0af8de0fa227522fe2e37b853113f08fac8b530c8674ac1b24891623bcf0c3",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "e47433014c282ff8cd9ec1476151f0c90843187b3274f37fb814af59b1160652",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_character.md",
+          "sourceSha256": "e47433014c282ff8cd9ec1476151f0c90843187b3274f37fb814af59b1160652",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "d7c4bb1706e780b255722b7cbafdd1dff0dd927d72142b13675918660251e97c",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_character_derivative.md",
+          "sourceSha256": "d7c4bb1706e780b255722b7cbafdd1dff0dd927d72142b13675918660251e97c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "672fac1a6cb4581aa4f8bf142ee6a35c90880c8b75519420844039dbf62769af",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_prop.md",
+          "sourceSha256": "672fac1a6cb4581aa4f8bf142ee6a35c90880c8b75519420844039dbf62769af",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "69dbe6e78d913b4e9ef281d1f938646f3237af1c475a5362e3c2df2d4a9f6482",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "69dbe6e78d913b4e9ef281d1f938646f3237af1c475a5362e3c2df2d4a9f6482",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "400efb93c3ddb40e146547aff26ab1c60bac5179a2cd084709fa14c223ac3b47",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_scene.md",
+          "sourceSha256": "400efb93c3ddb40e146547aff26ab1c60bac5179a2cd084709fa14c223ac3b47",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "b1b62f11d9ccb36ed9d4c334b0890253640c97482462dc5dacad939605ed5338",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "b1b62f11d9ccb36ed9d4c334b0890253640c97482462dc5dacad939605ed5338",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "e6c13365d696bb21377739746e2d671b9ad684fdd304b445ca0f79fe5fea2768",
+          "source": "data/skills/art_skills/3D_anime_render/driector_skills/director_storyboard.md",
+          "sourceSha256": "e6c13365d696bb21377739746e2d671b9ad684fdd304b445ca0f79fe5fea2768",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "a35f237993538c1ff8c500b370a9dbe3a4e5ab582c9890e9bd40e0bfa9fcd686",
+          "source": "data/skills/art_skills/3D_anime_render/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "a35f237993538c1ff8c500b370a9dbe3a4e5ab582c9890e9bd40e0bfa9fcd686",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "865cdcdfdec765dc212f1499c9e64f63187a2904afd7efe68e4a10c6c9209e16",
+          "source": "data/skills/art_skills/3D_anime_render/driector_skills/director_planning_style.md",
+          "sourceSha256": "865cdcdfdec765dc212f1499c9e64f63187a2904afd7efe68e4a10c6c9209e16",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "2bd74ccfcde4a7c1c755dacb8b44790aec5bf509ce10bb6e3fe34fb6c8031f89",
+          "source": "data/skills/art_skills/3D_anime_render/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "2bd74ccfcde4a7c1c755dacb8b44790aec5bf509ce10bb6e3fe34fb6c8031f89",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "3D_chinese_traditional",
+      "name": "国风3D",
+      "update_time": 1784260000005,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "efcec8e0c9171abe7736fa372ba18d518fa2de6c011343631f825d7068275943",
+          "source": "data/skills/art_skills/3D_chinese_traditional/README.md",
+          "sourceSha256": "efcec8e0c9171abe7736fa372ba18d518fa2de6c011343631f825d7068275943",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "abde4e492cf5d00eaa2b182ac97d52b516fecb10331c7a3986722b3faf372ba0",
+          "source": "data/skills/art_skills/3D_chinese_traditional/prefix.md",
+          "sourceSha256": "abde4e492cf5d00eaa2b182ac97d52b516fecb10331c7a3986722b3faf372ba0",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "479231452a34b68ca0d10ccf64aa08fef9862fc9d63037e8347f3c6e0344cfa9",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_character.md",
+          "sourceSha256": "479231452a34b68ca0d10ccf64aa08fef9862fc9d63037e8347f3c6e0344cfa9",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "32cb87aa58b5aa4ef3d91a66a5086f13c4b943fd8c2209b138eb21765b1194d8",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_character_derivative.md",
+          "sourceSha256": "32cb87aa58b5aa4ef3d91a66a5086f13c4b943fd8c2209b138eb21765b1194d8",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "1634b7447883174f114760dbddc727c478619a519be91b8835a09f466902ba6c",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_prop.md",
+          "sourceSha256": "1634b7447883174f114760dbddc727c478619a519be91b8835a09f466902ba6c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "f0e190e9d7a9bd4d11e052deb7abf08dea5abc13df7fdf0a361085168cabfdc8",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "f0e190e9d7a9bd4d11e052deb7abf08dea5abc13df7fdf0a361085168cabfdc8",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "176e0a3bdb6d9b62bafa4edb838d8ce1d925e54e29ce02ca1f8a348705fd803f",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_scene.md",
+          "sourceSha256": "176e0a3bdb6d9b62bafa4edb838d8ce1d925e54e29ce02ca1f8a348705fd803f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "69631347533922fe87e22c055bed2d27abfed76a1d01bc2dff475e1f096e1c28",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "69631347533922fe87e22c055bed2d27abfed76a1d01bc2dff475e1f096e1c28",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "0adf161e6dd35cf90431abd84f09be35a61235026394a24c837a2831b8465bfb",
+          "source": "data/skills/art_skills/3D_chinese_traditional/driector_skills/director_storyboard.md",
+          "sourceSha256": "0adf161e6dd35cf90431abd84f09be35a61235026394a24c837a2831b8465bfb",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "19e47cc01126ed61de1623aa236aa75c20e675640970bb6e6cc403283beced9c",
+          "source": "data/skills/art_skills/3D_chinese_traditional/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "19e47cc01126ed61de1623aa236aa75c20e675640970bb6e6cc403283beced9c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "adc06cd0506d2cd4f5ef025ec84e12be559bb19970bcb5dc7e8b9f80c2f1cfa0",
+          "source": "data/skills/art_skills/3D_chinese_traditional/driector_skills/director_planning_style.md",
+          "sourceSha256": "adc06cd0506d2cd4f5ef025ec84e12be559bb19970bcb5dc7e8b9f80c2f1cfa0",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "8dc19c7cf2e8dfd65e41570e9a184a9827bf6227cb20bdf5e4ecb54f8b33177e",
+          "source": "data/skills/art_skills/3D_chinese_traditional/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "8dc19c7cf2e8dfd65e41570e9a184a9827bf6227cb20bdf5e4ecb54f8b33177e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "3D_clay_stopmotion",
+      "name": "黏土定格动画",
+      "update_time": 1784260000006,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "c792e2202bca67711ea06ca5a1b78c415006bfd607858e9ed0cd9dd7ea81be1c",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/README.md",
+          "sourceSha256": "c792e2202bca67711ea06ca5a1b78c415006bfd607858e9ed0cd9dd7ea81be1c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "ce143c685ec73cbf7dbb44604172d5b556ab1ec606a808ab6f0c7672f76d8c79",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/prefix.md",
+          "sourceSha256": "ce143c685ec73cbf7dbb44604172d5b556ab1ec606a808ab6f0c7672f76d8c79",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "9584881f8adaf2455eab947730bd16ba2c935596ae55b56d4aa30e9713cb2e64",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_character.md",
+          "sourceSha256": "9584881f8adaf2455eab947730bd16ba2c935596ae55b56d4aa30e9713cb2e64",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "0fc84075a24851f954bd2a8df10bce91ad7e11bdf11fec8e863d0a38ef19de78",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_character_derivative.md",
+          "sourceSha256": "0fc84075a24851f954bd2a8df10bce91ad7e11bdf11fec8e863d0a38ef19de78",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "5b51ed354f20b36cc51a3d72269a2443475eab95677f8c386eb1dd5f78b0a33a",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_prop.md",
+          "sourceSha256": "5b51ed354f20b36cc51a3d72269a2443475eab95677f8c386eb1dd5f78b0a33a",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "e32057892bfc5fed48d31d6b1c8d4b6a29f72f059f984f171a1d4d289eaadb9d",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "e32057892bfc5fed48d31d6b1c8d4b6a29f72f059f984f171a1d4d289eaadb9d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "997f5387274d6da0d0a29ac5e37234dcfd0654929231fb5368c51580841da751",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_scene.md",
+          "sourceSha256": "997f5387274d6da0d0a29ac5e37234dcfd0654929231fb5368c51580841da751",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "70c23871a3efa0480fde60b8918ce9ad9d87de1e2cce26dd0724b776b6a3780a",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "70c23871a3efa0480fde60b8918ce9ad9d87de1e2cce26dd0724b776b6a3780a",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "a64bc9c88be9a5688240f83968c5fd44241c492b992e161c8080bbdd2f3c5a23",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/driector_skills/director_storyboard.md",
+          "sourceSha256": "a64bc9c88be9a5688240f83968c5fd44241c492b992e161c8080bbdd2f3c5a23",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "6e34f26a0ecb8472cba375201fc3719b128436856bfd68f369e823629a3cbb62",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "6e34f26a0ecb8472cba375201fc3719b128436856bfd68f369e823629a3cbb62",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "cb89216faf9f7dd6e24bf041ad25cc4c890aec445f5b1e37eea5a226efd8231f",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/driector_skills/director_planning_style.md",
+          "sourceSha256": "cb89216faf9f7dd6e24bf041ad25cc4c890aec445f5b1e37eea5a226efd8231f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "692463b51957c30573dfdf5af60160fa9be858a21acb4d2edef9a56115355a7f",
+          "source": "data/skills/art_skills/3D_clay_stopmotion/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "692463b51957c30573dfdf5af60160fa9be858a21acb4d2edef9a56115355a7f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "3D_guofeng_cyber",
+      "name": "国风赛博3D",
+      "update_time": 1784260000007,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "eeba202b5214a0ae88d2c63513b4873faeea96d0af69bc65008a90ba9935ee98",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/README.md",
+          "sourceSha256": "eeba202b5214a0ae88d2c63513b4873faeea96d0af69bc65008a90ba9935ee98",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "02954f602154a914a7135671f065ed1098d35d487bf0705a6c0554fc4de29188",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/prefix.md",
+          "sourceSha256": "02954f602154a914a7135671f065ed1098d35d487bf0705a6c0554fc4de29188",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "9b83abac8a72bb7646cc5473383d63074f0f1d9ef41938fd50f48f9accc34647",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_character.md",
+          "sourceSha256": "9b83abac8a72bb7646cc5473383d63074f0f1d9ef41938fd50f48f9accc34647",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "4920905f2bb7e0ae75b3cf43a7fe9ab41fc9ae3f5752c0fe151513abe99b4315",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_character_derivative.md",
+          "sourceSha256": "4920905f2bb7e0ae75b3cf43a7fe9ab41fc9ae3f5752c0fe151513abe99b4315",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "d495aa1329556043a3713fbe08bbf56a740664f82a8154a7945e519bbfcf3202",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_prop.md",
+          "sourceSha256": "d495aa1329556043a3713fbe08bbf56a740664f82a8154a7945e519bbfcf3202",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "55c2258bbc5d29dac9230699b37a0c69318e38bdac45b7a621fc1d6c8684ac3d",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "55c2258bbc5d29dac9230699b37a0c69318e38bdac45b7a621fc1d6c8684ac3d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "388ef83c273b0a684deae15933010e0961c4f87ab550c498c4e50c2ea9c5eb7c",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_scene.md",
+          "sourceSha256": "388ef83c273b0a684deae15933010e0961c4f87ab550c498c4e50c2ea9c5eb7c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "5aff57c1df50a564e61c4fc66801447201ce703cbc5a72da9f286218453ed051",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "5aff57c1df50a564e61c4fc66801447201ce703cbc5a72da9f286218453ed051",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "387a35be71e465a62e5d3b7625e82fa577e990ec115e8cde582f155c60ddd9d2",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/driector_skills/director_storyboard.md",
+          "sourceSha256": "387a35be71e465a62e5d3b7625e82fa577e990ec115e8cde582f155c60ddd9d2",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "e8f001cbfd7d8a31cfd597b71a83cfc7ca18652b722e23d53349810dce3fb183",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "e8f001cbfd7d8a31cfd597b71a83cfc7ca18652b722e23d53349810dce3fb183",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "84ad452c8625f0612af40a16b51e6d09e8c3abd5f442860ed026953a09e8956b",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/driector_skills/director_planning_style.md",
+          "sourceSha256": "84ad452c8625f0612af40a16b51e6d09e8c3abd5f442860ed026953a09e8956b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "a797a00e9fd6b229d5981a36b8c0452414b88dd031c135ab2e204ef6f4b2393c",
+          "source": "data/skills/art_skills/3D_guofeng_cyber/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "2c4f00f550dc2f8e1eb5a1f70b4a7dbcbf2ca6e9c6a5879a7309e5992eed9a23",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "realpeople_ancient_chinese",
+      "name": "真人古风写实",
+      "update_time": 1784260000008,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "230bc3093f0c56e33f8ed5885181e73058e64bbf069315276de0d988c6f2d14b",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/README.md",
+          "sourceSha256": "230bc3093f0c56e33f8ed5885181e73058e64bbf069315276de0d988c6f2d14b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "38e915acefd3159b8e988c60afcf8edad6aaaeb2297af99559dcd5d22af7fc79",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/prefix.md",
+          "sourceSha256": "38e915acefd3159b8e988c60afcf8edad6aaaeb2297af99559dcd5d22af7fc79",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "80eb179d0091910216dae9995be0b3d69a982f197b6a1d77e8546dd3ede5b3f5",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_character.md",
+          "sourceSha256": "80eb179d0091910216dae9995be0b3d69a982f197b6a1d77e8546dd3ede5b3f5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "38785ac7accc26054215131853b4e6db44c35b74f25b14d4cdc069c047a1a809",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_character_derivative.md",
+          "sourceSha256": "38785ac7accc26054215131853b4e6db44c35b74f25b14d4cdc069c047a1a809",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "2c35729007eae178c7d2311fc96a72d30f55047b12189a51998458aeb9d5b4ad",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_prop.md",
+          "sourceSha256": "2c35729007eae178c7d2311fc96a72d30f55047b12189a51998458aeb9d5b4ad",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "c45469593002bac2b87f98345401406dbde12d4adad878430af43baf4fa0c1ed",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "c45469593002bac2b87f98345401406dbde12d4adad878430af43baf4fa0c1ed",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "341e653d61daefad6db802ee2d144cd4f0a10ec8038a308282f6fb14bee78b5b",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_scene.md",
+          "sourceSha256": "341e653d61daefad6db802ee2d144cd4f0a10ec8038a308282f6fb14bee78b5b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "91486c9319aafb24c71652cfb45cc2a60eb11dc9810d2c445543268b4b15b34f",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "91486c9319aafb24c71652cfb45cc2a60eb11dc9810d2c445543268b4b15b34f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "11b3f7dad64acd1a20212260506f1b3177ac52db5ba4f595b540fd0df0e967ac",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/driector_skills/director_storyboard.md",
+          "sourceSha256": "11b3f7dad64acd1a20212260506f1b3177ac52db5ba4f595b540fd0df0e967ac",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "e48e6191eacc0b655c203f43f42332cb8a489327e544fe0a7469d58406d34c94",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "e48e6191eacc0b655c203f43f42332cb8a489327e544fe0a7469d58406d34c94",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "29eabc28eb232ea82c0325d90699678d02fd57d06dab817544a2e10ca40638fd",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/driector_skills/director_planning_style.md",
+          "sourceSha256": "29eabc28eb232ea82c0325d90699678d02fd57d06dab817544a2e10ca40638fd",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "591f7fdbf7000c766ded2e3ab5cd533c7c0635c31647bc3d202279e6058d5b05",
+          "source": "data/skills/art_skills/realpeople_ancient_chinese/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "591f7fdbf7000c766ded2e3ab5cd533c7c0635c31647bc3d202279e6058d5b05",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "realpeople_cinematic_base",
+      "name": "通用真人影视基底",
+      "update_time": 1789056000000,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "5bdc587a390df8e92197af2e7185a1e53bd5e75ed4b37d19b594203792a6f1ce",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/README.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "44fa59d607f10b732661836cc4c81afb4e6f4cdca31d74a8f99e4e7d519e65c8",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/prefix.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "929efb2f007d70d8d8a99401ddbfbbac3bf5409f3cd683bb4082903695ff2426",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_character.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "6494e03fe21b00af55e11c83f9d6926e55c11355427ea01feb6ef3aab7012712",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_character_derivative.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "6515d2e88778679b36e164c8f48febf32722798b8d3ad8b7f3bd266b47c802f7",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_scene.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "7418a9954904f26d0a1d9a58999ac7069e6cda8b4f4c8ab2ab7037a4dda9a854",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_scene_derivative.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "3ab64440d30f962942868234c07c604ca57fd0b9722e2d89492b920658342ff2",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_prop.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "2a9a44ffd5e826ef981c2888eaa58264bbc9676ecc5138a20a93f67c0346a718",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_prop_derivative.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "a7118e7dbf4c3db43fd6c85e3ec9bc489e908b6ea6a2b542dc4a43080b42d723",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/driector_skills/director_storyboard.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "4092080e5875b0ffc24ed5d296e5b98a2ac6cb5bb4da4260465f8c806a4ec333",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/art_prompt/art_storyboard_video.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "19304c3b7c0b71071b57d2b16ae29b4fe9635a2e5d77381baf22f078183c66bc",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/driector_skills/director_planning_style.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "eaeb9d1c6da487206bbf6dc76bf6f70cf4551894ec125ac41005dc576ed89c9f",
+          "source": "data/skills/art_skills/realpeople_cinematic_base/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": null,
+          "comparison": "no-baseline-file",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "realpeople_modern_city",
+      "name": "真人现代都市影视",
+      "update_time": 1784260000009,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "f5e8c1be667d3349b221beb3098113fe3a7af98db2960f4d26ff0e4c6cb82ea9",
+          "source": "data/skills/art_skills/realpeople_modern_city/README.md",
+          "sourceSha256": "f5e8c1be667d3349b221beb3098113fe3a7af98db2960f4d26ff0e4c6cb82ea9",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "0605a7a28124c34d34996bb1c04f4a60609614d602c18b7cd06136f89637c0c1",
+          "source": "data/skills/art_skills/realpeople_modern_city/prefix.md",
+          "sourceSha256": "0605a7a28124c34d34996bb1c04f4a60609614d602c18b7cd06136f89637c0c1",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "d47684ef8ffc293658b341c848df09e7e3160f13527aa2d879bbc57e40161249",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_character.md",
+          "sourceSha256": "d47684ef8ffc293658b341c848df09e7e3160f13527aa2d879bbc57e40161249",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "70ea5155bf25ea75a41746ef423ccddacf9d363fa2ab40075a94f048c98fd060",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_character_derivative.md",
+          "sourceSha256": "70ea5155bf25ea75a41746ef423ccddacf9d363fa2ab40075a94f048c98fd060",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "512cdedae46b9596c31e2dc2aa0f858d1f0dbe1bfb397a7c0c1f98e033f92006",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_prop.md",
+          "sourceSha256": "512cdedae46b9596c31e2dc2aa0f858d1f0dbe1bfb397a7c0c1f98e033f92006",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "0fc4aedcff3ef3666a9553eaf4f6201b204065b1baf0e52b7b2eceefe86c7865",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "0fc4aedcff3ef3666a9553eaf4f6201b204065b1baf0e52b7b2eceefe86c7865",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "43b484e7dd43f92a924756754d747426af0094d72d4f33edf6ca25624415c58f",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_scene.md",
+          "sourceSha256": "43b484e7dd43f92a924756754d747426af0094d72d4f33edf6ca25624415c58f",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "0dc8700d7fe2c04852672e3bfd8010ae354a5a538527688442102a1a105a2983",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "0dc8700d7fe2c04852672e3bfd8010ae354a5a538527688442102a1a105a2983",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "8074dc061d656267341963c520d6a85c3fa8115fb66663e3dceed754a338eb5b",
+          "source": "data/skills/art_skills/realpeople_modern_city/driector_skills/director_storyboard.md",
+          "sourceSha256": "8074dc061d656267341963c520d6a85c3fa8115fb66663e3dceed754a338eb5b",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "685109c5105f94323690bbf6e70b7a3a4d44fa17dbbf17b3a2a14e573a966e41",
+          "source": "data/skills/art_skills/realpeople_modern_city/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "685109c5105f94323690bbf6e70b7a3a4d44fa17dbbf17b3a2a14e573a966e41",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "76fc49f7ab64992714b57f7fa086e2a727f2b7450b07467cb40e27803b4492db",
+          "source": "data/skills/art_skills/realpeople_modern_city/driector_skills/director_planning_style.md",
+          "sourceSha256": "76fc49f7ab64992714b57f7fa086e2a727f2b7450b07467cb40e27803b4492db",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "ea7b6f4dff5b7d32c8ebc7e9186b17225d1fd340198d6936935e5d8e413cd001",
+          "source": "data/skills/art_skills/realpeople_modern_city/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "ea7b6f4dff5b7d32c8ebc7e9186b17225d1fd340198d6936935e5d8e413cd001",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    },
+    {
+      "kind": "visual",
+      "path": "realpeople_urban_modern",
+      "name": "真人都市写实",
+      "update_time": 1784260000010,
+      "entries": [
+        {
+          "value": "README",
+          "sha256": "79453b80fdc09ea1ac6e2481627ec6f055871347ee6dbe99c8556a76b93e753d",
+          "source": "data/skills/art_skills/realpeople_urban_modern/README.md",
+          "sourceSha256": "79453b80fdc09ea1ac6e2481627ec6f055871347ee6dbe99c8556a76b93e753d",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "prefix",
+          "sha256": "e8912d6fc6bc9d33fb0464a4a912a95a38a30ff34e7fdd1d3fa5858c410775ca",
+          "source": "data/skills/art_skills/realpeople_urban_modern/prefix.md",
+          "sourceSha256": "e8912d6fc6bc9d33fb0464a4a912a95a38a30ff34e7fdd1d3fa5858c410775ca",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character",
+          "sha256": "f968922c4f4ebbb09859a258bd6ede6da3738ee226c251d49ffdbcf02028bd68",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_character.md",
+          "sourceSha256": "f968922c4f4ebbb09859a258bd6ede6da3738ee226c251d49ffdbcf02028bd68",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_character_derivative",
+          "sha256": "660858e4e73fce162f2ed2fcd68ef6ef8f513571a372da61e85e43a6db1389d5",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_character_derivative.md",
+          "sourceSha256": "660858e4e73fce162f2ed2fcd68ef6ef8f513571a372da61e85e43a6db1389d5",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop",
+          "sha256": "782586a39eb080c1d97a8b6c2449b5e15484cdbe811e54f3494d78228b2560e1",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_prop.md",
+          "sourceSha256": "782586a39eb080c1d97a8b6c2449b5e15484cdbe811e54f3494d78228b2560e1",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_prop_derivative",
+          "sha256": "117c1dbae5e55de0241ef9421c950be3129257c7e5ca6f334835b5b51cc8e648",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_prop_derivative.md",
+          "sourceSha256": "117c1dbae5e55de0241ef9421c950be3129257c7e5ca6f334835b5b51cc8e648",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene",
+          "sha256": "76d8b8741859bce4dea7f949594ebf56d0552df51ac0240b1b1555e3abf08fcb",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_scene.md",
+          "sourceSha256": "76d8b8741859bce4dea7f949594ebf56d0552df51ac0240b1b1555e3abf08fcb",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_scene_derivative",
+          "sha256": "b7ef0be5b96d97f485b2fddadb4d5e8c23d42e889cd561767fd0d02582ac1661",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_scene_derivative.md",
+          "sourceSha256": "b7ef0be5b96d97f485b2fddadb4d5e8c23d42e889cd561767fd0d02582ac1661",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard",
+          "sha256": "d359f02db1a92e3b38e25c446827302c0f9ad3947ad636df62378af1e0769be1",
+          "source": "data/skills/art_skills/realpeople_urban_modern/driector_skills/director_storyboard.md",
+          "sourceSha256": "d359f02db1a92e3b38e25c446827302c0f9ad3947ad636df62378af1e0769be1",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "art_storyboard_video",
+          "sha256": "d77498cf665f51dbfc1f4d2c69779a74de22f6a0bf0ca3498ed037dd3835301e",
+          "source": "data/skills/art_skills/realpeople_urban_modern/art_prompt/art_storyboard_video.md",
+          "sourceSha256": "d77498cf665f51dbfc1f4d2c69779a74de22f6a0bf0ca3498ed037dd3835301e",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_planning_style",
+          "sha256": "a519b28e34f6b7f0edeae904fa67b8f98a2cd209a9db512af00b6aa4ae04fbdc",
+          "source": "data/skills/art_skills/realpeople_urban_modern/driector_skills/director_planning_style.md",
+          "sourceSha256": "a519b28e34f6b7f0edeae904fa67b8f98a2cd209a9db512af00b6aa4ae04fbdc",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        },
+        {
+          "value": "director_storyboard_table_style",
+          "sha256": "f072292e1dec0ee34a19f147570cb1ce38c2af2dc82193dbd56080dcca507d6c",
+          "source": "data/skills/art_skills/realpeople_urban_modern/driector_skills/director_storyboard_table_style.md",
+          "sourceSha256": "f072292e1dec0ee34a19f147570cb1ce38c2af2dc82193dbd56080dcca507d6c",
+          "comparison": "matches-baseline",
+          "userModification": "unknown; content difference does not establish authorship"
+        }
+      ]
+    }
+  ],
+  "attributions": [
+    {
+      "agent_key": "productionAgent:decisionAgent",
+      "skill_path": "production_agent_decision.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:deriveAssetsAgent",
+      "skill_path": "production_execution_derive_assets.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:directorPlanAgent",
+      "skill_path": "production_execution_director_plan.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:generateAssetsAgent",
+      "skill_path": "production_execution_generate_assets.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:storyboardGenAgent",
+      "skill_path": "production_execution_storyboard_gen.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:storyboardPanelAgent",
+      "skill_path": "production_execution_storyboard_panel.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:storyboardTableAgent",
+      "skill_path": "production_execution_storyboard_table.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "productionAgent:supervisionAgent",
+      "skill_path": "production_agent_supervision.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "scriptAgent:adaptationStrategyAgent",
+      "skill_path": "script_execution_adaptation.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "scriptAgent:decisionAgent",
+      "skill_path": "script_agent_decision.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "scriptAgent:scriptAgent",
+      "skill_path": "script_execution_script.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "scriptAgent:storySkeletonAgent",
+      "skill_path": "script_execution_skeleton.md",
+      "priority": 0
+    },
+    {
+      "agent_key": "scriptAgent:supervisionAgent",
+      "skill_path": "script_agent_supervision.md",
+      "priority": 0
+    }
+  ],
+  "projects": [
+    {
+      "id": 1789001546712,
+      "art_style": "2D_90s_japanese_anime",
+      "director_manual": "Comedy_humor",
+      "image_model": 1788946049639,
+      "video_model": 1788945938590,
+      "chat_model": 1789033036771,
+      "mode": "endFrameOptional"
+    }
+  ],
+  "agents": [
+    {
+      "key": "imageGeneration",
+      "model_config_id": 1788946049639,
+      "prompt_source_key": null,
+      "disabled": false
+    },
+    {
+      "key": "productionAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:decisionAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:deriveAssetsAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:directorPlanAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:generateAssetsAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:storyboardGenAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:storyboardPanelAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:storyboardTableAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "productionAgent:supervisionAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "scriptAssetExtraction",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent:adaptationStrategyAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent:decisionAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent:scriptAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent:storySkeletonAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "scriptAgent:supervisionAgent",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "",
+      "disabled": false
+    },
+    {
+      "key": "ttsDubbing",
+      "model_config_id": null,
+      "prompt_source_key": "audioBindPrompt",
+      "disabled": true
+    },
+    {
+      "key": "universalAi",
+      "model_config_id": 1789033036771,
+      "prompt_source_key": "eventExtraction",
+      "disabled": false
+    },
+    {
+      "key": "videoGeneration",
+      "model_config_id": 1788945938590,
+      "prompt_source_key": "videoPromptGeneration",
+      "disabled": false
+    }
+  ],
+  "models": [
+    {
+      "id": 1788945938590,
+      "key": "volcengine-doubao-seedance-1-0-pro-fast-251015",
+      "name": "火山引擎 · doubao-seedance-1-0-pro-fast-251015",
+      "platform": "VolcEngine",
+      "type": "video",
+      "model": "doubao-seedance-1-0-pro-fast-251015"
+    },
+    {
+      "id": 1788946049639,
+      "key": "volcengine-doubao-seedream-4-5-251128",
+      "name": "火山引擎 · doubao-seedream-4-5-251128",
+      "platform": "VolcEngine",
+      "type": "image",
+      "model": "doubao-seedream-4-5-251128"
+    },
+    {
+      "id": 1789033036771,
+      "key": "deepseek-deepseek-v4-flash",
+      "name": "DeepSeek · deepseek-v4-flash",
+      "platform": "DeepSeek",
+      "type": "chat",
+      "model": "deepseek-v4-flash"
+    }
+  ],
+  "modelPromptMaps": []
+}

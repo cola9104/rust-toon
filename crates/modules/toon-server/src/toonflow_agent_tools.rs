@@ -70,6 +70,10 @@ pub use crate::toonflow_agent_plan::{get_plan, set_plan, update_plan};
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ToolRequest {
     pub(crate) agent_type: String,
+    /// Concrete runtime agent identity. Internal-only so API callers cannot
+    /// widen their Skill scope by supplying a different stage agent.
+    #[serde(skip, default)]
+    pub(crate) agent_key: Option<String>,
     #[serde(default)]
     pub(crate) isolation_key: String,
     pub(crate) project_id: i64,
@@ -383,19 +387,22 @@ pub(crate) async fn execute_inner(
         if path.starts_with('/') || path.contains("..") || path.contains('\\') {
             return Err(AppError::bad_request("Skill 路径无效"));
         }
+        let default_agent_key = match request.agent_type.as_str() {
+            "scriptAgent" => "scriptAgent:decisionAgent",
+            "productionAgent" => "productionAgent:decisionAgent",
+            _ => return Err(AppError::bad_request("不支持的 Agent 类型")),
+        };
+        let skill_agent_key = request.agent_key.as_deref().unwrap_or(default_agent_key);
         let available = toonflow_agent_runtime::available_skills(
             &state.pool,
-            &request.agent_type,
+            skill_agent_key,
             request.project_id,
         )
         .await
         .map_err(AppError::bad_request)?;
-        let is_known_main_skill =
-            path.starts_with("script_") || path.starts_with("production_agent");
-        if !is_known_main_skill
-            && !available
-                .iter()
-                .any(|(available_path, _, _)| available_path == path)
+        if !available
+            .iter()
+            .any(|(available_path, _, _)| available_path == path)
         {
             return Err(AppError::bad_request(
                 "该 Skill 不属于当前 Agent 或项目上下文",
@@ -404,7 +411,11 @@ pub(crate) async fn execute_inner(
         let content = toonflow_agent_runtime::load_skill(&state.pool, path)
             .await
             .map_err(AppError::bad_request)?;
-        return Ok(json!({"path":path,"content":content}));
+        return Ok(json!({
+            "path":path, "content":content,
+            "sha256":crate::toonflow_prompt_trace::sha256(&content),
+            "agentKey":skill_agent_key, "projectId":request.project_id,
+        }));
     }
     match (request.agent_type.as_str(), request.tool_name.as_str()) {
         ("scriptAgent", "get_planData") => {
@@ -668,9 +679,32 @@ pub(crate) async fn execute_inner(
                 }
                 _ => String::new(),
             };
+            let workspace_snapshot: Option<Value> = sqlx::query_scalar(
+                "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
+            )
+            .bind(request.project_id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to preload script workspace"))?;
+            let workspace_context = workspace_snapshot
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_else(|| "（当前工作区为空）".to_string());
             let full_system = format!(
-                "{system}\n\n## 当前项目\n{project_hint}\n\n你是 Toonflow 的{label}子 Agent。请使用工具读取所需数据，然后完成任务并输出要求的 XML 格式内容。{supervision_scope}"
-            ) + &format_instruction;
+                "{system}\n\n## 当前项目\n{project_hint}\n\n## 服务端预载的最新剧本工作区\n{workspace_context}\n\n你是 Toonflow 的{label}子 Agent。需要核实原著时使用读取工具；完成后直接输出一次最终 XML，不要先输出草稿。{supervision_scope}"
+            ) + &format_instruction + crate::toonflow_script_quality::POLICY;
+            let has_novel: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM toonflow.novels WHERE project_id=$1)",
+            )
+            .bind(request.project_id)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(|_| AppError::internal("failed to inspect source availability"))?;
+            let quality_stage = matches!(agent_key,
+                "scriptAgent:storySkeletonAgent" | "scriptAgent:adaptationStrategyAgent" | "scriptAgent:supervisionAgent");
+            let mut evidence = crate::toonflow_script_quality::ReadEvidence::default();
+            evidence.workspace = true;
+            let mut correction_attempts = 0;
 
             // Sub-agent read-only tool definitions
             let sub_tools: Vec<Value> = vec![
@@ -737,6 +771,17 @@ pub(crate) async fn execute_inner(
                     if candidate.is_empty() {
                         return Err(AppError::bad_request("子 Agent 未返回有效内容"));
                     }
+                    if quality_stage {
+                        if let Some(reason) = evidence.missing(has_novel, true) {
+                            correction_attempts += 1;
+                            if correction_attempts > 2 {
+                                return Err(AppError::bad_request(format!("原著核实未完成，未保存本次生成：{reason}")));
+                            }
+                            messages.push(message);
+                            messages.push(json!({"role":"user","content":reason}));
+                            continue;
+                        }
+                    }
                     if let Some(limit) = supervision_episode_limit {
                         let invalid = explicit_episode_limit(&candidate)
                             .filter(|episode| *episode > limit)
@@ -776,6 +821,7 @@ pub(crate) async fn execute_inner(
                         &args,
                     )
                     .await;
+                    evidence.record(tool_name, &args, &result);
                     messages.push(json!({"role":"tool","tool_call_id":call_id,"content":result}));
                 }
             }
@@ -813,9 +859,17 @@ pub(crate) async fn execute_inner(
                 let content = required_tagged(&output, tag)?;
                 let mut data:Value=sqlx::query_scalar("SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'").bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_|AppError::internal("failed to load script workspace"))?.unwrap_or_else(||json!({"storySkeleton":"","adaptationStrategy":""}));
                 data[tag] = json!(content);
+                data[format!("{tag}Evidence")] = json!({
+                    "sourceChaptersRead": evidence.chapters,
+                    "workspaceRead": evidence.workspace,
+                    "singlePassQualityPolicy": quality_stage,
+                    "savedAt": now_ms(),
+                    "policyVersion": 2
+                });
                 sqlx::query("INSERT INTO toonflow.agent_work_data(project_id,episodes_id,key,data,create_time,update_time)VALUES($1,NULL,'scriptAgent',$2,$3,$3) ON CONFLICT(project_id,key) WHERE episodes_id IS NULL DO UPDATE SET data=excluded.data,update_time=excluded.update_time").bind(request.project_id).bind(data).bind(now_ms()).execute(&state.pool).await.map_err(|_|AppError::internal("failed to save sub agent result"))?;
             }
-            Ok(json!({"agent":agent_key,"content":output}))
+            Ok(json!({"agent":agent_key,"content":output,
+                "evidence":{"sourceChaptersRead":evidence.chapters,"workspaceRead":evidence.workspace,"singlePassQualityPolicy":quality_stage}}))
         }
         ("productionAgent", "get_flowData") => {
             let script_id = request
@@ -1017,7 +1071,7 @@ pub(crate) async fn execute_inner(
             Ok(json!(true))
         }
         ("productionAgent", "generate_deriveAsset") => {
-            let ids = request
+            let mut ids = request
                 .arguments
                 .get("ids")
                 .and_then(Value::as_array)
@@ -1026,6 +1080,8 @@ pub(crate) async fn execute_inner(
                 .into_iter()
                 .filter_map(|value| value.as_i64())
                 .collect::<Vec<_>>();
+            ids.sort_unstable();
+            ids.dedup();
             if ids.is_empty() {
                 return Err(AppError::bad_request("ids不能为空"));
             }
@@ -1061,13 +1117,24 @@ pub(crate) async fn execute_inner(
                     "productionAgent:deriveAssetsAgent",
                     "衍生资产",
                     None,
-                    &["get_flowData", "add_deriveAsset", "del_deriveAsset"],
+                    &[
+                        "get_flowData",
+                        "add_deriveAsset",
+                        "del_deriveAsset",
+                        "use_skill",
+                        "read_skill_file",
+                    ],
                 ),
                 "run_sub_agent_generate_assets" => (
                     "productionAgent:generateAssetsAgent",
                     "资产生成",
                     None,
-                    &["get_flowData", "generate_deriveAsset"],
+                    &[
+                        "get_flowData",
+                        "generate_deriveAsset",
+                        "use_skill",
+                        "read_skill_file",
+                    ],
                 ),
                 "run_sub_agent_director_plan" => (
                     "productionAgent:directorPlanAgent",
@@ -1084,13 +1151,19 @@ pub(crate) async fn execute_inner(
                     "productionAgent:storyboardGenAgent",
                     "分镜图生成",
                     None,
-                    &["get_flowData", "update_storyboard", "generate_storyboard"],
+                    &[
+                        "get_flowData",
+                        "update_storyboard",
+                        "generate_storyboard",
+                        "use_skill",
+                        "read_skill_file",
+                    ],
                 ),
                 "run_sub_agent_image_edit" => (
                     "productionAgent:storyboardGenAgent",
                     "图片编辑规划",
                     None,
-                    &["get_flowData"],
+                    &["get_flowData", "use_skill", "read_skill_file"],
                 ),
                 "run_sub_agent_storyboard_panel" => (
                     "productionAgent:storyboardPanelAgent",
@@ -1114,7 +1187,7 @@ pub(crate) async fn execute_inner(
                     "productionAgent:supervisionAgent",
                     "监制",
                     None,
-                    &["get_flowData"],
+                    &["get_flowData", "use_skill", "read_skill_file"],
                 ),
                 _ => return Err(AppError::bad_request("不支持的生产子 Agent")),
             };
@@ -1266,20 +1339,9 @@ pub(crate) async fn execute_inner(
             let system = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key)
                 .await
                 .map_err(AppError::bad_request)?;
-            let project_info: Option<(String, String, String, String, String)> = sqlx::query_as(
-                "SELECT name,type,intro,art_style,video_ratio FROM toonflow.projects WHERE id=$1",
-            )
-            .bind(request.project_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|_| AppError::bad_request("无法加载项目信息"))?;
-            let project_hint = if let Some((name, kind, intro, style, ratio)) = project_info {
-                format!(
-                    "\n\n## 当前项目\n- 作品名：{name}\n- 小说类型：{kind}\n- 小说简介：{intro}\n- 视觉风格：{style}\n- 视频画幅：{ratio}\n\n**你的所有输出必须与以上项目完全匹配。**"
-                )
-            } else {
-                String::new()
-            };
+            let project_hint =
+                toonflow_agents::production_context(state, request.project_id, request.script_id)
+                    .await?;
             let generation_gate = if agent_key == "productionAgent:storyboardTableAgent" {
                 "\n\n## Toonflow 分镜规划强制执行顺序（不得跳步）\n1. 首轮只调用 get_flowData，依次读取 script、assets、scriptPlan；三项必须全部实际读取，禁止依靠记忆补写。\n2. 先在回复中输出简短的逐场结构化草案：逐条台词按4字/秒估时、划分不超过15秒的片段、写明相邻片段的桥梁元素、标出长台词拆镜点并核对全员视觉落点。\n3. 草案完成后保存完整 storyboardTable；标签内部必须是技能模板规定的 Markdown，禁止 JSON、XML 子标签和代码围栏。\n4. 每一行镜头必须能直接生成一张构图明确的静态关键帧：只允许一个时间点、一个机位、一个连续动作状态。禁止蒙太奇、快切、多景别、定格画面、用箭头串联多个动作或在同一行跨时间。\n5. 逐场维护“在场角色状态”：跨片段持续记录每个人物的入场、位置、基础姿态、承托物、朝向、持有物和离场。相邻镜头仍在同一空间且没有明确离场、转场、特写、反打或画外依据时，上一镜在场人物必须继续写入画面描述并绑定对应衍生资产；不得因本镜没有台词或主动作而让人物凭空消失。\n6. 画面描述必须逐镜展开本镜所有出镜人物的姓名、基础姿态、承托物、位置、朝向及相互空间关系；禁止用“同前”“保持原姿势”或上下文隐含替代。即使某人没有主动作，只要同框也必须明确描述，例如病床对话每一镜都要写患者仰躺在病床上、陪伴者坐在床边。只有明确写出坐起、下床、起身、站起等可见动作时才能改变既有姿态。\n7. 画面描述、运镜、音效不得出现光影色调词；画面描述不得重复服装、发型、五官、肤色等资产固有外观。\n8. 每镜含台词最低时长按：台词字数÷4 + 每处标点停顿0.4秒 + 1秒安全余量，最终向上取整；台词必须与剧本逐字一致。\n9. 只有本镜实际出现在画面中的人物、场景和物件才能绑定；每个已绑定资产都必须在该镜画面描述中明确出现，禁止把片段级资产整组复制到每一镜。\n10. 人物在当前场次存在 scenes 匹配的衍生形象时，必须引用该衍生资产的名称和ID，禁止继续引用基础人物。输出前逐镜自检，任一项不满足不得输出。"
             } else {
@@ -1331,9 +1393,9 @@ pub(crate) async fn execute_inner(
                 ""
             };
             let sub_system = format!(
-                "{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务并实际调用要求的工具，不得只用文字声称完成。{generation_gate}{document_format_gate}{storyboard_panel_mode_gate}{storyboard_generation_gate}{role_binding_gate}{project_hint}"
+                "{system}\n\n你是 Toonflow 的{label}子 Agent。严格完成委派任务并实际调用要求的工具，不得只用文字声称完成。{generation_gate}{document_format_gate}{storyboard_panel_mode_gate}{storyboard_generation_gate}{role_binding_gate}\n\n{project_hint}"
             );
-            let scoped_run = Box::pin(toonflow_agents::run_scoped_production_agent(
+            let scoped_run = Box::pin(toonflow_agents::run_scoped_production_agent_with_emitter(
                 state,
                 agent_key,
                 &sub_system,
@@ -1341,6 +1403,7 @@ pub(crate) async fn execute_inner(
                 request.project_id,
                 request.script_id,
                 allowed_tools,
+                request.emitter.as_ref(),
             ));
             let panel_batch_context = (agent_key == "productionAgent:storyboardPanelAgent")
                 .then(|| std::sync::Arc::new(StoryboardPanelBatchContext::default()));
@@ -1517,7 +1580,7 @@ pub(crate) async fn execute_inner(
                         "上轮未完整引用资产提取阶段的造型。以下 appearance 尚无衍生人物：{}。立即重新读取 assets，逐项原样复制 appearance.costumePrompt，并携带对应 appearanceId 调用 add_deriveAsset；禁止临时改写服装。",
                         missing.join("、")
                     );
-                    output = Box::pin(toonflow_agents::run_scoped_production_agent(
+                    output = Box::pin(toonflow_agents::run_scoped_production_agent_with_emitter(
                         state,
                         agent_key,
                         &sub_system,
@@ -1525,6 +1588,7 @@ pub(crate) async fn execute_inner(
                         request.project_id,
                         request.script_id,
                         allowed_tools,
+                        request.emitter.as_ref(),
                     ))
                     .await?;
                     let still_missing =
@@ -1588,7 +1652,7 @@ pub(crate) async fn execute_inner(
                         "上一版分镜表未通过写入门禁，禁止询问用户。严格重新执行 Toonflow 分镜规划流程：重新读取 script、assets、scriptPlan，先给出修复草案（估时、拆片段、桥梁元素、拆镜点、全员视觉落点），再一次性输出一份完整修正版 <storyboardTable>。必须逐项修复：\n- {}\n台词原文不得改写；机械问题全部修复后才能输出。",
                         issues.join("\n- ")
                     );
-                    output = Box::pin(toonflow_agents::run_scoped_production_agent(
+                    output = Box::pin(toonflow_agents::run_scoped_production_agent_with_emitter(
                         state,
                         agent_key,
                         &sub_system,
@@ -1596,6 +1660,7 @@ pub(crate) async fn execute_inner(
                         request.project_id,
                         request.script_id,
                         allowed_tools,
+                        request.emitter.as_ref(),
                     ))
                     .await?;
                 }
@@ -1639,7 +1704,7 @@ pub(crate) async fn execute_inner(
                 let supervision_system = format!(
                     "{supervision_skill}\n\n你是 Toonflow 的监制。分镜表刚刚完成生成或修复并已写入工作区。必须重新读取当前 storyboardTable、script、assets，给出完整审核报告和新的 A/B/C/D 评分；不得沿用上一次评分。{project_hint}"
                 );
-                let audit = Box::pin(toonflow_agents::run_scoped_production_agent(
+                let audit = Box::pin(toonflow_agents::run_scoped_production_agent_with_emitter(
                     state,
                     supervision_key,
                     &supervision_system,
@@ -1647,6 +1712,7 @@ pub(crate) async fn execute_inner(
                     request.project_id,
                     request.script_id,
                     &["get_flowData"],
+                    request.emitter.as_ref(),
                 ))
                 .await?;
                 toonflow_agents::add_memory(

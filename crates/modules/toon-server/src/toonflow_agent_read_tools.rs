@@ -13,7 +13,7 @@ pub(crate) fn format_events(events_json: &str) -> String {
                 format!("  {}. {}：{}", index + 1, name, detail)
             })
             .collect::<Vec<_>>()
-            .join("\\n")
+                .join("\n")
     } else {
         events_json.to_string()
     }
@@ -61,16 +61,19 @@ pub(crate) async fn execute_sub_tool(
             .bind(index)
             .fetch_optional(&state.pool)
             .await
-            .unwrap_or_default()
-            .unwrap_or_default()
+            .map(|value: Option<String>| value.unwrap_or_default())
+            .unwrap_or_else(|_| "读取失败：无法加载原文章节，请重试".to_string())
         }
         "get_planData" => {
-            let data: Option<Value> = sqlx::query_scalar(
+            let data: Option<Value> = match sqlx::query_scalar(
                 "SELECT data FROM toonflow.agent_work_data WHERE project_id=$1 AND episodes_id IS NULL AND key='scriptAgent'",
             )
-            .bind(project_id).fetch_optional(&state.pool).await.unwrap_or_default();
+            .bind(project_id).fetch_optional(&state.pool).await {
+                Ok(data) => data,
+                Err(_) => return "读取失败：无法加载当前工作区，请重试".to_string(),
+            };
             let key = args.get("key").and_then(Value::as_str).unwrap_or("");
-            if key.is_empty() {
+            if key.is_empty() || key == "scriptAgent" {
                 // Return all data with clear labels
                 let d = data.as_ref();
                 let skeleton = d

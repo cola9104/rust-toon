@@ -5,8 +5,8 @@ use crate::{
     toonflow_video_continuity::{
         FRAME_POLICY_OWN, FRAME_POLICY_PREVIOUS_TAIL, FrameApplication, TrackTransitionSettings,
         apply_frame_policy, load_track_settings, persist_generation_context,
-        prompt_with_transition_context, resolve_previous_track_id, validate_frame_policy,
-        validate_transition_type,
+        prompt_with_transition_context, resolve_previous_track_id, validate_continuity_mode,
+        validate_frame_policy, validate_transition_type,
     },
 };
 use axum::{Json, extract::State, http::StatusCode};
@@ -184,28 +184,12 @@ async fn store_generated_video(
     .await
     {
         Ok(file_path) => {
-            let updated = sqlx::query(
-                "UPDATE toonflow.videos
-                 SET file_path=$2,state='生成成功',error_reason=NULL
-                 WHERE id=$1 AND state='生成中'",
+            let updated = crate::toonflow_video_quality::enqueue(
+                pool, video_id, project_id, &file_path, false,
             )
-            .bind(video_id)
-            .bind(&file_path)
-            .execute(pool)
             .await;
             match updated {
-                Ok(result) if result.rows_affected() == 1 => true,
-                Ok(_) => {
-                    crate::toonflow_storage::record_cleanup_failure(
-                        pool,
-                        &file_path,
-                        "canceled_video_generation",
-                        Some(video_id),
-                        "视频生成已取消，等待引用感知清理",
-                    )
-                    .await;
-                    false
-                }
+                Ok(_) => crate::toonflow_video_quality::wait_for_result(pool, video_id).await,
                 Err(error) => {
                     // An autocommit acknowledgement can be lost after the row
                     // update became visible. The cleanup worker rechecks live
@@ -220,6 +204,10 @@ async fn store_generated_video(
                     )
                     .await;
                     tracing::error!(video_id, %error, "failed to finalize persisted video");
+                    // If the commit acknowledgement was lost, the durable job
+                    // may already own this video. Do not overwrite its verdict.
+                    let _ = sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason=$2 WHERE id=$1 AND state='生成中' AND NOT EXISTS(SELECT 1 FROM toonflow.distributed_jobs j WHERE j.kind='toon.video_quality' AND j.payload->>'videoId'=$1::text AND j.state IN ('queued','running','retry','succeeded'))")
+                        .bind(video_id).bind(format!("无法提交视频质检：{error}")).execute(pool).await;
                     false
                 }
             }
@@ -237,6 +225,45 @@ async fn store_generated_video(
             false
         }
     }
+}
+
+/// Resume provider polling for videos that were mid-generation when the
+/// Gateway stopped. The provider task handle was persisted at submit time, so
+/// a restart continues the paid task instead of failing or resubmitting it.
+/// Called once during Gateway startup after `repair_gateway_interrupted_state`.
+pub async fn resume_interrupted_video_generations(pool: &sqlx::PgPool) -> u64 {
+    let rows = sqlx::query_as::<_, (i64, i64, String, String)>(
+        "SELECT id,project_id,
+                generation_context->'provider'->>'model',
+                generation_context->'provider'->>'taskId'
+         FROM toonflow.videos
+         WHERE state='生成中'
+           AND generation_context->'provider'->>'taskId' IS NOT NULL
+           AND generation_context->'provider'->>'model' IS NOT NULL",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let resumed = rows.len() as u64;
+    for (video_id, project_id, model, task_id) in rows {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let Some(_generation_task_permit) = acquire_video_generation_task().await else {
+                mark_video_generation_failed(&pool, video_id, "视频生成任务控制不可用".into())
+                    .await;
+                return;
+            };
+            match ai_client::video_poll_task(&pool, &model, &task_id).await {
+                Ok(url) => {
+                    store_generated_video(&pool, video_id, project_id, &url).await;
+                }
+                Err(reason) => {
+                    mark_video_generation_failed(&pool, video_id, reason).await;
+                }
+            }
+        });
+    }
+    resumed
 }
 
 #[derive(Deserialize)]
@@ -588,6 +615,14 @@ pub struct TransitionSettingsRequest {
     transition_type: String,
     frame_policy: String,
     previous_track_id: Option<i64>,
+    /// Edit-time transition length; only dissolve/audio_bridge render an
+    /// overlap. Missing values keep the column default.
+    #[serde(default)]
+    transition_duration_ms: Option<i32>,
+    #[serde(default)]
+    trim_start_ms: Option<i32>,
+    #[serde(default)]
+    trim_end_ms: Option<i32>,
 }
 
 pub async fn update_transition_settings(
@@ -601,6 +636,19 @@ pub async fn update_transition_settings(
     }
     if !validate_frame_policy(&req.frame_policy) {
         return Err(AppError::bad_request("无效的首帧来源策略"));
+    }
+    let transition_duration_ms = req.transition_duration_ms.unwrap_or(600);
+    if !(0..=10_000).contains(&transition_duration_ms) {
+        return Err(AppError::bad_request("过渡时长必须在 0-10000 毫秒之间"));
+    }
+    let trim_start_ms = req.trim_start_ms.unwrap_or(0);
+    if trim_start_ms < 0 {
+        return Err(AppError::bad_request("裁切起点不能为负数"));
+    }
+    if let Some(trim_end_ms) = req.trim_end_ms {
+        if trim_end_ms <= trim_start_ms {
+            return Err(AppError::bad_request("裁切终点必须大于裁切起点"));
+        }
     }
     let (project_id, script_id) = ensure_track_access(&state.pool, &user, req.id).await?;
     let script_id = script_id.ok_or_else(|| AppError::bad_request("视频轨道未关联剧本"))?;
@@ -622,13 +670,17 @@ pub async fn update_transition_settings(
     let updated = sqlx::query(
         "UPDATE toonflow.video_tracks
          SET transition_type=$2,frame_policy=$3,previous_track_id=$4,
+             transition_duration_ms=$5,trim_start_ms=$6,trim_end_ms=$7,
              transition_source='manual',continuity_mode=CASE WHEN $3='previous_tail' THEN 'always' ELSE 'never' END
-         WHERE id=$1 AND project_id=$5 AND script_id=$6",
+         WHERE id=$1 AND project_id=$8 AND script_id=$9",
     )
     .bind(req.id)
     .bind(&req.transition_type)
     .bind(&req.frame_policy)
     .bind(previous_track_id)
+    .bind(transition_duration_ms)
+    .bind(trim_start_ms)
+    .bind(req.trim_end_ms)
     .bind(project_id)
     .bind(script_id)
     .execute(&state.pool)
@@ -642,6 +694,9 @@ pub async fn update_transition_settings(
         "transitionType": req.transition_type,
         "framePolicy": req.frame_policy,
         "previousTrackId": previous_track_id,
+        "transitionDurationMs": transition_duration_ms,
+        "trimStartMs": trim_start_ms,
+        "trimEndMs": req.trim_end_ms,
         "transitionSource": "manual",
     }))))
 }
@@ -827,7 +882,7 @@ pub(crate) async fn load_generate_data(
     .fetch_all(pool)
     .await
     .map_err(|_| AppError::internal("failed to list storyboards"))?;
-    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32,String,String,Option<i64>,String)>("SELECT track.id,track.prompt,track.state,track.duration,track.video_id,track.sort_order,track.transition_type,track.frame_policy,track.previous_track_id,track.transition_source FROM toonflow.video_tracks track WHERE track.project_id=$1 AND track.script_id=$2 ORDER BY coalesce((SELECT min(board.index) FROM toonflow.storyboards board WHERE board.track_id=track.id),2147483647),track.sort_order,track.id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
+    let tracks=sqlx::query_as::<_,(i64,Option<String>,Option<String>,Option<i32>,Option<i64>,i32,String,String,Option<i64>,String,i32,i32,Option<i32>)>("SELECT track.id,track.prompt,track.state,track.duration,track.video_id,track.sort_order,track.transition_type,track.frame_policy,track.previous_track_id,track.transition_source,track.transition_duration_ms,track.trim_start_ms,track.trim_end_ms FROM toonflow.video_tracks track WHERE track.project_id=$1 AND track.script_id=$2 ORDER BY coalesce((SELECT min(board.index) FROM toonflow.storyboards board WHERE board.track_id=track.id),2147483647),track.sort_order,track.id").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list tracks"))?;
     let videos=sqlx::query_as::<_,(i64,Option<String>,String,Option<String>,Option<i64>,Value)>("SELECT id,file_path,coalesce(state,''),error_reason,video_track_id,generation_context FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 ORDER BY time DESC,id DESC").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list videos"))?;
     let transitions=sqlx::query_as::<_,(String,String,String,String,String)>("SELECT from_scene_key,to_scene_key,transition_type,description,frame_policy FROM toonflow.scene_transitions WHERE project_id=$1 AND script_id=$2 ORDER BY from_scene_key,to_scene_key").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list scene transitions"))?;
     let asset_media: Vec<StoryboardAssetMediaRow> = sqlx::query_as("SELECT ast.storyboard_id,a.id,a.name,a.type,img.file_path,audio.file_path FROM toonflow.assets_storyboards ast JOIN toonflow.assets a ON a.id=ast.asset_id LEFT JOIN toonflow.images img ON img.id=a.image_id LEFT JOIN LATERAL (SELECT aa_img.file_path FROM toonflow.asset_audio_bindings b JOIN toonflow.assets aa ON aa.id=b.asset_audio_id LEFT JOIN toonflow.images aa_img ON aa_img.id=aa.image_id WHERE b.asset_role_id=a.id ORDER BY b.create_time DESC LIMIT 1) audio ON true WHERE a.project_id=$1 AND ast.storyboard_id IN (SELECT id FROM toonflow.storyboards WHERE project_id=$1 AND script_id=$2) ORDER BY ast.storyboard_id,ast.sort_order").bind(project_id).bind(script_id).fetch_all(pool).await.map_err(|_|AppError::internal("failed to list storyboard asset media"))?;
@@ -843,7 +898,7 @@ pub(crate) async fn load_generate_data(
                 if let Some(src) = &asset.5 { medias.push(json!({"id":asset.1,"name":asset.2,"type":asset.3,"src":src,"fileType":"audio","sources":"assets","storyboardId":board.id})); }
             }
         }
-        json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"transitionType":t.6,"framePolicy":t.7,"previousTrackId":t.8,"transitionSource":t.9,"medias":medias,"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3,"generationContext":v.5})).collect::<Vec<_>>()})
+        json!({"id":t.0,"prompt":t.1,"state":t.2,"duration":t.3,"selectVideoId":t.4,"sortOrder":t.5,"transitionType":t.6,"framePolicy":t.7,"previousTrackId":t.8,"transitionSource":t.9,"transitionDurationMs":t.10,"trimStartMs":t.11,"trimEndMs":t.12,"medias":medias,"videoList":videos.iter().filter(|v|v.4==Some(t.0)).map(|v|json!({"id":v.0,"src":v.1,"state":v.2,"errorReason":v.3,"generationContext":v.5})).collect::<Vec<_>>()})
     }).collect::<Vec<_>>();
     Ok(
         json!({"storyboardList":boards.iter().map(WorkbenchStoryboardRow::to_json).collect::<Vec<_>>(),"trackList":list,"sceneTransitions":transitions.into_iter().map(|transition|json!({"fromSceneKey":transition.0,"toSceneKey":transition.1,"transitionType":transition.2,"description":transition.3,"framePolicy":transition.4})).collect::<Vec<_>>() }),
@@ -869,7 +924,7 @@ pub struct Generate {
 }
 
 /// Combines caller-provided frames with canonical asset images while preserving their first-use order.
-fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value {
+fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Result<Value, String> {
     let mut references = upload_data
         .as_array()
         .into_iter()
@@ -890,32 +945,124 @@ fn merge_references(upload_data: Value, asset_references: Vec<String>) -> Value 
             references.push(json!(reference));
         }
     }
-    // Current video providers accept at most four ordered visual inputs. Storyboard frames from
-    // `upload_data` stay first; canonical character/scene references fill the remaining slots.
-    references.truncate(4);
-    json!(references)
+    let mut seen = HashSet::new();
+    references.retain(|reference| seen.insert(reference.as_str().unwrap_or_default().to_string()));
+    if references.len() > 4 {
+        return Err(format!(
+            "当前视频参考图上限为 4 张，实际 {} 张；请减少参考素材后重试，系统不会静默丢弃参考图",
+            references.len()
+        ));
+    }
+    Ok(json!(references))
 }
 
-fn references_for_mode(upload_data: Value, asset_references: Vec<String>, mode: &Value) -> Value {
+fn references_for_mode(
+    upload_data: Value,
+    asset_references: Vec<String>,
+    mode: &Value,
+) -> Result<Value, String> {
     let mode = mode.as_str().unwrap_or("text");
     if mode == "text" {
         return merge_references(upload_data, asset_references);
     }
-    let frames = merge_references(upload_data, Vec::new())
+    // Frame modes deliberately select endpoints from the complete storyboard
+    // sequence; never truncate before selecting its last frame.
+    let frames = upload_data
         .as_array()
-        .cloned()
-        .unwrap_or_default();
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("src").and_then(Value::as_str))
+                .filter(|s| !s.is_empty())
+                .map(|s| json!(s))
+        })
+        .collect::<Vec<_>>();
+    if mode == "startEndRequired" && frames.len() < 2 {
+        return Err("首尾帧模式需要首帧和尾帧两张图片".into());
+    }
+    if frames.is_empty()
+        && matches!(
+            mode,
+            "singleImage" | "endFrameOptional" | "startFrameOptional"
+        )
+    {
+        return Err("当前视频模式需要至少一张分镜图片".into());
+    }
     if matches!(
         mode,
         "startEndRequired" | "endFrameOptional" | "startFrameOptional"
     ) && frames.len() > 1
     {
-        return json!([
+        return Ok(json!([
             frames.first().cloned().unwrap(),
             frames.last().cloned().unwrap()
-        ]);
+        ]));
     }
-    json!(frames.into_iter().take(1).collect::<Vec<_>>())
+    Ok(json!(frames.into_iter().take(1).collect::<Vec<_>>()))
+}
+
+fn validate_prompt_references(prompt: &str, count: usize) -> Result<(), String> {
+    for suffix in prompt.split("@图").skip(1) {
+        let digits = suffix
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>();
+        let index = digits
+            .parse::<usize>()
+            .map_err(|_| "参考图编号必须是 @图1 这样的数字编号")?;
+        if index == 0 || index > count {
+            return Err(format!(
+                "提示词引用 @图{index}，但实际只发送 {count} 张参考图"
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn generate_with_snapshot(
+    pool: &sqlx::PgPool,
+    video_id: i64,
+    model: &str,
+    payload: Value,
+) -> Result<String, String> {
+    let references = payload["references"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    validate_prompt_references(
+        payload["prompt"].as_str().unwrap_or_default(),
+        references.len(),
+    )?;
+    let manifest = references.iter().enumerate().map(|(index, reference)| json!({
+        "index":index+1,"reference":reference,
+        "kind": if payload["mode"] == "text" { "reference_image" }
+            else if payload["mode"] == "startFrameOptional" && references.len() == 1 { "last_frame" }
+            else if index == 0 { "first_frame" } else { "last_frame" },
+    })).collect::<Vec<_>>();
+    let updated = sqlx::query("UPDATE toonflow.videos SET generation_context=generation_context || jsonb_build_object('request',$2::jsonb) WHERE id=$1 AND state='生成中'")
+        .bind(video_id).bind(json!({"version":1,"model":model,"payload":payload,"references":manifest}))
+        .execute(pool).await.map_err(|e| format!("保存视频生成快照失败：{e}"))?;
+    if updated.rows_affected() != 1 {
+        return Err("视频任务已取消或删除".into());
+    }
+    let submission = ai_client::video_submit(pool, model, payload).await?;
+    if let Some(url) = submission.url {
+        return Ok(url);
+    }
+    let task_id = submission
+        .task_id
+        .ok_or_else(|| "视频响应缺少 URL 或任务 ID".to_string())?;
+    // Persist the provider handle before polling so a Gateway restart resumes
+    // this paid task instead of failing it or submitting a duplicate.
+    let updated = sqlx::query("UPDATE toonflow.videos SET generation_context=generation_context || jsonb_build_object('provider',$2::jsonb) WHERE id=$1 AND state='生成中'")
+        .bind(video_id)
+        .bind(json!({"model":model,"taskId":task_id,"submittedAt":chrono::Utc::now().timestamp_millis()}))
+        .execute(pool).await.map_err(|e| format!("保存供应商任务标识失败：{e}"))?;
+    if updated.rows_affected() != 1 {
+        return Err("视频任务已取消或删除".into());
+    }
+    ai_client::video_poll_task(pool, model, &task_id).await
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize)]
@@ -943,6 +1090,7 @@ fn workflow_video_resolution() -> String {
 
 #[derive(Clone)]
 pub(crate) struct WorkflowVideoJob {
+    previous_video_id: Option<i64>,
     id: i64,
     script_id: i64,
     track_id: i64,
@@ -1031,6 +1179,7 @@ pub(crate) async fn prepare_workflow_video_generation(
         transition_source,
     ) in tracks
     {
+        validate_continuity_mode(&mode, &frame_policy).map_err(AppError::bad_request)?;
         let previous_track_id = if mode != "text"
             && frame_policy == FRAME_POLICY_PREVIOUS_TAIL
             && previous_track_id.is_none()
@@ -1055,8 +1204,10 @@ pub(crate) async fn prepare_workflow_video_generation(
         )
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
-        let references = references_for_mode(json!(frames), asset_references, &json!(mode));
+        let references = references_for_mode(json!(frames), asset_references, &json!(mode))
+            .map_err(AppError::bad_request)?;
         prepared_jobs.push(WorkflowVideoJob {
+            previous_video_id: None,
             id: 0,
             script_id,
             track_id,
@@ -1139,7 +1290,7 @@ fn workflow_job_is_ready(
         // successful video without blocking this batch.
         return true;
     };
-    previous_rank >= current_rank || completed_tracks.contains(&previous_track_id)
+    previous_rank < current_rank && completed_tracks.contains(&previous_track_id)
 }
 
 async fn mark_video_generation_failed(pool: &sqlx::PgPool, video_id: i64, reason: String) {
@@ -1183,6 +1334,8 @@ async fn run_workflow_video_job(
             job.track_id,
             &job.transition_settings,
             job.references,
+            job.previous_video_id,
+            &job.mode,
         )
         .await
         {
@@ -1221,7 +1374,7 @@ async fn run_workflow_video_job(
             mark_video_generation_failed(&pool, job.id, "视频生成并发控制不可用".into()).await;
             return (track_id, false);
         };
-        ai_client::video_untracked(&pool, &job.model, payload).await
+        generate_with_snapshot(&pool, job.id, &job.model, payload).await
     };
     let succeeded = match provider_result {
         Ok(url) => store_generated_video(&pool, job.id, project_id, &url).await,
@@ -1252,6 +1405,10 @@ pub(crate) async fn run_workflow_video_generation(
         .map(|(rank, job)| (job.track_id, rank))
         .collect::<HashMap<_, _>>();
     let mut completed_tracks = HashSet::new();
+    let video_ids_by_track = jobs
+        .iter()
+        .map(|job| (job.track_id, job.id))
+        .collect::<HashMap<_, _>>();
     let mut pending = jobs;
     let mut running = JoinSet::new();
     loop {
@@ -1262,14 +1419,28 @@ pub(crate) async fn run_workflow_video_generation(
             else {
                 break;
             };
-            let job = pending.remove(ready_index);
+            let mut job = pending.remove(ready_index);
+            job.previous_video_id = job
+                .transition_settings
+                .previous_track_id
+                .and_then(|id| video_ids_by_track.get(&id).copied());
             running.spawn(run_workflow_video_job(pool.clone(), project_id, job));
         }
         if running.is_empty() && !pending.is_empty() {
-            // Invalid/cyclic legacy metadata must not deadlock the workflow. The
-            // frame resolver will safely fall back to this track's storyboard.
-            let job = pending.remove(0);
-            running.spawn(run_workflow_video_job(pool.clone(), project_id, job));
+            // Never run a dependent shot against an older successful candidate
+            // after its requested predecessor failed in this run.
+            for job in pending.drain(..) {
+                mark_video_generation_failed(
+                    &pool,
+                    job.id,
+                    "前镜头未通过质检或依赖顺序无效，连续镜头已停止；请修复前镜头后重试".into(),
+                )
+                .await;
+                summary.failed += 1;
+            }
+            let _ = sqlx::query("UPDATE toonflow.workflow_node_runs SET progress_current=$2 WHERE id=$1 AND state='running'")
+                .bind(node_run_id).bind((summary.succeeded + summary.failed) as i32).execute(&pool).await;
+            break;
         }
         let Some(result) = running.join_next().await else {
             break;
@@ -1279,8 +1450,7 @@ pub(crate) async fn run_workflow_video_generation(
                 completed_tracks.insert(track_id);
                 summary.succeeded += 1;
             }
-            Ok((track_id, false)) => {
-                completed_tracks.insert(track_id);
+            Ok((_, false)) => {
                 summary.failed += 1;
             }
             Err(_) => summary.failed += 1,
@@ -1337,6 +1507,11 @@ pub async fn generate_video(
         load_track_settings(&state.pool, req.project_id, req.script_id, req.track_id)
             .await
             .map_err(AppError::bad_request)?;
+    validate_continuity_mode(
+        req.mode.as_str().unwrap_or("text"),
+        &transition_settings.frame_policy,
+    )
+    .map_err(AppError::bad_request)?;
     let asset_references = crate::toonflow_asset_context::load_track_asset_references(
         &state.pool,
         req.project_id,
@@ -1345,7 +1520,8 @@ pub async fn generate_video(
     )
     .await
     .map_err(|_| AppError::internal("failed to load video asset references"))?;
-    let references = references_for_mode(req.upload_data, asset_references, &req.mode);
+    let references = references_for_mode(req.upload_data, asset_references, &req.mode)
+        .map_err(AppError::bad_request)?;
     let generation_task_permit = try_acquire_video_generation_task()?;
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO toonflow.videos(
@@ -1383,6 +1559,8 @@ pub async fn generate_video(
                 req.track_id,
                 &transition_settings,
                 references,
+                None,
+                req.mode.as_str().unwrap_or("text"),
             )
             .await
             {
@@ -1416,7 +1594,7 @@ pub async fn generate_video(
                 mark_video_generation_failed(&pool, id, "视频生成并发控制不可用".into()).await;
                 return;
             };
-            ai_client::video_untracked(&pool, &req.model, payload).await
+            generate_with_snapshot(&pool, id, &req.model, payload).await
         };
         match provider_result {
             Ok(url) => {
@@ -1660,7 +1838,7 @@ pub async fn check_states(
 ) -> Result<Json<ApiResponse<Vec<Value>>>, AppError> {
     require(&user, "toon:scene:read")?;
     ensure_project_script_access(&state.pool, &user, req.project_id, req.script_id).await?;
-    let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>,Option<i64>,Value)>("SELECT id,state,error_reason,file_path,retry_of_id,generation_context FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 AND id=ANY($3) AND state IN('生成成功','生成失败')").bind(req.project_id).bind(req.script_id).bind(req.video_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check videos"))?;
+    let rows=sqlx::query_as::<_,(i64,String,Option<String>,Option<String>,Option<i64>,Value)>("SELECT id,state,error_reason,file_path,retry_of_id,generation_context FROM toonflow.videos WHERE project_id=$1 AND script_id=$2 AND id=ANY($3)").bind(req.project_id).bind(req.script_id).bind(req.video_ids).fetch_all(&state.pool).await.map_err(|_|AppError::internal("failed to check videos"))?;
     Ok(Json(ApiResponse::new(
         rows.into_iter()
             .map(|r| json!({"id":r.0,"state":r.1,"errorReason":r.2,"filePath":r.3,"src":r.3,"retryOfId":r.4,"generationContext":r.5}))
@@ -1870,7 +2048,8 @@ mod prompt_tests {
     use super::{
         FRAME_POLICY_OWN, FRAME_POLICY_PREVIOUS_TAIL, Generate, TrackTransitionSettings,
         WorkflowVideoJob, merge_references, model_parameter, normalize_storyboard_ids,
-        references_for_mode, video_prompt_name, workflow_job_is_ready, xml_attribute,
+        references_for_mode, validate_prompt_references, video_prompt_name, workflow_job_is_ready,
+        xml_attribute,
     };
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
@@ -1881,6 +2060,7 @@ mod prompt_tests {
         frame_policy: &str,
     ) -> WorkflowVideoJob {
         WorkflowVideoJob {
+            previous_video_id: None,
             id: track_id + 100,
             script_id: 1,
             track_id,
@@ -1947,7 +2127,7 @@ mod prompt_tests {
             &ranks,
             &HashSet::new(),
         ));
-        assert!(workflow_job_is_ready(
+        assert!(!workflow_job_is_ready(
             &workflow_job(2, Some(3), FRAME_POLICY_PREVIOUS_TAIL),
             &ranks,
             &HashSet::new(),
@@ -1995,7 +2175,8 @@ mod prompt_tests {
                 "https://example.com/role.png".into(),
                 "https://example.com/direct.png".into(),
             ],
-        );
+        )
+        .unwrap();
         assert_eq!(
             references,
             json!([
@@ -2007,15 +2188,12 @@ mod prompt_tests {
     }
 
     #[test]
-    fn limits_video_references_to_provider_maximum() {
+    fn rejects_excess_references_without_silently_dropping_assets() {
         let references = merge_references(
             json!(["frame-1", "frame-2"]),
             vec!["role-1".into(), "scene-1".into(), "tool-1".into()],
         );
-        assert_eq!(
-            references,
-            json!(["frame-1", "frame-2", "role-1", "scene-1"])
-        );
+        assert!(references.unwrap_err().contains("实际 5 张"));
     }
 
     #[test]
@@ -2023,29 +2201,46 @@ mod prompt_tests {
         let frames = json!(["first", "middle", "last"]);
         let assets = vec!["role".into(), "scene".into()];
         assert_eq!(
-            references_for_mode(frames.clone(), assets.clone(), &json!("startEndRequired")),
+            references_for_mode(frames.clone(), assets.clone(), &json!("startEndRequired"))
+                .unwrap(),
             json!(["first", "last"])
         );
         assert_eq!(
-            references_for_mode(frames.clone(), assets.clone(), &json!("endFrameOptional")),
+            references_for_mode(frames.clone(), assets.clone(), &json!("endFrameOptional"))
+                .unwrap(),
             json!(["first", "last"])
         );
         assert_eq!(
-            references_for_mode(frames.clone(), assets.clone(), &json!("startFrameOptional")),
+            references_for_mode(frames.clone(), assets.clone(), &json!("startFrameOptional"))
+                .unwrap(),
             json!(["first", "last"])
         );
         assert_eq!(
-            references_for_mode(frames.clone(), assets.clone(), &json!("singleImage")),
+            references_for_mode(frames.clone(), assets.clone(), &json!("singleImage")).unwrap(),
             json!(["first"])
         );
+        assert!(references_for_mode(frames, assets, &json!("text")).is_err());
         assert_eq!(
-            references_for_mode(frames, assets, &json!("text")),
-            json!(["first", "middle", "last", "role"])
-        );
-        assert_eq!(
-            references_for_mode(json!(["only"]), Vec::new(), &json!("startFrameOptional")),
+            references_for_mode(json!(["only"]), Vec::new(), &json!("startFrameOptional")).unwrap(),
             json!(["only"])
         );
+    }
+
+    #[test]
+    fn uses_actual_last_frame_and_checks_prompt_indices() {
+        assert_eq!(
+            references_for_mode(
+                json!(["1", "2", "3", "4", "5"]),
+                vec![],
+                &json!("startEndRequired")
+            )
+            .unwrap(),
+            json!(["1", "5"])
+        );
+        assert!(references_for_mode(json!(["1"]), vec![], &json!("startEndRequired")).is_err());
+        assert!(validate_prompt_references("@图1 人物参考 @图2 场景", 2).is_ok());
+        assert!(validate_prompt_references("@图3", 2).is_err());
+        assert!(validate_prompt_references("@图0", 2).is_err());
     }
 }
 #[derive(Deserialize)]
@@ -2263,6 +2458,23 @@ pub async fn batch_videos(
                 .await
                 .map_err(AppError::bad_request)?,
         );
+        if let Some(settings) = track.transition_settings.as_mut() {
+            validate_continuity_mode(req.mode.as_str().unwrap_or("text"), &settings.frame_policy)
+                .map_err(AppError::bad_request)?;
+            if settings.frame_policy == FRAME_POLICY_PREVIOUS_TAIL
+                && settings.previous_track_id.is_none()
+            {
+                settings.previous_track_id = resolve_previous_track_id(
+                    &state.pool,
+                    req.project_id,
+                    req.script_id,
+                    track.track_id,
+                    None,
+                )
+                .await
+                .map_err(AppError::bad_request)?;
+            }
+        }
         let asset_references = crate::toonflow_asset_context::load_track_asset_references(
             &state.pool,
             req.project_id,
@@ -2271,7 +2483,8 @@ pub async fn batch_videos(
         )
         .await
         .map_err(|_| AppError::internal("failed to load video asset references"))?;
-        track.upload_data = references_for_mode(track.upload_data, asset_references, &req.mode);
+        track.upload_data = references_for_mode(track.upload_data, asset_references, &req.mode)
+            .map_err(AppError::bad_request)?;
         prepared_tracks.push(track);
     }
     let mut tx = state
@@ -2322,69 +2535,27 @@ pub async fn batch_videos(
                 .ok()
                 .flatten();
         let ratio = ratio.map(|r| r.0).unwrap_or_else(|| "16:9".into());
-        for (id, track) in jobs {
-            let Some(_generation_task_permit) = acquire_video_generation_task().await else {
-                mark_video_generation_failed(&pool, id, "视频生成任务控制不可用".into()).await;
-                continue;
-            };
-            let transition_settings =
-                track
-                    .transition_settings
-                    .unwrap_or(TrackTransitionSettings {
-                        transition_type: "cut".into(),
-                        frame_policy: FRAME_POLICY_OWN.into(),
-                        previous_track_id: None,
-                        transition_source: "director".into(),
-                    });
-            let (references, frame_application) = if req.mode.as_str() == Some("text") {
-                (track.upload_data, FrameApplication::own())
-            } else {
-                match apply_frame_policy(
-                    &pool,
-                    req.project_id,
-                    req.script_id,
-                    track.track_id,
-                    &transition_settings,
-                    track.upload_data,
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(reason) => {
-                        mark_video_generation_failed(&pool, id, reason).await;
-                        continue;
-                    }
-                }
-            };
-            if let Err(reason) =
-                persist_generation_context(&pool, id, &transition_settings, &frame_application)
-                    .await
-            {
-                mark_video_generation_failed(&pool, id, reason).await;
-                continue;
-            }
-            let prompt = prompt_with_transition_context(
-                &track.prompt,
-                &transition_settings,
-                &frame_application,
-            );
-            let payload = json!({"prompt":prompt,"mode":req.mode,"resolution":req.resolution,"duration":track.duration,"audio":req.audio.unwrap_or(false),"aspect_ratio":ratio,"references":references});
-            let provider_result = {
-                let Some(_provider_permit) = acquire_provider_video_slot().await else {
-                    mark_video_generation_failed(&pool, id, "视频生成并发控制不可用".into()).await;
-                    continue;
-                };
-                ai_client::video_untracked(&pool, &req.model, payload).await
-            };
-            match provider_result {
-                Ok(url) => {
-                    store_generated_video(&pool, id, req.project_id, &url).await;
-                }
-                Err(reason) => {
-                    mark_video_generation_failed(&pool, id, reason).await;
-                }
-            }
-        }
+        let jobs = jobs
+            .into_iter()
+            .map(|(id, track)| WorkflowVideoJob {
+                id,
+                previous_video_id: None,
+                script_id: req.script_id,
+                track_id: track.track_id,
+                prompt: track.prompt,
+                duration: track.duration,
+                model: req.model.clone(),
+                mode: req.mode.as_str().unwrap_or("text").into(),
+                ratio: ratio.clone(),
+                resolution: req.resolution.clone(),
+                audio: req.audio.unwrap_or(false),
+                references: track.upload_data,
+                transition_settings: track.transition_settings.expect("prepared track settings"),
+            })
+            .collect();
+        // Both entrypoints use the same dependency and acceptance rules. ID 0
+        // has no workflow row; batch progress is carried by the video rows.
+        run_workflow_video_generation(pool, req.project_id, jobs, 2, 0).await;
     });
     Ok(Json(ApiResponse::new(response)))
 }

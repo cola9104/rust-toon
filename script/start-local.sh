@@ -31,10 +31,45 @@ export NACOS_PASSWORD="${NACOS_PASSWORD:-rust_toon_nacos_password}"
 export RUST_LOG="${RUST_LOG:-info}"
 
 cd "$repository_root"
+gateway_ready_url="${LOCAL_GATEWAY_READY_URL:-http://127.0.0.1:${GATEWAY_PORT:-8080}/readyz}"
+worker_ready_url="${LOCAL_WORKER_READY_URL:-http://127.0.0.1:${WORKER_PORT:-8081}/readyz}"
+frontend_url="${LOCAL_FRONTEND_URL:-http://127.0.0.1:5666}"
+gateway_port="${GATEWAY_PORT:-8080}"
+worker_port="${WORKER_PORT:-8081}"
+frontend_port="${LOCAL_FRONTEND_PORT:-5666}"
+is_ready() { curl -fsS --max-time 2 "$1" >/dev/null 2>&1; }
+port_is_listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+wait_for_existing() {
+  local name="$1" url="$2"
+  echo "$name port is already in use; waiting for its readiness endpoint: $url"
+  for _ in $(seq 1 90); do
+    is_ready "$url" && return 0
+    sleep 1
+  done
+  echo "$name owns its port but did not become ready: $url" >&2
+  return 1
+}
+
 if [[ "$mode" == gateway ]]; then
+  if is_ready "$gateway_ready_url"; then
+    echo "Gateway is already ready: $gateway_ready_url"
+    exit 0
+  fi
+  if port_is_listening "$gateway_port"; then
+    wait_for_existing "Gateway" "$gateway_ready_url"
+    exit $?
+  fi
   exec cargo run -p rust-toon-gateway
 fi
 if [[ "$mode" == worker ]]; then
+  if is_ready "$worker_ready_url"; then
+    echo "Worker is already ready: $worker_ready_url"
+    exit 0
+  fi
+  if port_is_listening "$worker_port"; then
+    wait_for_existing "Worker" "$worker_ready_url"
+    exit $?
+  fi
   exec cargo run -p rust-toon-worker
 fi
 
@@ -51,17 +86,22 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-cargo run -p rust-toon-gateway &
-gateway_pid=$!
+if is_ready "$gateway_ready_url"; then
+  echo "Reusing ready Gateway: $gateway_ready_url"
+elif port_is_listening "$gateway_port"; then
+  wait_for_existing "Gateway" "$gateway_ready_url"
+else
+  cargo run -p rust-toon-gateway &
+  gateway_pid=$!
+fi
 
 # The gateway owns migrations. On a clean database the worker must not start
 # until /readyz confirms that the full migration chain has committed.
-gateway_ready_url="${LOCAL_GATEWAY_READY_URL:-http://127.0.0.1:${GATEWAY_PORT:-8080}/readyz}"
 for _ in $(seq 1 180); do
   if curl -fsS "$gateway_ready_url" >/dev/null 2>&1; then
     break
   fi
-  if ! kill -0 "$gateway_pid" >/dev/null 2>&1; then
+  if [[ -n "$gateway_pid" ]] && ! kill -0 "$gateway_pid" >/dev/null 2>&1; then
     echo "Gateway exited before completing database migrations" >&2
     exit 1
   fi
@@ -72,12 +112,39 @@ if ! curl -fsS "$gateway_ready_url" >/dev/null 2>&1; then
   exit 1
 fi
 
-cargo run -p rust-toon-worker &
-worker_pid=$!
+if is_ready "$worker_ready_url"; then
+  echo "Reusing ready Worker: $worker_ready_url"
+elif port_is_listening "$worker_port"; then
+  wait_for_existing "Worker" "$worker_ready_url"
+else
+  cargo run -p rust-toon-worker &
+  worker_pid=$!
+fi
 if [[ "$mode" == backend ]]; then
-  wait -n "$gateway_pid" "$worker_pid"
+  started_pids=()
+  [[ -n "$gateway_pid" ]] && started_pids+=("$gateway_pid")
+  [[ -n "$worker_pid" ]] && started_pids+=("$worker_pid")
+  if [[ ${#started_pids[@]} -eq 0 ]]; then
+    echo "Gateway and Worker are already running"
+    exit 0
+  fi
+  wait -n "${started_pids[@]}"
   exit $?
 fi
-pnpm --dir apps/web --filter @vben/web-antd run dev &
-frontend_pid=$!
-wait -n "$gateway_pid" "$worker_pid" "$frontend_pid"
+if is_ready "$frontend_url"; then
+  echo "Reusing ready frontend: $frontend_url"
+elif port_is_listening "$frontend_port"; then
+  wait_for_existing "Frontend" "$frontend_url"
+else
+  pnpm --dir apps/web --filter @vben/web-antd run dev &
+  frontend_pid=$!
+fi
+started_pids=()
+[[ -n "$gateway_pid" ]] && started_pids+=("$gateway_pid")
+[[ -n "$worker_pid" ]] && started_pids+=("$worker_pid")
+[[ -n "$frontend_pid" ]] && started_pids+=("$frontend_pid")
+if [[ ${#started_pids[@]} -eq 0 ]]; then
+  echo "Gateway, Worker, and frontend are already running"
+  exit 0
+fi
+wait -n "${started_pids[@]}"

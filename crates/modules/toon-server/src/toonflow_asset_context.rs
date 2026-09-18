@@ -90,12 +90,21 @@ pub async fn load_script_context(
              SELECT asset_id FROM toonflow.script_assets WHERE script_id=$1
            )
            SELECT a.id, a.name, a.type AS type_, a.description, a.prompt,
-                  a.image_id, i.file_path AS image_file_path, i.state AS image_state,
-                  i.error_reason AS image_error_reason, a.parent_asset_id, a.appearance_id,
+                  a.image_id, selected_image.file_path AS image_file_path,
+                  latest_image.state AS image_state,
+                  latest_image.error_reason AS image_error_reason,
+                  a.parent_asset_id, a.appearance_id,
                   a.project_id AS source_project_id, p.name AS source_project_name
            FROM toonflow.assets a
            JOIN toonflow.projects p ON p.id=a.project_id
-           LEFT JOIN toonflow.images i ON i.id=a.image_id
+           LEFT JOIN toonflow.images selected_image ON selected_image.id=a.image_id
+           LEFT JOIN LATERAL (
+             SELECT i.state,i.error_reason
+             FROM toonflow.images i
+             WHERE i.assets_id=a.id
+             ORDER BY i.id DESC
+             LIMIT 1
+           ) latest_image ON TRUE
            WHERE a.project_id=$2 AND (
              a.id IN (SELECT asset_id FROM linked_assets)
              OR a.parent_asset_id IN (SELECT asset_id FROM linked_assets)

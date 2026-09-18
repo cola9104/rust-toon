@@ -2,9 +2,41 @@
 /// Explicit character settings and established references take precedence.
 pub(crate) const CHARACTER_IDENTITY_RULE: &str = "人物形象默认规则：未明确设定人物背景时，默认采用中国人物形象，适用于历史人物和普通虚构角色。这是创作默认值，不是根据姓名推断国籍或族裔。角色明确设定为外国人、混血或其他背景时，必须遵循对应设定，不得被默认值覆盖；明确的非人类角色保持其物种与造型，不强制改成人类。不得把外文名字、海外场景、服饰或欧美画风单独当作外国人设定。人物参考图或基础角色已确立身份时，沿用其面貌；换装、衍生造型和分镜不得用默认值重塑已有面孔，用户明确要求修改人物背景或面貌时按修改要求执行。保留个体脸型、五官比例、年龄、肤色和发型差异，不使用单一模板脸，不把中国人物等同于某一固定脸型或肤色。画风只影响绘画技法、材质和光影，不得改变人物身份。";
 
+const TIME_TRAVEL_WORLD_RULE: &str = "穿越剧场世界观约束：项目描述和当前场次决定时空；逐个保留人物、服装、建筑和道具各自明确的年代；同框的古今元素必须并存；人物跨时代换装时保持同一身份和面貌；画风只控制审美，不得把古代内容现代化或把现代内容古代化。";
+
+pub(crate) fn project_world_context(
+    project_template: &str,
+    story_type: &str,
+    intro: &str,
+) -> String {
+    let mut parts = Vec::new();
+    if project_template.trim() == "time_travel" {
+        parts.push("项目模板：穿越剧场".to_string());
+    }
+    if !story_type.trim().is_empty() {
+        parts.push(format!("项目题材：{}", story_type.trim()));
+    }
+    if !intro.trim().is_empty() {
+        parts.push(format!("项目描述：{}", intro.trim()));
+    }
+    if project_template.trim() == "time_travel" {
+        parts.push(TIME_TRAVEL_WORLD_RULE.to_string());
+    }
+    parts.join("；")
+}
+
+pub(crate) fn generation_source<'a>(original: &'a str, current_prompt: &'a str) -> &'a str {
+    if current_prompt.trim().is_empty() {
+        original
+    } else {
+        current_prompt
+    }
+}
+
 pub(crate) fn polish_system_prompt(
     manual: &str,
     extra: &str,
+    project_context: &str,
     asset_type: &str,
     derivative: bool,
 ) -> String {
@@ -14,7 +46,7 @@ pub(crate) fn polish_system_prompt(
             "按人物视觉手册组织稳定外貌，覆盖五官、发型发色、肤色、年龄、身高体型与气质；不要写动作和场景。"
         }
         "scene" => {
-            "按场景视觉手册组织空间结构、时代地域、材质、光线、天气、色调与前中后景；禁止人物。"
+            "按场景视觉手册组织空间结构、时代地域、材质、光线、天气、色调与前中后景；禁止人物。忠实保留原始描述中每个物体的数量、位置与状态，不新增未提及的道具、建筑、污渍、破损或天气效果，不把“陈旧”升级成废弃、灾后或严重脏乱。"
         }
         "tool" => {
             "按道具视觉手册组织造型、比例、材质、颜色、工艺、磨损与关键细节；禁止人物和使用动作。"
@@ -29,8 +61,21 @@ pub(crate) fn polish_system_prompt(
     } else {
         String::new()
     };
+    let scene_fidelity_rule = if asset_type == "scene" {
+        "\n场景扩写边界：原始描述已经具体时，只整理顺序和视觉语言，不补写新物件，不移动物件，不放大污损程度。完整空间使用清晰全景深，不同时写浅景深、散景或背景虚化；写实摄影与概念图、设计稿等媒介词不得混用。允许古代与现代元素在穿越题材中共存，逐个保留原始描述中建筑、人物、服装和道具各自所属的年代；古风或现代画风只影响审美表现，不得替换、删除或统一这些时代元素。"
+    } else {
+        ""
+    };
+    let project_context_rule = if project_context.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n项目世界观（全局背景，不代表当前资产中的全部内容）：{}\n只用它判断时代共存、题材和整体设定；不得把项目简介中的人物、地点或物件自动添加到当前资产。当前资产描述优先决定实际可见内容，并保留其中每个元素明确所属的年代。",
+            project_context.trim()
+        )
+    };
     format!(
-        "{manual}\n\n## 当前资产类型规则\n{type_manual}\n\n{extra}{identity_rule}\n\n最高优先级输出规则：只输出一段可直接使用的纯视觉描述，不输出 Markdown、表格、标题、代码块、自查清单或解释。只描述主体外观；手册中的构图、特写、视图数量、画幅比例和相机取景规则不适用于本步骤，禁止写入描述。最终生图布局由系统独立指定。"
+        "{manual}\n\n## 当前资产类型规则\n{type_manual}\n\n{extra}{project_context_rule}{identity_rule}{scene_fidelity_rule}\n\n最高优先级输出规则：只输出一段可直接使用的纯视觉描述，不输出 Markdown、表格、标题、代码块、自查清单或解释。只描述主体外观；手册中的构图、特写、视图数量、画幅比例和相机取景规则不适用于本步骤，禁止写入描述。最终生图布局由系统独立指定。"
     )
 }
 
@@ -66,9 +111,47 @@ pub(crate) fn image_prompt_with_instruction(
     has_reference: bool,
     managed_instruction: Option<&str>,
 ) -> String {
+    image_prompt_with_source_instruction(
+        style,
+        asset_type,
+        None,
+        None,
+        visual_description,
+        derivative,
+        has_reference,
+        managed_instruction,
+    )
+}
+
+pub(crate) fn image_prompt_with_source_instruction(
+    style: &str,
+    asset_type: &str,
+    source_description: Option<&str>,
+    project_context: Option<&str>,
+    visual_description: &str,
+    derivative: bool,
+    has_reference: bool,
+    managed_instruction: Option<&str>,
+) -> String {
+    let source_description = source_description
+        .map(|description| asset_visual_description(asset_type, description))
+        .filter(|description| !description.trim().is_empty());
     let visual_description = asset_visual_description(asset_type, visual_description);
     let asymmetric_role = asset_type == "role" && requires_opposite_side_view(&visual_description);
+    let visual_description = if asset_type == "scene" {
+        constrain_scene_expansion(source_description.as_deref(), &visual_description)
+    } else {
+        visual_description
+    };
     let visual_description = provider_safe_visual_description(&visual_description);
+    let style = if asset_type == "scene" {
+        scene_generation_style(
+            style,
+            source_description.as_deref().unwrap_or(&visual_description),
+        )
+    } else {
+        style.trim().to_string()
+    };
     let fallback_instruction = match asset_type {
         "role" if derivative => {
             "生成同一角色的标准四视图，保持参考图中的人物身份、面部、发型和体型一致，并应用提示词指定的服装或形态。"
@@ -105,14 +188,144 @@ pub(crate) fn image_prompt_with_instruction(
     } else {
         String::new()
     };
+    let source_instruction = if asset_type == "scene" {
+        source_description.as_deref().map_or_else(String::new, |source| {
+            format!(
+                "最高优先级原始场景事实：{source}\n忠实性约束：AI视觉描述只能整理和具体化原始事实；原始事实未提及的物件、破损、污渍、积水、霉斑、垃圾或天气效果全部忽略。原始物体的位置、数量和状态不得改变。\n"
+            )
+        })
+    } else {
+        String::new()
+    };
+    let project_context_instruction = project_context
+        .filter(|context| !context.trim().is_empty())
+        .map_or_else(String::new, |context| {
+            format!(
+                "项目世界观（全局背景，不代表当前资产全部可见）：{}\n世界观约束：只用来判断古今元素能否共存以及整体设定；不得把项目简介中的人物、地点、建筑或道具自动添加到当前资产。当前资产原始描述优先决定画面中实际出现的内容。\n",
+                context.trim()
+            )
+        });
+    let style_boundary = match asset_type {
+        "scene" => {
+            "\n古今混合规则：允许古代与现代视觉元素在同一项目、同一场景中共存。画风只决定表现媒介、材质、色彩和光影；具体出现哪些时代元素只由原始描述决定，并逐个保持各自年代。现代电脑、公寓及其他技术物件不得被古代物件替换；古代建筑、家具、服饰和道具也不得被现代化；未在原始描述中出现的时代元素不得因画风自动添加。"
+        }
+        "role" | "costume" | "tool" => {
+            "\n时代边界：穿越题材允许古今元素共存。画风只决定表现媒介与审美，不得改变当前资产描述中人物、服装或道具明确所属的年代，不得用另一时代的款式替换，也不得自动添加未描述的时代元素。"
+        }
+        _ => "",
+    };
     format!(
-        "画风：{style}\n类型：{asset_type}\n任务要求：{subject_instruction}\n\
+        "{project_context_instruction}{source_instruction}画风：{style}{style_boundary}\n类型：{asset_type}\n任务要求：{subject_instruction}\n\
          纯视觉描述：{visual_description}{reference_instruction}{identity_instruction}\n\
          将描述中的姓名、化名、编号、代号和称谓仅作为背景语义理解，绝不能把它们画出来。\n\
          画面中禁止出现任何文字、字母、数字、姓名、编号、胸牌、名牌、墙面标牌、字幕、标题、Logo或水印。\n\
          服装和背景表面保持无字、无编号、无标识。\n\
          最终构图约束（优先于描述、画风和参考图中的构图文字）：{subject_instruction}"
     )
+}
+
+fn scene_generation_style(style: &str, description: &str) -> String {
+    let normalized_style = style.trim();
+    let style_lower = normalized_style.to_ascii_lowercase();
+    let description_lower = description.to_ascii_lowercase();
+    let description_is_modern = [
+        "现代",
+        "当代",
+        "都市",
+        "公寓",
+        "电脑",
+        "显示器",
+        "键盘",
+        "汽车",
+        "办公楼",
+        "霓虹",
+    ]
+    .iter()
+    .any(|marker| description_lower.contains(marker));
+    let description_is_historical = [
+        "古代", "古风", "朝代", "汉代", "唐代", "宋代", "明代", "清代", "古宅", "宫殿", "寺庙",
+    ]
+    .iter()
+    .any(|marker| description_lower.contains(marker));
+    let style_is_historical = ["ancient", "traditional", "古代", "古风", "历史"]
+        .iter()
+        .any(|marker| style_lower.contains(marker));
+    let style_is_modern = ["modern", "urban", "现代", "都市"]
+        .iter()
+        .any(|marker| style_lower.contains(marker));
+
+    if description_is_modern && style_is_historical {
+        if style_lower.contains("realpeople")
+            || style_lower.contains("photoreal")
+            || normalized_style.contains("真人")
+            || normalized_style.contains("写实")
+        {
+            "真人古风写实摄影；保留古风写实的色彩、材质与光影审美，允许古代与现代视觉元素按原始描述共存".to_string()
+        } else if style_lower.contains("2d") || normalized_style.contains("二维") {
+            "二维古风动画渲染；保留古风的线条、色彩与纹理审美，允许古代与现代视觉元素按原始描述共存"
+                .to_string()
+        } else if style_lower.contains("3d") || normalized_style.contains("三维") {
+            "高精度古风三维渲染；保留古风的材质、色彩与光影审美，允许古代与现代视觉元素按原始描述共存".to_string()
+        } else {
+            format!("{normalized_style}；保留所选古风审美，允许古代与现代视觉元素按原始描述共存")
+        }
+    } else if description_is_historical && style_is_modern {
+        if style_lower.contains("realpeople")
+            || style_lower.contains("photoreal")
+            || normalized_style.contains("真人")
+            || normalized_style.contains("写实")
+        {
+            "真人现代写实摄影；保留现代写实的色彩、材质与光影审美，允许古代与现代视觉元素按原始描述共存".to_string()
+        } else if style_lower.contains("2d") || normalized_style.contains("二维") {
+            "二维现代动画渲染；保留现代动画的线条、色彩与纹理审美，允许古代与现代视觉元素按原始描述共存".to_string()
+        } else if style_lower.contains("3d") || normalized_style.contains("三维") {
+            "高精度现代三维渲染；保留现代三维的材质、色彩与光影审美，允许古代与现代视觉元素按原始描述共存".to_string()
+        } else {
+            format!("{normalized_style}；保留所选现代审美，允许古代与现代视觉元素按原始描述共存")
+        }
+    } else {
+        normalized_style.to_string()
+    }
+}
+
+fn constrain_scene_expansion(source_description: Option<&str>, visual_description: &str) -> String {
+    let Some(source_description) = source_description else {
+        return visual_description.to_string();
+    };
+    const AMPLIFICATION_MARKERS: &[&str] = &[
+        "废弃",
+        "灾后",
+        "严重脏乱",
+        "坍塌",
+        "腐烂",
+        "霉斑",
+        "发霉",
+        "积水",
+        "水渍",
+        "垃圾堆",
+        "厚重灰尘",
+        "巨大",
+        "占满前景",
+        "abandoned",
+        "post-apocalyptic",
+        "mold",
+        "mildew",
+        "standing water",
+        "garbage pile",
+        "giant",
+    ];
+    let source_lower = source_description.to_lowercase();
+    visual_description
+        .split(['，', '；'])
+        .map(str::trim)
+        .filter(|clause| {
+            let clause_lower = clause.to_lowercase();
+            !AMPLIFICATION_MARKERS
+                .iter()
+                .any(|marker| clause_lower.contains(marker) && !source_lower.contains(marker))
+        })
+        .collect::<Vec<_>>()
+        .join("，")
 }
 
 /// Keeps the stored, user-facing costume wording intact while avoiding
@@ -268,8 +481,25 @@ pub(crate) fn asset_visual_description(asset_type: &str, prompt: &str) -> String
         "2:1",
         "1:1",
     ];
+    const SCENE_CONFLICT_MARKERS: &[&str] = &[
+        "scene design sheet",
+        "environment concept art",
+        "concept art",
+        "shallow depth of field",
+        "bokeh",
+        "lens vignette",
+        "chromatic aberration",
+        "场景设计稿",
+        "环境概念图",
+        "概念图",
+        "浅景深",
+        "散景",
+        "背景虚化",
+        "镜头暗角",
+        "色差",
+    ];
 
-    prompt
+    let cleaned = prompt
         .lines()
         .map(str::trim)
         .filter(|line| !line.starts_with('#') && !line.starts_with("---") && !line.contains("✅"))
@@ -282,9 +512,46 @@ pub(crate) fn asset_visual_description(asset_type: &str, prompt: &str) -> String
                     .iter()
                     .any(|marker| clause.to_lowercase().contains(&marker.to_lowercase()))
                 && (asset_type != "role" || !clause.contains("拼图"))
+                && (asset_type != "scene"
+                    || !SCENE_CONFLICT_MARKERS
+                        .iter()
+                        .any(|marker| clause.to_lowercase().contains(&marker.to_lowercase())))
         })
         .collect::<Vec<_>>()
-        .join("，")
+        .join("，");
+    if asset_type == "scene" {
+        strip_scene_room_identifiers(&cleaned)
+    } else {
+        cleaned
+    }
+}
+
+fn strip_scene_room_identifiers(description: &str) -> String {
+    let chars = description.chars().collect::<Vec<_>>();
+    let mut cleaned = String::with_capacity(description.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index].is_ascii_digit() || matches!(chars[index], '０'..='９') {
+            let mut end = index + 1;
+            while end < chars.len()
+                && (chars[end].is_ascii_digit() || matches!(chars[end], '０'..='９'))
+            {
+                end += 1;
+            }
+            if chars.get(end) == Some(&'号') && chars.get(end + 1) == Some(&'房') {
+                while cleaned.ends_with(['·', '•', '-', '—', ' ']) {
+                    cleaned.pop();
+                }
+                index = end + 2;
+                continue;
+            }
+        }
+        cleaned.push(chars[index]);
+        index += 1;
+    }
+    cleaned
+        .trim_matches(['，', '、', '·', '•', '-', '—', ' '])
+        .to_string()
 }
 
 #[cfg(test)]
@@ -342,6 +609,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn generic_live_action_base_does_not_force_a_world_era() {
+        let style = "realpeople_cinematic_base";
+        assert_eq!(
+            scene_generation_style(style, "现代都市公寓里的电脑桌"),
+            style
+        );
+        assert_eq!(
+            scene_generation_style(style, "唐代木构客栈与身穿圆领袍的少年"),
+            style
+        );
+    }
+
+    #[test]
+    fn time_travel_template_adds_rules_without_inventing_story_content() {
+        let context = project_world_context(
+            "time_travel",
+            "悬疑穿越",
+            "现代404公寓与古代客栈通过一扇门相连",
+        );
+
+        assert!(context.contains("项目模板：穿越剧场"));
+        assert!(context.contains("现代404公寓与古代客栈"));
+        assert!(context.contains("同框的古今元素必须并存"));
+        assert!(context.contains("人物跨时代换装时保持同一身份和面貌"));
+        assert!(!context.contains("宫殿"));
+    }
+
+    #[test]
     fn legacy_manual_cannot_leak_closeups_back_into_generation() {
         let legacy = "# 李晨人物视觉手册\n| 构图 | 人像特写+正视图+侧视图+后视图 |\n## 可直接使用的提示词\n```text\n青年男性，黑色短发，深灰连帽卫衣，深色长裤，运动鞋，\ncharacter design sheet, character turnaround,\nhead to collarbone complete, waist-up portrait,\n全身立像从头顶到脚底完整展示，full body head to toe\n```\n## 自查\n| R8 | 特写头顶到锁骨 | ✅ |";
         let cleaned = asset_visual_description("role", legacy);
@@ -393,7 +688,100 @@ mod tests {
         );
         assert!(prompt.contains("服装完整入画，不裁切"));
         assert!(!prompt.contains("半身人像特写"));
-        assert!(polish_system_prompt("输出四视图手册", "", "role", false).contains("禁止写入描述"));
+        assert!(
+            polish_system_prompt("输出四视图手册", "", "", "role", false).contains("禁止写入描述")
+        );
+    }
+
+    #[test]
+    fn scene_polish_is_conservative_about_source_facts() {
+        let prompt = polish_system_prompt(
+            "写实摄影",
+            "",
+            "穿越题材，古代人物来到现代都市",
+            "scene",
+            false,
+        );
+
+        assert!(prompt.contains("不新增未提及的道具"));
+        assert!(prompt.contains("不把“陈旧”升级成废弃"));
+        assert!(prompt.contains("不同时写浅景深、散景或背景虚化"));
+        assert!(prompt.contains("写实摄影与概念图、设计稿等媒介词不得混用"));
+        assert!(prompt.contains("允许古代与现代元素在穿越题材中共存"));
+        assert!(prompt.contains("逐个保留原始描述中建筑、人物、服装和道具各自所属的年代"));
+        assert!(prompt.contains("项目世界观（全局背景，不代表当前资产中的全部内容）"));
+        assert!(prompt.contains("不得把项目简介中的人物、地点或物件自动添加到当前资产"));
+    }
+
+    #[test]
+    fn scene_cleanup_removes_room_numbers_and_conflicting_camera_boilerplate() {
+        let cleaned = asset_visual_description(
+            "scene",
+            "现代都市单身公寓·404号房，旧电脑桌，shallow depth of field，bokeh，environment concept art，35mm film grain",
+        );
+
+        assert!(cleaned.contains("现代都市单身公寓"));
+        assert!(cleaned.contains("旧电脑桌"));
+        assert!(cleaned.contains("35mm film grain"));
+        for forbidden in [
+            "404号房",
+            "shallow depth of field",
+            "bokeh",
+            "environment concept art",
+        ] {
+            assert!(!cleaned.contains(forbidden), "{forbidden}: {cleaned}");
+        }
+    }
+
+    #[test]
+    fn mixed_era_scene_preserves_ancient_aesthetic_without_replacing_modern_content() {
+        let prompt = image_prompt_with_source_instruction(
+            "realpeople_ancient_chinese",
+            "scene",
+            Some("狭小陈旧的现代单身公寓，旧电脑桌与显示器，窗外冰雹，桌面散着泡面桶"),
+            Some("现代女孩穿越古代，在两个时代之间往返"),
+            "现代公寓·404号房，废弃灾后房间，地面积水和霉斑，浅景深，巨大的泡面桶占满前景",
+            false,
+            false,
+            None,
+        );
+
+        assert!(prompt.contains("最高优先级原始场景事实：狭小陈旧的现代单身公寓"));
+        assert!(prompt.contains("画风：真人古风写实摄影"));
+        assert!(prompt.contains("保留古风写实的色彩、材质与光影审美"));
+        assert!(prompt.contains("允许古代与现代视觉元素按原始描述共存"));
+        assert!(!prompt.contains("realpeople_ancient_chinese"));
+        assert!(!prompt.contains("404号房"));
+        assert!(!prompt.contains("废弃灾后房间"));
+        assert!(!prompt.contains("巨大的泡面桶占满前景"));
+        assert!(
+            prompt.contains("原始事实未提及的物件、破损、污渍、积水、霉斑、垃圾或天气效果全部忽略")
+        );
+        assert!(prompt.contains("逐个保持各自年代"));
+        assert!(prompt.contains("现代电脑、公寓及其他技术物件不得被古代物件替换"));
+    }
+
+    #[test]
+    fn time_travel_scene_keeps_explicit_ancient_and_modern_elements_together() {
+        let prompt = image_prompt_with_source_instruction(
+            "realpeople_ancient_chinese",
+            "scene",
+            Some("古代木构客栈内摆着亮起的现代笔记本电脑，穿越者的充电宝放在明代木桌上"),
+            Some("古今穿越题材，古代与现代世界同时存在"),
+            "古代木构客栈，现代笔记本电脑，充电宝，明代木桌",
+            false,
+            false,
+            None,
+        );
+
+        assert!(prompt.contains("古代木构客栈"));
+        assert!(prompt.contains("现代笔记本电脑"));
+        assert!(prompt.contains("充电宝"));
+        assert!(prompt.contains("明代木桌"));
+        assert!(prompt.contains("画风：真人古风写实摄影"));
+        assert!(prompt.contains("古代建筑、家具、服饰和道具也不得被现代化"));
+        assert!(prompt.contains("项目世界观（全局背景，不代表当前资产全部可见）"));
+        assert!(prompt.contains("当前资产原始描述优先决定画面中实际出现的内容"));
     }
 
     #[test]

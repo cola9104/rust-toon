@@ -32,7 +32,127 @@ async fn applies_all_migrations_to_empty_postgres() {
         .fetch_one(&pool)
         .await
         .expect("read migration history");
-    assert_eq!(applied, 17);
+    assert_eq!(applied, 22);
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0022_video_export_timeline.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("video export timeline migration is idempotent");
+    let timeline_columns: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT column_name,column_default::text
+         FROM information_schema.columns
+         WHERE table_schema='toonflow' AND table_name='video_tracks'
+           AND column_name IN ('trim_start_ms','trim_end_ms','transition_duration_ms')
+         ORDER BY column_name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect video export timeline columns");
+    assert_eq!(
+        timeline_columns,
+        vec![
+            (
+                "transition_duration_ms".to_string(),
+                Some("600".to_string())
+            ),
+            ("trim_end_ms".to_string(), None),
+            ("trim_start_ms".to_string(), Some("0".to_string())),
+        ]
+    );
+    for constraint in [
+        "video_tracks_trim_range_check",
+        "video_tracks_transition_duration_check",
+    ] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname=$1)",
+        )
+        .bind(constraint)
+        .fetch_one(&pool)
+        .await
+        .expect("inspect video export timeline constraint");
+        assert!(exists, "missing constraint {constraint}");
+    }
+
+    let before: (String, String) = sqlx::query_as("SELECT data::text, images::text FROM toonflow.creative_manuals WHERE path='realpeople_cinematic_base' AND kind='visual'")
+        .fetch_one(&pool).await.expect("read refined manual");
+    sqlx::raw_sql(include_str!("../../../../sql/postgresql/0021_refine_live_action_manual_references.sql"))
+        .execute(&pool).await.expect("refined manual migration is idempotent");
+    let after: (String, String) = sqlx::query_as("SELECT data::text, images::text FROM toonflow.creative_manuals WHERE path='realpeople_cinematic_base' AND kind='visual'")
+        .fetch_one(&pool).await.expect("read repeated refined manual");
+    assert_eq!(before, after);
+    assert_eq!(after.0.matches("## 执行补充 v2").count(), 12);
+    assert!(after.1.contains("reference-v1.png"));
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0020_merge_builtin_style_library_into_visual_manuals.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("visual manual style-library merge migration is idempotent");
+
+    let manual_menu: (String, String) = sqlx::query_as(
+        "SELECT name, component FROM public.system_menu
+         WHERE id=20002 AND path='styles'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect merged creative manual menu");
+    assert_eq!(manual_menu, ("创作手册".into(), "toonflow/manuals/index".into()));
+
+    let duplicated_builtin_styles: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM toonflow.art_styles AS style
+         JOIN toonflow.creative_manuals AS manual
+           ON manual.kind='visual'
+          AND manual.name=style.name
+          AND manual.path=style.label
+         WHERE style.id BETWEEN 560100 AND 560110",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect retired built-in art-style copies");
+    assert_eq!(duplicated_builtin_styles, 0);
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0019_generic_live_action_visual_base.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("generic live-action visual manual migration is idempotent");
+
+    let generic_live_action_manual: (String, i64, String) = sqlx::query_as(
+        "SELECT name, jsonb_array_length(data)::bigint, data::text
+         FROM toonflow.creative_manuals
+         WHERE kind='visual' AND path='realpeople_cinematic_base'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect generic live-action visual manual");
+    assert_eq!(generic_live_action_manual.0, "通用真人影视基底");
+    assert_eq!(generic_live_action_manual.1, 12);
+    assert!(generic_live_action_manual.2.contains("基础画风控制“怎么拍”"));
+    assert!(generic_live_action_manual.2.contains("不得自动现代化"));
+    assert!(generic_live_action_manual.2.contains("不得自动古风化"));
+    assert!(!generic_live_action_manual.2.contains("禁止古风"));
+    assert!(!generic_live_action_manual.2.contains("禁止现代"));
+
+    sqlx::raw_sql(include_str!(
+        "../../../../sql/postgresql/0018_asset_image_generation_idempotency.sql"
+    ))
+    .execute(&pool)
+    .await
+    .expect("asset image idempotency migration is idempotent");
+
+    let input_hash_column: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns
+         WHERE table_schema='toonflow' AND table_name='images' AND column_name='input_hash')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect image input hash column");
+    assert!(input_hash_column);
 
     sqlx::raw_sql(include_str!(
         "../../../../sql/postgresql/0012_retire_duplicate_request_traces.sql"
@@ -41,20 +161,18 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("request trace retirement migration is idempotent");
 
-    let trace_menu: (i16, bool) = sqlx::query_as(
-        "SELECT deleted, visible FROM public.system_menu WHERE id=1077",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("inspect retired request trace menu");
+    let trace_menu: (i16, bool) =
+        sqlx::query_as("SELECT deleted, visible FROM public.system_menu WHERE id=1077")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect retired request trace menu");
     assert_eq!(trace_menu, (1, false));
 
-    let api_log_menu: (i16, bool) = sqlx::query_as(
-        "SELECT deleted, visible FROM public.system_menu WHERE id=1078",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("inspect API access log menu");
+    let api_log_menu: (i16, bool) =
+        sqlx::query_as("SELECT deleted, visible FROM public.system_menu WHERE id=1078")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect API access log menu");
     assert_eq!(api_log_menu, (0, true));
 
     sqlx::raw_sql(include_str!(
@@ -71,12 +189,11 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("VolcEngine platform identifier migration is idempotent");
 
-    let platform_label: String = sqlx::query_scalar(
-        "SELECT label FROM ai.model_platforms WHERE platform='VolcEngine'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("inspect canonical VolcEngine platform");
+    let platform_label: String =
+        sqlx::query_scalar("SELECT label FROM ai.model_platforms WHERE platform='VolcEngine'")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect canonical VolcEngine platform");
     assert_eq!(platform_label, "火山引擎");
 
     let dictionary_labels: Vec<String> = sqlx::query_scalar(
@@ -109,12 +226,11 @@ async fn applies_all_migrations_to_empty_postgres() {
     .await
     .expect("event extraction prompt alignment migration is idempotent");
 
-    let event_prompt: String = sqlx::query_scalar(
-        "SELECT data FROM toonflow.prompts WHERE source_key='eventExtraction'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("inspect event extraction prompt");
+    let event_prompt: String =
+        sqlx::query_scalar("SELECT data FROM toonflow.prompts WHERE source_key='eventExtraction'")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect event extraction prompt");
     assert!(event_prompt.contains("只输出纯 JSON 数组"));
     assert!(!event_prompt.contains("恰好 7 个字段"));
     sqlx::raw_sql(include_str!(
@@ -2214,7 +2330,10 @@ async fn applies_all_migrations_to_empty_postgres() {
     .fetch_one(&pool)
     .await
     .expect("read dictionary baseline");
-    assert_eq!(dictionary_baseline.0, 40, "only current product dictionaries remain active");
+    assert_eq!(
+        dictionary_baseline.0, 40,
+        "only current product dictionaries remain active"
+    );
     assert!(dictionary_baseline.0 >= dictionary_baseline.1);
     assert_eq!(
         dictionary_baseline.2, 0,
@@ -2266,12 +2385,11 @@ async fn applies_all_migrations_to_empty_postgres() {
     .expect("inspect preserved system and custom dictionaries");
     assert_eq!(preserved_dictionaries, 5);
 
-    let custom_option: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM system_dict_data WHERE id=-9001102 AND deleted=0",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("inspect preserved custom option");
+    let custom_option: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM system_dict_data WHERE id=-9001102 AND deleted=0")
+            .fetch_one(&pool)
+            .await
+            .expect("inspect preserved custom option");
     assert_eq!(custom_option, 1);
     sqlx::raw_sql(
         "DELETE FROM system_dict_data WHERE id=-9001102;

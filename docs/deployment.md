@@ -39,7 +39,7 @@ cargo run -p rust-toon-gateway
 
 网关启动时自动执行 `sql/postgresql` 下的全部迁移（空库从零建表并写入基线数据），并校验存在启用的超级管理员。
 
-另开一个终端启动持久任务 worker；最终成片合并由 worker 执行，网关节点不再需要安装 FFmpeg：
+另开一个终端启动持久任务 worker；视频基础质检和最终成片合并由 worker 执行。新视频归档后需要 Worker 完成检查才能选用；未运行新版 Worker 时，视频会保持“等待基础质检”。现有尾帧提取仍可能在 Gateway 执行，使用跨镜头尾帧衔接的 Gateway 也需要 FFmpeg：
 
 ```bash
 export DATABASE_URL='postgres://rust_toon:rust_toon@127.0.0.1:5432/rust_toon'

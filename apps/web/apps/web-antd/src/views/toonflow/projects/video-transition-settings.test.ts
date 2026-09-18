@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   normalizeVideoTransitionSettings,
   previousVideoTrackContext,
+  transitionDurationApplies,
   transitionSourceLabel,
   videoFrameApplication,
 } from './video-transition-settings';
@@ -11,7 +12,10 @@ describe('video transition settings', () => {
   it('defaults an uninitialized track to a cut with its own frame', () => {
     expect(normalizeVideoTransitionSettings({ id: 2 })).toEqual({
       framePolicy: 'own',
+      transitionDurationMs: 600,
       transitionType: 'cut',
+      trimEndMs: null,
+      trimStartMs: 0,
     });
   });
 
@@ -22,14 +26,81 @@ describe('video transition settings', () => {
         id: 2,
         transitionType: 'dissolve',
       }),
-    ).toEqual({ framePolicy: 'previous_tail', transitionType: 'dissolve' });
+    ).toEqual({
+      framePolicy: 'previous_tail',
+      transitionDurationMs: 600,
+      transitionType: 'dissolve',
+      trimEndMs: null,
+      trimStartMs: 0,
+    });
     expect(
       normalizeVideoTransitionSettings({
         framePolicy: 'always',
         id: 2,
         transitionType: 'unknown',
       }),
-    ).toEqual({ framePolicy: 'own', transitionType: 'cut' });
+    ).toEqual({
+      framePolicy: 'own',
+      transitionDurationMs: 600,
+      transitionType: 'cut',
+      trimEndMs: null,
+      trimStartMs: 0,
+    });
+  });
+
+  it('normalizes export timeline fields with defaults and bounds', () => {
+    expect(
+      normalizeVideoTransitionSettings({
+        id: 3,
+        transitionDurationMs: 800,
+        transitionType: 'dissolve',
+        trimEndMs: 4200,
+        trimStartMs: 250,
+      }),
+    ).toEqual({
+      framePolicy: 'own',
+      transitionDurationMs: 800,
+      transitionType: 'dissolve',
+      trimEndMs: 4200,
+      trimStartMs: 250,
+    });
+
+    expect(
+      normalizeVideoTransitionSettings({
+        id: 3,
+        transitionDurationMs: 99_999,
+        trimEndMs: null,
+        trimStartMs: -5,
+      }),
+    ).toEqual({
+      framePolicy: 'own',
+      transitionDurationMs: 10_000,
+      transitionType: 'cut',
+      trimEndMs: null,
+      trimStartMs: 0,
+    });
+
+    expect(
+      normalizeVideoTransitionSettings({
+        id: 3,
+        transitionDurationMs: 'fast',
+        trimEndMs: 'end',
+        trimStartMs: 'start',
+      }),
+    ).toEqual({
+      framePolicy: 'own',
+      transitionDurationMs: 600,
+      transitionType: 'cut',
+      trimEndMs: null,
+      trimStartMs: 0,
+    });
+  });
+
+  it('marks dissolve and audio bridge as the only duration-aware transitions', () => {
+    expect(transitionDurationApplies('dissolve')).toBe(true);
+    expect(transitionDurationApplies('audio_bridge')).toBe(true);
+    expect(transitionDurationApplies('cut')).toBe(false);
+    expect(transitionDurationApplies('continuous')).toBe(false);
   });
 
   it('resolves an explicit earlier source or the immediately preceding track', () => {

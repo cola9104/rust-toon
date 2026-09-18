@@ -38,8 +38,18 @@ async fn configured_image_and_video_providers_return_media_urls() {
     .expect("real image provider request");
     assert!(image_url.starts_with("http://") || image_url.starts_with("https://"));
 
-    let video_url = ai_client::video_untracked(&pool, &video_model, video_payload)
+    let submission = ai_client::video_submit(&pool, &video_model, video_payload)
         .await
         .expect("real video provider request");
+    let video_url = match submission {
+        ai_client::VideoSubmission { url: Some(url), .. } => url,
+        ai_client::VideoSubmission {
+            task_id: Some(task_id),
+            ..
+        } => ai_client::video_poll_task(&pool, &video_model, &task_id)
+            .await
+            .expect("real video provider polling"),
+        _ => panic!("video response carried neither URL nor task ID"),
+    };
     assert!(video_url.starts_with("http://") || video_url.starts_with("https://"));
 }

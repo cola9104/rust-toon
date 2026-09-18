@@ -78,9 +78,73 @@ pub async fn update_project(
         request.video_model,
     )
     .await?;
-    let result = sqlx::query("UPDATE toonflow.projects SET project_type=$2,chat_model=$3,image_model=$4,image_quality=$5,video_model=$6,name=$7,intro=$8,type=$9,art_style=$10,director_manual=$11,mode=$12,video_ratio=$13,update_time=$14 WHERE id=$1")
-        .bind(id).bind(request.project_type).bind(request.chat_model).bind(request.image_model).bind(request.image_quality).bind(request.video_model).bind(request.name.trim()).bind(request.intro).bind(request.r#type).bind(request.art_style).bind(request.director_manual).bind(video_mode(&request.mode)).bind(video_ratio(&request.video_ratio)).bind(now_ms()).execute(&state.pool).await.map_err(|_| AppError::internal("failed to update toonflow project"))?;
-    affected(result.rows_affected(), "project")?;
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to begin project update"))?;
+    let generation_changed: Option<bool> = sqlx::query_scalar(
+        r#"WITH previous AS MATERIALIZED (
+             SELECT project_type,type,intro,art_style,image_model,image_quality
+             FROM toonflow.projects WHERE id=$1 FOR UPDATE
+           ), updated AS (
+             UPDATE toonflow.projects project
+             SET project_type=$2,chat_model=$3,image_model=$4,image_quality=$5,
+                 video_model=$6,name=$7,intro=$8,type=$9,art_style=$10,
+                 director_manual=$11,mode=$12,video_ratio=$13,update_time=$14
+             FROM previous WHERE project.id=$1
+             RETURNING previous.project_type IS DISTINCT FROM $2
+                    OR previous.type IS DISTINCT FROM $9
+                    OR previous.intro IS DISTINCT FROM $8
+                    OR previous.art_style IS DISTINCT FROM $10
+                    OR previous.image_model IS DISTINCT FROM $4
+                    OR previous.image_quality IS DISTINCT FROM $5 AS generation_changed
+           ) SELECT generation_changed FROM updated"#,
+    )
+    .bind(id)
+    .bind(&request.project_type)
+    .bind(request.chat_model)
+    .bind(request.image_model)
+    .bind(&request.image_quality)
+    .bind(request.video_model)
+    .bind(request.name.trim())
+    .bind(&request.intro)
+    .bind(&request.r#type)
+    .bind(&request.art_style)
+    .bind(&request.director_manual)
+    .bind(video_mode(&request.mode))
+    .bind(video_ratio(&request.video_ratio))
+    .bind(now_ms())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|_| AppError::internal("failed to update toonflow project"))?;
+    affected(u64::from(generation_changed.is_some()), "project")?;
+    if generation_changed == Some(true) {
+        sqlx::query(
+            r#"UPDATE toonflow.images image SET state='已取消',error_reason='项目生成配置已修改'
+               FROM toonflow.assets asset
+               WHERE image.assets_id=asset.id AND asset.project_id=$1
+                 AND image.state='生成中' AND image.input_hash IS NOT NULL"#,
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to cancel stale image generation"))?;
+        sqlx::query(
+            r#"UPDATE toonflow.assets asset SET image_id=NULL
+               WHERE asset.project_id=$1 AND EXISTS (
+                 SELECT 1 FROM toonflow.images image
+                 WHERE image.id=asset.image_id AND image.input_hash IS NOT NULL
+               )"#,
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to invalidate generated images"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit project update"))?;
     Ok(Json(ApiResponse::with_message((), "编辑项目成功")))
 }
 

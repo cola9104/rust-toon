@@ -8,6 +8,7 @@ import { Page } from '@vben/common-ui';
 import { AiModelTypeEnum } from '@vben/constants';
 
 import {
+  Alert,
   Button,
   Empty,
   Form,
@@ -32,6 +33,13 @@ import {
 import '../shared/page-card.css';
 import '../styles/toon-theme.css';
 import ToonCard from '../components/ToonCard.vue';
+import {
+  createProjectDefaults,
+  projectTemplateDescription,
+  projectTemplateLabel,
+  projectTemplateOptions,
+  type ProjectTemplateKey,
+} from './project-templates';
 
 defineOptions({ name: 'ToonflowProjects' });
 
@@ -61,37 +69,21 @@ const videoModeOptions = [
 const visualManualOptions = computed(() => manuals.value.filter((item) => item.kind === 'visual').map((item) => ({ label: item.name, value: item.path })));
 const directorManualOptions = computed(() => manuals.value.filter((item) => item.kind === 'director').map((item) => ({ label: item.name, value: item.path })));
 
-const form = reactive<ToonflowApi.SaveProject>({
-  projectType: 'short_drama',
-  chatModel: undefined,
-  imageModel: undefined,
-  imageQuality: '2K',
-  videoModel: undefined,
-  name: '',
-  intro: '',
-  type: '短剧',
-  artStyle: '',
-  directorManual: '',
-  mode: 'startEndRequired',
-  videoRatio: '16:9',
-});
+const form = reactive<ToonflowApi.SaveProject>(createProjectDefaults());
 
-function resetForm() {
+function resetForm(template: ProjectTemplateKey = 'short_drama') {
   Object.assign(form, {
     id: undefined,
-    projectType: 'short_drama',
-    chatModel: undefined,
-    imageModel: undefined,
-    imageQuality: '2K',
-    videoModel: undefined,
-    name: '',
-    intro: '',
-    type: '短剧',
-    artStyle: '',
-    directorManual: '',
-    mode: 'startEndRequired',
-    videoRatio: '16:9',
+    ...createProjectDefaults(template),
   });
+}
+
+function handleTemplateChange(template: unknown) {
+  if (template !== 'short_drama' && template !== 'time_travel') return;
+  if (form.id) return;
+  if (!form.type || form.type === '短剧' || form.type === '穿越') {
+    form.type = template === 'time_travel' ? '穿越' : '短剧';
+  }
 }
 
 async function loadProjects() {
@@ -125,8 +117,8 @@ function ratioLabel(ratio?: string) {
   return value === '9:16' ? `竖屏 ${value}` : value === '1:1' ? `方形 ${value}` : `横屏 ${value}`;
 }
 
-async function openCreate() {
-  resetForm();
+async function openCreate(template: ProjectTemplateKey = 'short_drama') {
+  resetForm(template);
   await loadModels();
   modalOpen.value = true;
 }
@@ -223,7 +215,8 @@ onActivated(() => {
         <div><h1 class="toon-title">项目工作台</h1><p class="toon-subtitle">从故事到成片，继续你的创作。</p></div>
         <Space>
           <Button @click="loadProjects">刷新</Button>
-          <Button class="toon-primary" type="primary" @click="openCreate">＋ 新建项目</Button>
+          <Button @click="openCreate('time_travel')">＋ 穿越剧场</Button>
+          <Button class="toon-primary" type="primary" @click="openCreate()">＋ 新建项目</Button>
         </Space>
       </div>
 
@@ -236,9 +229,9 @@ onActivated(() => {
             <span class="ratio-badge">{{ ratioLabel(record.videoRatio) }}</span>
           </div>
           <div class="project-card__body">
-            <div class="project-card__heading"><h3>{{ record.name }}</h3><span class="project-type">{{ record.type || '短剧' }}</span></div>
+            <div class="project-card__heading"><h3>{{ record.name }}</h3><span class="project-type">{{ projectTemplateLabel(record.projectType) }}</span></div>
             <p>{{ record.intro || '还没有项目简介，进入项目开始创作。' }}</p>
-            <div class="project-card__tags"><Tag>{{ record.artStyle || '默认视觉' }}</Tag><Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag></div>
+            <div class="project-card__tags"><Tag>{{ record.type || '短剧' }}</Tag><Tag>{{ record.artStyle || '默认视觉' }}</Tag><Tag>{{ videoModeOptions.find((option) => option.value === record.mode)?.label || '文生视频' }}</Tag></div>
             <div class="project-card__models"><span>对话 · {{ modelLabel(chatModels, record.chatModel) }}</span><span>图像 · {{ modelLabel(imageModels, record.imageModel) }}</span><span>视频 · {{ modelLabel(videoModels, record.videoModel) }}</span></div>
             <div class="project-card__actions" @click.stop>
               <Button type="link" @click="openProject(record)">进入创作</Button>
@@ -259,6 +252,21 @@ onActivated(() => {
       @ok="handleSave"
     >
       <Form :label-col="{ span: 5 }" :model="form" class="mt-4">
+        <Form.Item label="剧场模板">
+          <Select
+            v-model:value="form.projectType"
+            :disabled="Boolean(form.id)"
+            :options="projectTemplateOptions"
+            option-label-prop="label"
+            @change="handleTemplateChange"
+          />
+          <Alert
+            class="template-hint"
+            :message="projectTemplateDescription(form.projectType)"
+            show-icon
+            type="info"
+          />
+        </Form.Item>
         <Form.Item label="项目名称" required>
           <Input v-model:value="form.name" placeholder="短剧项目名称" />
         </Form.Item>
@@ -337,4 +345,5 @@ onActivated(() => {
 .project-card__body { display: flex; min-width: 0; flex: 1; flex-direction: column; padding: 17px 18px 14px; }.project-card__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.project-card__heading h3 { overflow: hidden; margin: 0; color: var(--toon-ink); font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }.project-card__body > p { height: 40px; overflow: hidden; margin: 9px 0 12px; color: var(--toon-muted); font-size: 12px; line-height: 20px; }
 .project-type { flex: none; margin: 0; padding: 3px 9px; border-radius: 999px; color: var(--ant-color-primary); background: var(--ant-color-primary-bg); font-size: 11px; }
 .project-card__tags { display: flex; flex-wrap: wrap; gap: 5px; }.project-card__models { display: grid; margin-top: 14px; color: var(--toon-muted); font-size: 11px; gap: 5px; }.project-card__models span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.project-card__actions { display: flex; justify-content: flex-end; gap: 2px; margin: auto -8px 0; border-top: 1px solid var(--toon-line); padding-top: 9px; }
+.template-hint { margin-top: 8px; }
 </style>

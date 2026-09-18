@@ -487,7 +487,7 @@ pub(crate) async fn recover_stale_node_runs(state: &ToonState) {
                 serde_json::from_value::<toonflow_video::WorkflowVideoInput>(input.clone())
             {
                 let _ = sqlx::query(
-                    "UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致任务中断' WHERE id=ANY($1) AND state='生成中'",
+                    "UPDATE toonflow.videos v SET state='生成失败',error_reason='服务重启导致任务中断' WHERE id=ANY($1) AND state='生成中' AND v.generation_context->'provider'->>'taskId' IS NULL AND NOT EXISTS(SELECT 1 FROM toonflow.distributed_jobs j WHERE j.kind='toon.video_quality' AND j.task_id::text=v.generation_context->'quality'->>'taskId' AND j.state IN ('queued','running','retry'))",
                 )
                 .bind(input.video_ids)
                 .execute(&state.pool)
@@ -1032,6 +1032,7 @@ async fn launch_standard_node(
                 let request = toonflow_agent_tools::ToolRequest {
                     emitter: None,
                     agent_type: "productionAgent".into(),
+                    agent_key: Some("productionAgent:decisionAgent".into()),
                     isolation_key: format!("productionAgent:{project_id}:{script_id}"),
                     project_id,
                     script_id: Some(script_id),
@@ -1066,6 +1067,7 @@ async fn launch_standard_node(
                     let panel_request = toonflow_agent_tools::ToolRequest {
                         emitter: None,
                         agent_type: "productionAgent".into(),
+                        agent_key: Some("productionAgent:decisionAgent".into()),
                         isolation_key: format!("productionAgent:{project_id}:{script_id}"),
                         project_id,
                         script_id: Some(script_id),
@@ -1369,38 +1371,60 @@ async fn orchestrate_workflow_run(state: ToonState, workflow_run_id: i64) {
         if node_state == "skipped" {
             continue;
         }
-        let upstream_outputs = workflow
-            .edges
-            .iter()
-            .filter(|edge| edge.target == node.id)
-            .filter_map(|edge| {
-                outputs
-                    .get(&edge.source)
-                    .cloned()
-                    .map(|output| (edge.source.clone(), output))
-            })
-            .collect::<serde_json::Map<_, _>>();
-        let input = match orchestrated_node_input(
-            &state.pool,
-            project_id,
-            script_id,
-            node,
-            &run_input,
-            Value::Object(upstream_outputs),
-        )
-        .await
-        {
-            Ok(input) => input,
-            Err(reason) => {
+        if node_state == "success" {
+            // A run resumed after a Gateway restart rebuilds upstream outputs
+            // from the persisted node rows instead of in-memory state.
+            let output: Option<Value> = sqlx::query_scalar(
+                "SELECT output FROM toonflow.workflow_node_runs WHERE id=$1",
+            )
+            .bind(node_run_id)
+            .fetch_optional(&state.pool)
+            .await
+            .unwrap_or(None)
+            .flatten();
+            outputs.insert(node.id.clone(), output.unwrap_or(Value::Null));
+            continue;
+        }
+        if matches!(node_state.as_str(), "failed" | "cancelled") {
+            break;
+        }
+        if node_state != "running" {
+            let upstream_outputs = workflow
+                .edges
+                .iter()
+                .filter(|edge| edge.target == node.id)
+                .filter_map(|edge| {
+                    outputs
+                        .get(&edge.source)
+                        .cloned()
+                        .map(|output| (edge.source.clone(), output))
+                })
+                .collect::<serde_json::Map<_, _>>();
+            let input = match orchestrated_node_input(
+                &state.pool,
+                project_id,
+                script_id,
+                node,
+                &run_input,
+                Value::Object(upstream_outputs),
+            )
+            .await
+            {
+                Ok(input) => input,
+                Err(reason) => {
+                    fail_orchestrated_node(&state.pool, workflow_run_id, node_run_id, &reason)
+                        .await;
+                    break;
+                }
+            };
+            if let Err(error) = launch_node(&state, node_run_id, input).await {
+                let reason = format!("{error:?}");
                 fail_orchestrated_node(&state.pool, workflow_run_id, node_run_id, &reason).await;
                 break;
             }
-        };
-        if let Err(error) = launch_node(&state, node_run_id, input).await {
-            let reason = format!("{error:?}");
-            fail_orchestrated_node(&state.pool, workflow_run_id, node_run_id, &reason).await;
-            break;
         }
+        // A node left 'running' by a restart is re-attached by a resume
+        // waiter; the orchestrator only observes its row in both cases.
         loop {
             let state_output = sqlx::query_as::<_, (String, Option<Value>, Option<String>)>(
                 "SELECT state,output,error_reason FROM toonflow.workflow_node_runs WHERE id=$1",
@@ -1432,6 +1456,29 @@ async fn orchestrate_workflow_run(state: ToonState, workflow_run_id: i64) {
             break;
         }
     }
+    // A run whose previous process died between the final node update and the
+    // run update is left 'running' with every node terminal. Finish it here;
+    // failure/cancel paths already moved the run out of 'running', so this
+    // only repairs the residual success case.
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM toonflow.workflow_node_runs WHERE workflow_run_id=$1 AND state IN('pending','blocked','running')",
+    )
+    .bind(workflow_run_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or(1);
+    if remaining == 0 {
+        let time = chrono::Utc::now().timestamp_millis();
+        let _ = sqlx::query(
+            "UPDATE toonflow.workflow_runs
+             SET state='success',error_reason=NULL,finish_time=$2
+             WHERE id=$1 AND state='running'",
+        )
+        .bind(workflow_run_id)
+        .bind(time)
+        .execute(&state.pool)
+        .await;
+    }
     active_workflow_runs()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1449,6 +1496,117 @@ fn schedule_workflow_run(state: ToonState, workflow_run_id: i64) {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .insert(workflow_run_id, handle.abort_handle());
     let _ = start_tx.send(());
+}
+
+/// Re-attach a video.generate node run whose executor died with the previous
+/// Gateway process. The node only waits on durable video rows: provider polls
+/// resume from the persisted task handle and quality checks are worker-owned,
+/// so this waiter observes the rows and finishes the node exactly like the
+/// original executor would have.
+fn spawn_video_node_waiter(
+    pool: &PgPool,
+    node_run_id: i64,
+    workflow_run_id: i64,
+    input: Value,
+) {
+    let video_ids = serde_json::from_value::<toonflow_video::WorkflowVideoInput>(input)
+        .map(|input| input.video_ids)
+        .unwrap_or_default();
+    let pool = pool.clone();
+    let (start_tx, start_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let _ = start_rx.await;
+        loop {
+            let node_state: Option<String> = sqlx::query_scalar(
+                "SELECT state FROM toonflow.workflow_node_runs WHERE id=$1",
+            )
+            .bind(node_run_id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap_or(None);
+            if node_state.as_deref() != Some("running") {
+                break;
+            }
+            let states = sqlx::query_scalar::<_, String>(
+                "SELECT coalesce(state,'') FROM toonflow.videos WHERE id=ANY($1)",
+            )
+            .bind(&video_ids)
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+            if states.len() == video_ids.len()
+                && states.iter().all(|state| state != "生成中")
+            {
+                let succeeded = states.iter().filter(|state| *state == "生成成功").count();
+                let failed = video_ids.len() - succeeded;
+                let (node_state, output, error_reason) = if failed == 0 {
+                    (
+                        "success",
+                        json!({"total":video_ids.len(),"succeeded":succeeded,"failed":0,"videoIds":video_ids}),
+                        None,
+                    )
+                } else {
+                    (
+                        "failed",
+                        json!({}),
+                        Some(format!("{failed} 个视频生成失败（任务：{video_ids:?}）")),
+                    )
+                };
+                finish_node_run(
+                    &pool,
+                    node_run_id,
+                    workflow_run_id,
+                    node_state,
+                    output,
+                    error_reason,
+                )
+                .await;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+        active_node_runs()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&node_run_id);
+    });
+    active_node_runs()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(node_run_id, handle.abort_handle());
+    let _ = start_tx.send(());
+}
+
+/// Re-drive workflow runs left 'running' by a previous Gateway process. Node
+/// types without checkpoints were already failed by the startup repair; a
+/// surviving run either waits on a video.generate node (re-attached here) or
+/// continues from its first non-terminal node, rebuilding upstream outputs
+/// from the persisted node rows. Called once during Gateway startup.
+pub async fn resume_interrupted_workflow_runs(state: &ToonState) -> u64 {
+    let running_video_nodes: Vec<(i64, i64, Value)> = sqlx::query_as(
+        "SELECT nr.id,nr.workflow_run_id,nr.input
+         FROM toonflow.workflow_node_runs nr
+         JOIN toonflow.workflow_runs r ON r.id=nr.workflow_run_id
+         WHERE nr.state='running' AND nr.node_type='video.generate'
+           AND r.state='running'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    for (node_run_id, workflow_run_id, input) in running_video_nodes {
+        spawn_video_node_waiter(&state.pool, node_run_id, workflow_run_id, input);
+    }
+    let run_ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM toonflow.workflow_runs WHERE state='running'",
+    )
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let resumed = run_ids.len() as u64;
+    for run_id in run_ids {
+        schedule_workflow_run(state.clone(), run_id);
+    }
+    resumed
 }
 
 pub async fn start_node(
@@ -1602,4 +1760,153 @@ pub async fn list_runs(
     .await
     .map_err(|_| AppError::internal("failed to list workflow runs"))?;
     Ok(Json(ApiResponse::new(rows)))
+}
+
+#[cfg(test)]
+mod resume_database_tests {
+    use super::spawn_video_node_waiter;
+    use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+    use serde_json::json;
+    use std::time::Duration;
+
+    async fn node_state_after_wait(pool: &sqlx::PgPool, node_run_id: i64) -> String {
+        for _ in 0..150 {
+            let state: String =
+                sqlx::query_scalar("SELECT state FROM toonflow.workflow_node_runs WHERE id=$1")
+                    .bind(node_run_id)
+                    .fetch_one(pool)
+                    .await
+                    .expect("read resumed node run state");
+            if state != "running" {
+                return state;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        panic!("resumed video node waiter never finished the node run");
+    }
+
+    #[tokio::test]
+    #[ignore = "run with script/test-database-migrations.sh"]
+    async fn resumed_video_node_waiter_finishes_run_from_durable_video_states() {
+        let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required");
+        let config = DatabaseConfig::new(url, 1, 5, Duration::from_secs(10)).unwrap();
+        let pool = connect(&config).await.unwrap();
+        migrate(&pool).await.unwrap();
+
+        let project_id = 9_800_001_i64;
+        let script_id = 9_800_002_i64;
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.projects(id,name,create_time,update_time)
+             VALUES($1,'workflow resume test',0,0)",
+        )
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO toonflow.scripts(id,name,project_id,create_time)
+             VALUES($1,'episode',$2,0)",
+        )
+        .bind(script_id)
+        .bind(project_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let definition_id: i64 = sqlx::query_scalar(
+            "INSERT INTO toonflow.workflow_definitions
+             (project_id,script_id,version,schema_version,definition,active,create_time,update_time)
+             VALUES($1,$2,1,1,'{\"schemaVersion\":1,\"nodes\":[],\"edges\":[]}'::jsonb,true,0,0)
+             RETURNING id",
+        )
+        .bind(project_id)
+        .bind(script_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // Case A: every durable video row succeeded, so the resumed waiter
+        // finishes both the node and the run as success.
+        // Case B: one video failed, so the waiter fails the node and the run.
+        for (case_index, video_states, expected_node, expected_run) in [
+            (0_i64, ["生成成功", "生成成功"], "success", "success"),
+            (1_i64, ["生成成功", "生成失败"], "failed", "failed"),
+        ] {
+            let base = 9_800_100_i64 + case_index * 10;
+            let mut video_ids = Vec::new();
+            for (offset, video_state) in video_states.iter().enumerate() {
+                let track_id = base + offset as i64;
+                sqlx::query(
+                    "INSERT INTO toonflow.video_tracks(id,project_id,script_id,sort_order)
+                     VALUES($1,$2,$3,$4)",
+                )
+                .bind(track_id)
+                .bind(project_id)
+                .bind(script_id)
+                .bind(offset as i32)
+                .execute(&pool)
+                .await
+                .unwrap();
+                let video_id: i64 = sqlx::query_scalar(
+                    "INSERT INTO toonflow.videos(state,script_id,project_id,video_track_id,time)
+                     VALUES($1,$2,$3,$4,0) RETURNING id",
+                )
+                .bind(video_state)
+                .bind(script_id)
+                .bind(project_id)
+                .bind(track_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                video_ids.push(video_id);
+            }
+            let run_id: i64 = sqlx::query_scalar(
+                "INSERT INTO toonflow.workflow_runs
+                 (workflow_definition_id,project_id,script_id,definition_version,state,trigger_type,input,create_time)
+                 VALUES($1,$2,$3,1,'running','manual','{}'::jsonb,0) RETURNING id",
+            )
+            .bind(definition_id)
+            .bind(project_id)
+            .bind(script_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let node_run_id: i64 = sqlx::query_scalar(
+                "INSERT INTO toonflow.workflow_node_runs
+                 (workflow_run_id,node_id,node_type,state,input,create_time)
+                 VALUES($1,'video','video.generate','running',$2,0) RETURNING id",
+            )
+            .bind(run_id)
+            .bind(json!({"videoIds":video_ids}))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+            spawn_video_node_waiter(
+                &pool,
+                node_run_id,
+                run_id,
+                json!({"videoIds":video_ids}),
+            );
+            let node_state = node_state_after_wait(&pool, node_run_id).await;
+            assert_eq!(node_state, expected_node, "case {case_index} node state");
+            let run_state: String =
+                sqlx::query_scalar("SELECT state FROM toonflow.workflow_runs WHERE id=$1")
+                    .bind(run_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(run_state, expected_run, "case {case_index} run state");
+        }
+
+        sqlx::query("DELETE FROM toonflow.projects WHERE id=$1")
+            .bind(project_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }

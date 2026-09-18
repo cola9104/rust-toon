@@ -1,4 +1,5 @@
 import type { ToonflowApi, WorkflowNodeRun } from '#/api/toonflow';
+import { isUsableVideo } from './video-quality';
 
 export interface ProductionNodeRuntimeInput {
   directorPlan: string;
@@ -52,11 +53,11 @@ export function productionNodeRuntime(input: ProductionNodeRuntimeInput) {
   }
   if (input.nodeId === 'workbench') {
     const videoCount = input.videoTracks.reduce(
-      (total, track) => total + (track.videoList ?? track.video_list ?? []).length,
+      (total, track) => total + (track.videoList ?? track.video_list ?? []).filter(isUsableVideo).length,
       0,
     );
     return videoCount > 0
-      ? { color: 'green', label: `${videoCount} 个视频`, state: 'success' }
+      ? { color: 'blue', label: `${videoCount} 个可用视频`, state: 'ready' }
       : { color: 'default', label: '等待输入', state: 'pending' };
   }
   return { color: 'default', label: '未运行', state: 'pending' };

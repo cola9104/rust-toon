@@ -37,6 +37,24 @@ pub struct VideoExportJobPayload {
 pub struct VideoExportSource {
     pub video_id: i64,
     pub file_path: String,
+    /// Boundary transition from the previous source into this clip. The first
+    /// source ignores it because there is no predecessor on the timeline.
+    #[serde(default = "default_transition_type")]
+    pub transition_type: String,
+    #[serde(default = "default_transition_duration_ms")]
+    pub transition_duration_ms: i64,
+    #[serde(default)]
+    pub trim_start_ms: i64,
+    #[serde(default)]
+    pub trim_end_ms: Option<i64>,
+}
+
+fn default_transition_type() -> String {
+    "cut".into()
+}
+
+fn default_transition_duration_ms() -> i64 {
+    600
 }
 
 #[derive(Deserialize)]
@@ -271,90 +289,184 @@ async fn probe_has_audio(path: &Path) -> Result<bool, String> {
     Ok(!output.stdout.is_empty())
 }
 
-async fn normalize_video(
-    source: &Path,
-    destination: &Path,
+async fn probe_duration(path: &Path) -> Result<f64, String> {
+    let mut command = tokio::process::Command::new("ffprobe");
+    command
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .stdin(Stdio::null());
+    let output = command_output(&mut command, Duration::from_secs(30), "视频时长探测").await?;
+    if !output.status.success() {
+        return Err(format!(
+            "探测视频时长失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let duration: f64 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .map_err(|_| "无法识别视频时长".to_string())?;
+    if !(duration > 0.0 && duration.is_finite()) {
+        return Err("视频时长无效".into());
+    }
+    Ok(duration)
+}
+
+/// One frozen clip on the export timeline. `transition_type`/`transition_
+/// duration_ms` describe the boundary from the previous clip into this one.
+#[derive(Clone, Debug, PartialEq)]
+struct TimelineClip {
+    duration_ms: i64,
+    has_audio: bool,
+    trim_start_ms: i64,
+    trim_end_ms: Option<i64>,
+    transition_type: String,
+    transition_duration_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct TimelinePlan {
+    filter_graph: String,
+    silent_inputs: usize,
+    total_duration_ms: i64,
+}
+
+/// Below this overlap a transition is indistinguishable from a hard cut and
+/// only risks xfade/acrossfade rounding errors.
+const MIN_TRANSITION_MS: i64 = 40;
+
+fn seconds(ms: i64) -> String {
+    format!("{:.3}", ms as f64 / 1000.0)
+}
+
+fn clip_play_range(clip: &TimelineClip) -> Result<(i64, i64), String> {
+    let start = clip.trim_start_ms.max(0);
+    if start >= clip.duration_ms {
+        return Err(format!(
+            "视频裁切起点 {start}ms 已达到或超出素材时长 {}ms",
+            clip.duration_ms
+        ));
+    }
+    let end = clip
+        .trim_end_ms
+        .unwrap_or(clip.duration_ms)
+        .min(clip.duration_ms);
+    if end - start < 100 {
+        return Err(format!("视频裁切区间过短（{start}ms - {end}ms）"));
+    }
+    Ok((start, end))
+}
+
+/// Build a single-pass filter graph covering normalization (scale/pad/fps/
+/// sample-rate), trim points, and per-boundary transitions:
+/// - `dissolve` crossfades video (xfade) and audio (acrossfade);
+/// - `audio_bridge` keeps a hard video cut but leads the next clip's audio in
+///   early (acrossfade), so later audio shifts earlier by the overlap;
+/// - every other boundary type is a hard cut at edit time (the remaining
+///   types steer generation, not the edit).
+fn build_timeline_plan(
+    clips: &[TimelineClip],
     width: u32,
     height: u32,
-) -> Result<(), String> {
-    let has_audio = probe_has_audio(source).await?;
-    let scale = format!(
-        "scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p,setsar=1,setpts=PTS-STARTPTS"
-    );
-    let mut command = tokio::process::Command::new("ffmpeg");
-    command
-        .args([
-            "-nostdin",
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-fflags",
-            "+genpts",
-            "-i",
-        ])
-        .arg(source)
-        .stdin(Stdio::null());
-    if has_audio {
-        command.args([
-            "-map",
-            "0:v:0",
-            "-map",
-            "0:a:0",
-            "-vf",
-            &scale,
-            "-af",
-            "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,asetpts=N/SR/TB",
-        ]);
-    } else {
-        command.args([
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=channel_layout=stereo:sample_rate=48000",
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-vf",
-            &scale,
-            "-shortest",
-        ]);
+) -> Result<TimelinePlan, String> {
+    if clips.is_empty() {
+        return Err("导出时间线缺少视频片段".into());
     }
-    command
-        .args([
-            "-r",
-            "30",
-            "-c:v",
-            "libx264",
-            "-preset",
-            "medium",
-            "-crf",
-            "23",
-            "-c:a",
-            "aac",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-b:a",
-            "192k",
-            "-movflags",
-            "+faststart",
-        ])
-        .arg(destination);
-    let output = command_output(&mut command, media_timeout(), "视频标准化").await?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "视频标准化失败：{}",
-            String::from_utf8_lossy(&output.stderr)
-                .lines()
-                .last()
-                .unwrap_or("FFmpeg 执行失败")
-        ))
+    let clip_count = clips.len();
+    let mut graph = String::new();
+    let mut silent_inputs = 0_usize;
+    let mut play_durations = Vec::with_capacity(clip_count);
+    for (index, clip) in clips.iter().enumerate() {
+        let (start, end) = clip_play_range(clip)?;
+        play_durations.push(end - start);
+        graph.push_str(&format!(
+            "[{index}:v]trim=start={}:end={},setpts=PTS-STARTPTS,scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,fps=30,format=yuv420p,setsar=1[v{index}];",
+            seconds(start),
+            seconds(end)
+        ));
+        if clip.has_audio {
+            graph.push_str(&format!(
+                "[{index}:a]atrim=start={}:end={},asetpts=N/SR/TB,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}];",
+                seconds(start),
+                seconds(end)
+            ));
+        } else {
+            let silent_index = clip_count + silent_inputs;
+            silent_inputs += 1;
+            graph.push_str(&format!(
+                "[{silent_index}:a]atrim=end={},asetpts=N/SR/TB,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a{index}];",
+                seconds(end - start)
+            ));
+        }
     }
+    let mut current_video = "v0".to_string();
+    let mut current_audio = "a0".to_string();
+    let mut video_ms = play_durations[0];
+    for index in 1..clip_count {
+        let clip = &clips[index];
+        let clip_ms = play_durations[index];
+        let overlap_ms = match clip.transition_type.as_str() {
+            "dissolve" | "audio_bridge" => clip
+                .transition_duration_ms
+                .clamp(0, video_ms.min(clip_ms) * 9 / 10),
+            _ => 0,
+        };
+        let (next_video, next_audio) = (format!("xv{index}"), format!("xa{index}"));
+        match (clip.transition_type.as_str(), overlap_ms >= MIN_TRANSITION_MS) {
+            ("dissolve", true) => {
+                graph.push_str(&format!(
+                    "[{current_video}][v{index}]xfade=transition=fade:duration={}:offset={}[{next_video}];",
+                    seconds(overlap_ms),
+                    seconds(video_ms - overlap_ms)
+                ));
+                graph.push_str(&format!(
+                    "[{current_audio}][a{index}]acrossfade=d={}[{next_audio}];",
+                    seconds(overlap_ms)
+                ));
+                video_ms += clip_ms - overlap_ms;
+            }
+            ("audio_bridge", true) => {
+                graph.push_str(&format!(
+                    "[{current_video}][v{index}]concat=n=2:v=1:a=0[{next_video}];"
+                ));
+                graph.push_str(&format!(
+                    "[{current_audio}][a{index}]acrossfade=d={}[{next_audio}];",
+                    seconds(overlap_ms)
+                ));
+                video_ms += clip_ms;
+            }
+            _ => {
+                graph.push_str(&format!(
+                    "[{current_video}][v{index}]concat=n=2:v=1:a=0[{next_video}];"
+                ));
+                graph.push_str(&format!(
+                    "[{current_audio}][a{index}]concat=n=2:v=0:a=1[{next_audio}];"
+                ));
+                video_ms += clip_ms;
+            }
+        }
+        current_video = next_video;
+        current_audio = next_audio;
+    }
+    graph.push_str(&format!("[{current_video}]null[vout];"));
+    // Audio bridges shift later audio earlier than its video; pad any tail so
+    // the audio stream always covers the full video duration.
+    graph.push_str(&format!(
+        "[{current_audio}]apad,atrim=end={},aresample=48000[aout]",
+        seconds(video_ms)
+    ));
+    Ok(TimelinePlan {
+        filter_graph: graph,
+        silent_inputs,
+        total_duration_ms: video_ms,
+    })
 }
 
 fn ipv4_is_non_public(address: Ipv4Addr) -> bool {
@@ -558,8 +670,10 @@ async fn resolve_export_sources(
     // Hold the successful source rows through the task/outbox commit. A media
     // delete needs FOR UPDATE on the same rows and therefore cannot enqueue
     // object cleanup between this snapshot and durable job visibility.
-    let locked_rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT video.id,video.file_path
+    let locked_rows: Vec<(i64, String, String, i32, i32, Option<i32>)> = sqlx::query_as(
+        "SELECT video.id,video.file_path,
+                track.transition_type,track.transition_duration_ms,
+                track.trim_start_ms,track.trim_end_ms
          FROM toonflow.videos video
          JOIN toonflow.video_tracks track ON track.id=video.video_track_id
          WHERE video.id=ANY($3) AND video.project_id=$1 AND video.script_id=$2
@@ -584,18 +698,41 @@ async fn resolve_export_sources(
     }
     let mut locked_by_id = locked_rows
         .into_iter()
+        .map(
+            |(video_id, file_path, transition_type, transition_duration_ms, trim_start_ms, trim_end_ms)| {
+                (
+                    video_id,
+                    (
+                        file_path,
+                        transition_type,
+                        transition_duration_ms,
+                        trim_start_ms,
+                        trim_end_ms,
+                    ),
+                )
+            },
+        )
         .collect::<std::collections::HashMap<_, _>>();
     let rows = ordered_video_ids
         .into_iter()
         .map(|video_id| {
-            locked_by_id
-                .remove(&video_id)
-                .map(|file_path| (video_id, file_path))
+            locked_by_id.remove(&video_id).map(
+                |(file_path, transition_type, transition_duration_ms, trim_start_ms, trim_end_ms)| {
+                    (
+                        video_id,
+                        file_path,
+                        transition_type,
+                        transition_duration_ms,
+                        trim_start_ms,
+                        trim_end_ms,
+                    )
+                },
+            )
         })
         .collect::<Option<Vec<_>>>()
         .ok_or_else(|| AppError::bad_request("视频合并顺序已变化，请刷新后重试"))?;
     let expected_prefix = format!("toonflow/{project_id}/assets/");
-    if rows.iter().any(|(_, file_path)| {
+    if rows.iter().any(|(_, file_path, ..)| {
         crate::toonflow_storage::asset_object_key(file_path)
             .is_none_or(|key| !key.starts_with(&expected_prefix))
     }) {
@@ -605,10 +742,18 @@ async fn resolve_export_sources(
     }
     Ok(rows
         .into_iter()
-        .map(|(video_id, file_path)| VideoExportSource {
-            video_id,
-            file_path,
-        })
+        .map(
+            |(video_id, file_path, transition_type, transition_duration_ms, trim_start_ms, trim_end_ms)| {
+                VideoExportSource {
+                    video_id,
+                    file_path,
+                    transition_type,
+                    transition_duration_ms: i64::from(transition_duration_ms),
+                    trim_start_ms: i64::from(trim_start_ms),
+                    trim_end_ms: trim_end_ms.map(i64::from),
+                }
+            },
+        )
         .collect())
 }
 
@@ -720,26 +865,30 @@ async fn run_export(
     } else {
         (1080, 1920)
     };
-    let normalized_dir = work_dir.path().join("normalized");
-    tokio::fs::create_dir_all(&normalized_dir)
-        .await
-        .map_err(|error| error.to_string())?;
-    let mut normalized_files = Vec::with_capacity(files.len());
-    for (index, file) in files.iter().enumerate() {
-        let normalized = normalized_dir.join(format!("{index:04}.mp4"));
-        normalize_video(file, &normalized, target_width, target_height).await?;
-        normalized_files.push(normalized);
+    let mut clips = Vec::with_capacity(files.len());
+    for (file, source) in files.iter().zip(sources.iter()) {
+        let duration = probe_duration(file).await.map_err(|reason| {
+            format!("源视频 {} 无法探测时长：{reason}", source.video_id)
+        })?;
+        let has_audio = probe_has_audio(file).await.map_err(|reason| {
+            format!("源视频 {} 无法探测音轨：{reason}", source.video_id)
+        })?;
+        clips.push(TimelineClip {
+            duration_ms: (duration * 1000.0).round() as i64,
+            has_audio,
+            trim_start_ms: source.trim_start_ms,
+            trim_end_ms: source.trim_end_ms,
+            transition_type: source.transition_type.clone(),
+            transition_duration_ms: source.transition_duration_ms,
+        });
     }
-
-    let list_path = work_dir.path().join("concat.txt");
-    let list = normalized_files
+    let plan = build_timeline_plan(&clips, target_width, target_height)?;
+    let transition_count = clips
         .iter()
-        .map(|path| format!("file '{}'", path.to_string_lossy().replace('\'', "'\\''")))
-        .collect::<Vec<_>>()
-        .join("\n");
-    tokio::fs::write(&list_path, list)
-        .await
-        .map_err(|error| error.to_string())?;
+        .skip(1)
+        .filter(|clip| matches!(clip.transition_type.as_str(), "dissolve" | "audio_bridge"))
+        .count();
+
     let output_path = work_dir
         .path()
         .join(format!("{script_id}_{task_id}_{lease_token}.mp4"));
@@ -756,29 +905,49 @@ async fn run_export(
             "-loglevel",
             "error",
             "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-        ])
-        .arg(&list_path)
-        .args([
             "-fflags",
             "+genpts",
+        ])
+        .stdin(Stdio::null());
+    for file in &files {
+        command.arg("-i").arg(file);
+    }
+    for _ in 0..plan.silent_inputs {
+        command.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=48000",
+        ]);
+    }
+    command
+        .args([
+            "-filter_complex",
+            &plan.filter_graph,
+            "-map",
+            "[vout]",
+            "-map",
+            "[aout]",
+            "-r",
+            "30",
             "-c:v",
             "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "23",
             "-c:a",
             "aac",
             "-ar",
             "48000",
             "-ac",
             "2",
+            "-b:a",
+            "192k",
             "-movflags",
             "+faststart",
         ])
-        .arg(&output_path)
-        .stdin(Stdio::null());
+        .arg(&output_path);
     let output = command_output(&mut command, media_timeout(), "成片导出").await?;
     if !output.status.success() {
         return Err(format!(
@@ -809,6 +978,8 @@ async fn run_export(
             "width": target_width,
             "height": target_height,
             "sourceCount": files.len(),
+            "durationMs": plan.total_duration_ms,
+            "transitionCount": transition_count,
             "container": "mp4",
             "videoCodec": "h264",
             "audioCodec": "aac",
@@ -1081,13 +1252,127 @@ pub async fn export(
 
 #[cfg(test)]
 mod tests {
-    use super::{ip_is_non_public, resolve_export_sources};
+    use super::{
+        TimelineClip, build_timeline_plan, ip_is_non_public, resolve_export_sources,
+    };
     use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
     use serde_json::json;
     use std::{
         net::{IpAddr, Ipv4Addr, Ipv6Addr},
         time::Duration,
     };
+
+    fn clip(duration_ms: i64, transition_type: &str) -> TimelineClip {
+        TimelineClip {
+            duration_ms,
+            has_audio: true,
+            trim_start_ms: 0,
+            trim_end_ms: None,
+            transition_type: transition_type.into(),
+            transition_duration_ms: 600,
+        }
+    }
+
+    #[test]
+    fn hard_cuts_concat_video_and_audio_in_one_pass() {
+        let plan = build_timeline_plan(&[clip(4_000, "cut"), clip(5_000, "cut")], 1920, 1080)
+            .expect("cut timeline");
+        assert_eq!(plan.total_duration_ms, 9_000);
+        assert_eq!(plan.silent_inputs, 0);
+        assert!(plan.filter_graph.contains("concat=n=2:v=1:a=0"));
+        assert!(plan.filter_graph.contains("concat=n=2:v=0:a=1"));
+        assert!(!plan.filter_graph.contains("xfade"));
+        assert!(!plan.filter_graph.contains("acrossfade"));
+    }
+
+    #[test]
+    fn dissolve_crossfades_video_and_audio_with_overlap() {
+        let plan =
+            build_timeline_plan(&[clip(4_000, "cut"), clip(5_000, "dissolve")], 1920, 1080)
+                .expect("dissolve timeline");
+        assert_eq!(plan.total_duration_ms, 8_400);
+        assert!(
+            plan.filter_graph
+                .contains("xfade=transition=fade:duration=0.600:offset=3.400")
+        );
+        assert!(plan.filter_graph.contains("acrossfade=d=0.600"));
+    }
+
+    #[test]
+    fn audio_bridge_keeps_hard_video_cut_and_leads_audio() {
+        let plan = build_timeline_plan(
+            &[clip(4_000, "cut"), clip(5_000, "audio_bridge")],
+            1920,
+            1080,
+        )
+        .expect("audio bridge timeline");
+        // Video stays a hard cut; the tail pad covers the audio shifted early.
+        assert_eq!(plan.total_duration_ms, 9_000);
+        assert!(!plan.filter_graph.contains("xfade"));
+        assert!(plan.filter_graph.contains("acrossfade=d=0.600"));
+        assert!(plan.filter_graph.contains("apad,atrim=end=9.000"));
+    }
+
+    #[test]
+    fn generation_only_transition_types_fall_back_to_hard_cut() {
+        for transition in ["continuous", "action_bridge", "empty_shot", "match_cut"] {
+            let plan =
+                build_timeline_plan(&[clip(4_000, "cut"), clip(5_000, transition)], 1920, 1080)
+                    .expect("generation-only transition");
+            assert_eq!(plan.total_duration_ms, 9_000, "{transition}");
+            assert!(!plan.filter_graph.contains("xfade"), "{transition}");
+        }
+    }
+
+    #[test]
+    fn silent_clips_use_generated_silence_inputs() {
+        let mut silent = clip(3_000, "cut");
+        silent.has_audio = false;
+        let plan = build_timeline_plan(&[clip(4_000, "cut"), silent], 1920, 1080)
+            .expect("silent clip timeline");
+        assert_eq!(plan.silent_inputs, 1);
+        assert!(plan.filter_graph.contains("[2:a]atrim=end=3.000"));
+    }
+
+    #[test]
+    fn trim_points_apply_and_validate_against_source_duration() {
+        let mut trimmed = clip(6_000, "cut");
+        trimmed.trim_start_ms = 1_000;
+        trimmed.trim_end_ms = Some(5_000);
+        let plan = build_timeline_plan(&[trimmed], 1920, 1080).expect("trimmed timeline");
+        assert_eq!(plan.total_duration_ms, 4_000);
+        assert!(plan.filter_graph.contains("trim=start=1.000:end=5.000"));
+        assert!(plan.filter_graph.contains("atrim=start=1.000:end=5.000"));
+
+        let mut over_trimmed = clip(2_000, "cut");
+        over_trimmed.trim_start_ms = 2_500;
+        assert!(build_timeline_plan(&[over_trimmed], 1920, 1080).is_err());
+
+        let mut tiny = clip(2_000, "cut");
+        tiny.trim_end_ms = Some(50);
+        assert!(build_timeline_plan(&[tiny], 1920, 1080).is_err());
+    }
+
+    #[test]
+    fn transition_overlap_is_clamped_to_shorter_side() {
+        let mut long_dissolve = clip(1_000, "dissolve");
+        long_dissolve.transition_duration_ms = 5_000;
+        let plan = build_timeline_plan(&[clip(4_000, "cut"), long_dissolve], 1920, 1080)
+            .expect("clamped dissolve timeline");
+        // 90% of the shorter 1s clip caps the overlap at 900ms.
+        assert_eq!(plan.total_duration_ms, 4_100);
+        assert!(plan.filter_graph.contains("xfade=transition=fade:duration=0.900:offset=3.100"));
+    }
+
+    #[test]
+    fn tiny_transitions_degrade_to_hard_cut() {
+        let mut almost_cut = clip(5_000, "dissolve");
+        almost_cut.transition_duration_ms = 10;
+        let plan = build_timeline_plan(&[clip(4_000, "cut"), almost_cut], 1920, 1080)
+            .expect("tiny transition timeline");
+        assert_eq!(plan.total_duration_ms, 9_000);
+        assert!(!plan.filter_graph.contains("xfade"));
+    }
 
     #[test]
     fn external_video_guard_rejects_internal_and_reserved_networks() {

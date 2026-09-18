@@ -519,6 +519,9 @@ impl OpenAiCompatibleProvider {
             .unwrap_or("/images/generations");
         let size = volcengine::normalize_seedream_size(&config.model, &request.size);
         let mut body = json!({"model":config.model,"prompt":request.prompt,"size":size,"n":1});
+        if config.platform == rust_toon_ai_api::AiPlatform::VolcEngine.code() {
+            volcengine::apply_image_generation_options(&config.model, &mut body);
+        }
         let path = if request.references.is_empty() {
             path
         } else if config.platform == rust_toon_ai_api::AiPlatform::VolcEngine.code() {

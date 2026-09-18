@@ -91,8 +91,14 @@ async fn run(
     .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    let context:Option<(String,Option<i64>)>=sqlx::query_as("SELECT p.art_style,a.parent_asset_id FROM toonflow.assets a JOIN toonflow.projects p ON p.id=a.project_id WHERE a.id=$1 AND a.project_id=$2").bind(item.assets_id).bind(project_id).fetch_optional(pool).await.map_err(|e|e.to_string())?;
-    let (manual_path, parent) = context.ok_or_else(|| "资产不存在".to_string())?;
+    let context:Option<(String,String,String,String,Option<i64>)>=sqlx::query_as("SELECT p.art_style,p.project_type,p.type,p.intro,a.parent_asset_id FROM toonflow.assets a JOIN toonflow.projects p ON p.id=a.project_id WHERE a.id=$1 AND a.project_id=$2").bind(item.assets_id).bind(project_id).fetch_optional(pool).await.map_err(|e|e.to_string())?;
+    let (manual_path, project_template, project_type, project_intro, parent) =
+        context.ok_or_else(|| "资产不存在".to_string())?;
+    let project_context = toonflow_asset_prompt::project_world_context(
+        &project_template,
+        &project_type,
+        &project_intro,
+    );
     let (label, key) =
         manual_key(&item.type_, parent.is_some()).ok_or_else(|| "不支持的类型".to_string())?;
 
@@ -134,7 +140,13 @@ async fn run(
         pool,
         "universalAi",
         project_id,
-        &toonflow_asset_prompt::polish_system_prompt(&system, extra, &item.type_, parent.is_some()),
+        &toonflow_asset_prompt::polish_system_prompt(
+            &system,
+            extra,
+            &project_context,
+            &item.type_,
+            parent.is_some(),
+        ),
         &toonflow_asset_prompt::polish_user_prompt(label, &item.name, &item.describe),
     )
     .await?;
@@ -339,13 +351,18 @@ pub struct RetryImageRequest {
     ids: Vec<i64>,
     concurrent_count: Option<usize>,
 }
-async fn new_image(
+pub(crate) async fn new_image(
     pool: &sqlx::PgPool,
+    project_id: i64,
     item: &ImageItem,
     model: &str,
     resolution: &str,
     offset: i64,
-) -> Result<i64, AppError> {
+) -> Result<ScheduledImage, AppError> {
+    let input_hash = generation_input_hash(pool, item, project_id, model, resolution).await?;
+    if let Some(existing) = reusable_image(pool, item.id, &item.prompt, &input_hash).await? {
+        return Ok(existing);
+    }
     // Image editing/upload already uses microseconds. Mixing millisecond IDs
     // made ORDER BY id DESC permanently prefer an older edited image.
     static SEQUENCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
@@ -364,8 +381,136 @@ async fn new_image(
     )
     .map_err(AppError::bad_request)?
     .size();
-    sqlx::query("INSERT INTO toonflow.images(id,type,assets_id,model,resolution,state) VALUES($1,$2,$3,$4,$5,'生成中')").bind(id).bind(&item.type_).bind(item.id).bind(model).bind(size).execute(pool).await.map_err(|_|AppError::internal("failed to create image"))?;
-    Ok(id)
+    let inserted = sqlx::query("INSERT INTO toonflow.images(id,type,assets_id,model,resolution,state,input_hash) VALUES($1,$2,$3,$4,$5,'生成中',$6) ON CONFLICT DO NOTHING")
+        .bind(id).bind(&item.type_).bind(item.id).bind(model).bind(size).bind(&input_hash)
+        .execute(pool).await.map_err(|_|AppError::internal("failed to create image"))?;
+    if inserted.rows_affected() == 0 {
+        return reusable_image(pool, item.id, &item.prompt, &input_hash)
+            .await?
+            .ok_or_else(|| AppError::internal("failed to resolve concurrent image generation"));
+    }
+    Ok(ScheduledImage {
+        id,
+        state: "生成中".into(),
+        file_path: None,
+        reused: false,
+        created: true,
+    })
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScheduledImage {
+    pub(crate) id: i64,
+    pub(crate) state: String,
+    pub(crate) file_path: Option<String>,
+    pub(crate) reused: bool,
+    pub(crate) created: bool,
+}
+
+async fn generation_input_hash(
+    pool: &sqlx::PgPool,
+    item: &ImageItem,
+    project_id: i64,
+    model: &str,
+    resolution: &str,
+) -> Result<String, AppError> {
+    let context: Value = sqlx::query_scalar(
+        r#"SELECT jsonb_build_object(
+          'projectTemplate',p.project_type,'projectType',p.type,
+          'projectIntro',p.intro,'artStyle',p.art_style,
+          'projectImageModel',p.image_model,'imageQuality',p.image_quality,
+          'assetDescription',a.description,'assetPrompt',a.prompt,
+          'parentAssetId',a.parent_asset_id,'parentPrompt',parent.prompt,
+          'parentImageId',parent.image_id,'mappedPrompt',coalesce(mapped.data,''))
+        FROM toonflow.assets a
+        JOIN toonflow.projects p ON p.id=a.project_id
+        LEFT JOIN toonflow.assets parent ON parent.id=a.parent_asset_id
+        LEFT JOIN LATERAL (
+          SELECT pr.data FROM ai.model_prompt_maps mp
+          JOIN toonflow.prompts pr ON pr.source_key=mp.prompt_key
+          WHERE mp.model_config_id=CASE WHEN $3 ~ '^[0-9]+$' THEN $3::bigint ELSE NULL END
+            AND mp.enabled=true
+          ORDER BY mp.update_time DESC,mp.id DESC,pr.id DESC LIMIT 1
+        ) mapped ON true
+        WHERE a.id=$1 AND a.project_id=$2"#,
+    )
+    .bind(item.id)
+    .bind(project_id)
+    .bind(model)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to build image generation input"))?
+    .ok_or_else(|| AppError::not_found("asset not found"))?;
+    let input = json!({
+        "version": 1,
+        "assetId": item.id,
+        "assetType": item.type_,
+        "requestedPrompt": item.prompt,
+        "model": model,
+        "resolution": resolution,
+        "referenceSha256": item.base64.as_deref().map(crate::toonflow_prompt_trace::sha256),
+        "context": context,
+    });
+    Ok(crate::toonflow_prompt_trace::sha256(&input.to_string()))
+}
+
+async fn reusable_image(
+    pool: &sqlx::PgPool,
+    asset_id: i64,
+    requested_prompt: &str,
+    input_hash: &str,
+) -> Result<Option<ScheduledImage>, AppError> {
+    let row: Option<(i64, String, Option<String>)> = sqlx::query_as(
+        r#"SELECT i.id,i.state,i.file_path
+           FROM toonflow.images i
+           JOIN toonflow.assets a ON a.id=i.assets_id
+           WHERE i.assets_id=$1
+             AND i.input_hash=$3
+             AND (i.state='生成中' OR
+                  (a.image_id=i.id AND a.prompt=$2 AND i.state='已完成'
+                   AND nullif(i.file_path,'') IS NOT NULL))
+           ORDER BY CASE WHEN i.state='已完成' THEN 0 ELSE 1 END,i.id DESC LIMIT 1"#,
+    )
+    .bind(asset_id)
+    .bind(requested_prompt)
+    .bind(input_hash)
+    .fetch_optional(pool)
+    .await
+    .map_err(|_| AppError::internal("failed to find reusable image generation"))?;
+    Ok(row.map(|(id, state, file_path)| ScheduledImage {
+        id,
+        state,
+        file_path,
+        reused: true,
+        created: false,
+    }))
+}
+
+async fn wait_for_image(pool: &sqlx::PgPool, image_id: i64) -> Result<String, String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+    loop {
+        let row: Option<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT state,file_path,error_reason FROM toonflow.images WHERE id=$1")
+                .bind(image_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        let Some((state, file_path, error_reason)) = row else {
+            return Err("图片任务不存在".into());
+        };
+        match state.as_str() {
+            "已完成" => {
+                return file_path
+                    .filter(|path| !path.is_empty())
+                    .ok_or_else(|| "图片任务完成但缺少文件".into());
+            }
+            "生成失败" | "已取消" => return Err(error_reason.unwrap_or_else(|| state)),
+            _ if tokio::time::Instant::now() >= deadline => {
+                return Err("等待图片生成超时，请检查图片服务".into());
+            }
+            _ => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        }
+    }
 }
 async fn make_image(
     pool: &sqlx::PgPool,
@@ -407,15 +552,22 @@ async fn make_image_inner(
     if !running {
         return Err("生成任务已取消".into());
     }
-    let style: Option<(String,)> =
-        sqlx::query_as("SELECT art_style FROM toonflow.projects WHERE id=$1")
-            .bind(project_id)
-            .fetch_optional(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-    let style = style.ok_or_else(|| "项目为空".to_string())?.0;
-    let parent_id: Option<i64> = sqlx::query_scalar(
-        "SELECT parent_asset_id FROM toonflow.assets WHERE id=$1 AND project_id=$2 AND type=$3",
+    let project: Option<(String, String, String, String)> = sqlx::query_as(
+        "SELECT art_style,project_type,type,intro FROM toonflow.projects WHERE id=$1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (style, project_template, project_type, project_intro) =
+        project.ok_or_else(|| "项目为空".to_string())?;
+    let project_context = toonflow_asset_prompt::project_world_context(
+        &project_template,
+        &project_type,
+        &project_intro,
+    );
+    let asset: (Option<i64>, String, String) = sqlx::query_as(
+        "SELECT parent_asset_id,coalesce(description,''),coalesce(prompt,'') FROM toonflow.assets WHERE id=$1 AND project_id=$2 AND type=$3",
     )
     .bind(item.id)
     .bind(project_id)
@@ -424,6 +576,7 @@ async fn make_image_inner(
     .await
     .map_err(|error| error.to_string())?
     .ok_or_else(|| "资产不存在、类型不匹配或不属于当前项目".to_string())?;
+    let (parent_id, source_description, saved_prompt) = asset;
     let derivative = parent_id.is_some();
     let mut references = Vec::new();
     let (visual_description, face_instruction) = if item.type_ == "role" {
@@ -502,9 +655,15 @@ async fn make_image_inner(
     if active.rows_affected() == 0 {
         return Err("生成任务已取消".into());
     }
-    let prompt = toonflow_asset_prompt::image_prompt_with_instruction(
+    // The current submitted/saved prompt is the generation input. An older
+    // extraction description must not silently remove an explicit later edit.
+    let effective_source =
+        toonflow_asset_prompt::generation_source(&source_description, &item.prompt);
+    let prompt = toonflow_asset_prompt::image_prompt_with_source_instruction(
         &style,
         &item.type_,
+        Some(effective_source),
+        Some(&project_context),
         crate::toonflow_face_identity::appearance_description(&visual_description),
         derivative,
         !references.is_empty(),
@@ -522,7 +681,30 @@ async fn make_image_inner(
         "{prompt}\n{face_instruction}\n{appearance}\n画布宽高比固定为 {ratio}，输出尺寸 {}；按画布缩放完整主体，不得通过裁切主体适配画布。",
         canvas.size()
     );
-    match ai_client::image_with_references_for_project(
+    let provenance = json!({
+        "version": 1,
+        "projectId": project_id,
+        "assetId": item.id,
+        "imageId": image_id,
+        "parentAssetId": parent_id,
+        "assetType": item.type_,
+        "projectContext": crate::toonflow_prompt_trace::source("projects.type + projects.intro", &project_context),
+        "artStyle": crate::toonflow_prompt_trace::source("projects.art_style", &style),
+        "assetDescription": crate::toonflow_prompt_trace::source("assets.description", &source_description),
+        "savedPrompt": crate::toonflow_prompt_trace::source("assets.prompt", &saved_prompt),
+        "requestedPrompt": crate::toonflow_prompt_trace::source(
+            if saved_prompt == item.prompt { "assets.prompt" } else { "request.prompt" }, &item.prompt,
+        ),
+        "effectiveDescription": crate::toonflow_prompt_trace::source("generation_source", effective_source),
+        "identityDescription": crate::toonflow_prompt_trace::source("face_identity", &visual_description),
+        "managedPromptKey": prompt_key,
+        "managedInstruction": crate::toonflow_prompt_trace::source("prompts.data", managed_instruction.as_deref().unwrap_or_default()),
+        "references": references.iter().enumerate().map(|(index, reference)| json!({
+            "order": index + 1, "sha256": crate::toonflow_prompt_trace::sha256(reference)
+        })).collect::<Vec<_>>(),
+        "layoutControlReferenceAppended": item.type_ == "role",
+    });
+    match ai_client::image_with_provenance_for_project(
         pool,
         Some(project_id),
         model,
@@ -530,6 +712,7 @@ async fn make_image_inner(
         &canvas.size(),
         references,
         item.type_ == "role",
+        Some(provenance),
     )
     .await
     {
@@ -593,6 +776,7 @@ pub(crate) async fn schedule_asset_generation(
     .await
     .map_err(|_| AppError::internal("failed to load assets"))?;
     let mut queue = Vec::new();
+    let mut response = Vec::new();
     for (offset, (id, type_, name, prompt, reference_path)) in rows.into_iter().enumerate() {
         let base64 = match reference_path {
             Some(path) => Some(image_data_url(&path).await.map_err(AppError::bad_request)?),
@@ -605,13 +789,16 @@ pub(crate) async fn schedule_asset_generation(
             prompt,
             base64,
         };
-        let image_id = new_image(pool, &item, &model, &resolution, offset as i64).await?;
-        queue.push((image_id, item));
+        let scheduled =
+            new_image(pool, project_id, &item, &model, &resolution, offset as i64).await?;
+        response.push(json!({
+            "id":item.id,"imageId":scheduled.id,"state":scheduled.state,
+            "filePath":scheduled.file_path,"reused":scheduled.reused
+        }));
+        if scheduled.created {
+            queue.push((scheduled.id, item));
+        }
     }
-    let response = queue
-        .iter()
-        .map(|(image_id, item)| json!({"id":item.id,"imageId":image_id,"state":"生成中"}))
-        .collect::<Vec<_>>();
     let pool = pool.clone();
     tokio::spawn(async move {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrent_count.clamp(1, 10)));
@@ -673,10 +860,25 @@ pub(crate) async fn schedule_and_wait_asset_generation(
         if rows.iter().all(|(_, state, path, _)| {
             state == "已完成" && path.as_deref().is_some_and(|path| !path.is_empty())
         }) {
-            return Ok(rows
+            let completed = rows
                 .into_iter()
-                .map(|(image_id, _, file_path, _)| {
-                    json!({"imageId":image_id,"state":"已完成","filePath":file_path})
+                .map(|(image_id, _, file_path, _)| (image_id, file_path))
+                .collect::<std::collections::HashMap<_, _>>();
+            return Ok(scheduled
+                .into_iter()
+                .map(|mut item| {
+                    let image_id = item
+                        .get("imageId")
+                        .and_then(Value::as_i64)
+                        .unwrap_or_default();
+                    item["state"] = json!("已完成");
+                    item["filePath"] = completed
+                        .get(&image_id)
+                        .cloned()
+                        .flatten()
+                        .map(Value::String)
+                        .unwrap_or(Value::Null);
+                    item
                 })
                 .collect());
         }
@@ -702,19 +904,33 @@ pub async fn generate_image(
         prompt: req.prompt,
         base64: req.base64,
     };
-    let image_id = new_image(&state.pool, &item, &model, &req.resolution, 0).await?;
-    match make_image(
+    let scheduled = new_image(
         &state.pool,
         req.project_id,
+        &item,
         &model,
         &req.resolution,
-        item.clone(),
-        image_id,
+        0,
     )
-    .await
-    {
+    .await?;
+    let result = if let Some(path) = scheduled.file_path.clone() {
+        Ok(path)
+    } else if scheduled.created {
+        make_image(
+            &state.pool,
+            req.project_id,
+            &model,
+            &req.resolution,
+            item.clone(),
+            scheduled.id,
+        )
+        .await
+    } else {
+        wait_for_image(&state.pool, scheduled.id).await
+    };
+    match result {
         Ok(path) => Ok(Json(ApiResponse::new(
-            json!({"path":path,"assetsId":item.id}),
+            json!({"path":path,"assetsId":item.id,"imageId":scheduled.id,"reused":scheduled.reused}),
         ))),
         Err(reason) => Err(AppError::bad_request(reason)),
     }
@@ -728,11 +944,21 @@ pub async fn batch_generate_images(
     let total = req.items.len();
     let model = req.model.as_configured();
     let mut queue = Vec::new();
+    let mut scheduled_items = Vec::new();
     for (index, item) in req.items.into_iter().enumerate() {
-        queue.push((
-            new_image(&state.pool, &item, &model, &req.resolution, index as i64).await?,
-            item,
-        ));
+        let scheduled = new_image(
+            &state.pool,
+            req.project_id,
+            &item,
+            &model,
+            &req.resolution,
+            index as i64,
+        )
+        .await?;
+        scheduled_items.push(json!({"id":item.id,"imageId":scheduled.id,"state":scheduled.state,"filePath":scheduled.file_path,"reused":scheduled.reused}));
+        if scheduled.created {
+            queue.push((scheduled.id, item));
+        }
     }
     let pool = state.pool.clone();
     tokio::spawn(async move {
@@ -752,7 +978,9 @@ pub async fn batch_generate_images(
             });
         }
     });
-    Ok(Json(ApiResponse::new(json!({"total":total}))))
+    Ok(Json(ApiResponse::new(
+        json!({"total":total,"items":scheduled_items}),
+    )))
 }
 pub async fn retry_images(
     user: CurrentUser,
@@ -936,9 +1164,24 @@ mod tests {
                 .into(),
             base64: None,
         };
-        let image_id = new_image(&pool, &item, &id.to_string(), "2K", 0)
+        let image_id = new_image(&pool, id, &item, &id.to_string(), "2K", 0)
+            .await
+            .unwrap()
+            .id;
+        let duplicate = new_image(&pool, id, &item, &id.to_string(), "2K", 1)
             .await
             .unwrap();
+        assert_eq!(duplicate.id, image_id);
+        assert!(duplicate.reused);
+        assert!(!duplicate.created);
+        let active_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM toonflow.images WHERE assets_id=$1 AND state='生成中'",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(active_count, 1, "equivalent clicks share one paid request");
         assert!(
             image_id > old_image_id,
             "a new generation must sort after an older edited image"
@@ -984,6 +1227,12 @@ mod tests {
         let task: (String, Value) = sqlx::query_as("SELECT state,input FROM toonflow.tasks WHERE project_id=$1 AND task_class='image' ORDER BY id DESC LIMIT 1").bind(id).fetch_one(&pool).await.unwrap();
         assert_eq!(task.0, "failed");
         assert_eq!(task.1["size"], "2560x1696");
+        assert_eq!(task.1["prompt"], body["prompt"]);
+        assert_eq!(task.1["promptProvenance"]["imageId"], image_id);
+        assert_eq!(
+            task.1["promptProvenance"]["requestedPrompt"]["content"],
+            item.prompt
+        );
         let saved: String = sqlx::query_scalar("SELECT prompt FROM toonflow.assets WHERE id=$1")
             .bind(id)
             .fetch_one(&pool)
@@ -1004,9 +1253,10 @@ mod tests {
         assert_eq!(planned.load(std::sync::atomic::Ordering::Relaxed), 1);
 
         // A matching pixel ratio must not allow a cropped body through either.
-        let image_id = new_image(&pool, &item, &id.to_string(), "2K", 0)
+        let image_id = new_image(&pool, id, &item, &id.to_string(), "2K", 0)
             .await
-            .unwrap();
+            .unwrap()
+            .id;
         let error = make_image(&pool, id, &id.to_string(), "2K", item.clone(), image_id)
             .await
             .unwrap_err();

@@ -47,6 +47,7 @@ const tablePagination = computed(() => ({ current: page.value, pageSize: pageSiz
 const taskKind = (type: string) => ({
   video: 'video',
   videoExport: 'video',
+  videoQuality: 'video',
   image: 'image',
   '工作流图片生成': 'image',
 }[type] ?? 'default');
@@ -55,6 +56,7 @@ const typeLabel = (type: string) => ({
   scriptAssetExtraction: '剧本资产提取',
   video: '视频生成',
   videoExport: '视频合成',
+  videoQuality: '视频基础质检',
   image: '图片生成',
   '工作流图片生成': '图片生成',
 }[type] ?? type);

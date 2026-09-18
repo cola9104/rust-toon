@@ -1,20 +1,33 @@
 <script lang="ts" setup>
 import type { ToonflowApi } from '#/api/toonflow';
 
-import { computed } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
-import { Empty, Tag } from 'ant-design-vue';
+import { Empty, Form, Input, message, Modal, Tag } from 'ant-design-vue';
+
+import { executeAgentTool, polishAssetPrompt, saveAsset } from '#/api/toonflow';
 
 import { assetFileUrl, assetTypeLabel } from '../assets/asset-types';
 
 const props = defineProps<{
   assets: ToonflowApi.Asset[];
+  script?: ToonflowApi.Script;
 }>();
 
 const emit = defineEmits<{
   edit: [asset: ToonflowApi.Asset];
   generate: [asset: ToonflowApi.Asset];
+  refresh: [];
 }>();
+
+const promptEditorOpen = ref(false);
+const promptSaving = ref(false);
+const promptAsset = ref<ToonflowApi.Asset>();
+const promptText = ref('');
+const promptDescription = ref('');
+const pendingActionIds = reactive(new Set<number>());
+const generatingAssetIds = reactive(new Set<number>());
+const promptGeneratingIds = reactive(new Set<number>());
 
 const assetRows = computed(() =>
   props.assets.filter(
@@ -60,6 +73,180 @@ function generationLabel(asset: ToonflowApi.Asset) {
 
 function assetSummary(asset: ToonflowApi.Asset) {
   return asset.description || asset.remark || asset.prompt || generationLabel(asset);
+}
+
+function assetProjectId(asset: ToonflowApi.Asset) {
+  const projectId = Number(asset.projectId || props.script?.projectId);
+  if (!Number.isSafeInteger(projectId) || projectId <= 0) {
+    throw new Error('当前制作数据缺少项目 ID，请刷新后重试');
+  }
+  return projectId;
+}
+
+function openPromptEditor(asset: ToonflowApi.Asset) {
+  promptAsset.value = asset;
+  promptDescription.value = asset.description || '';
+  promptText.value = asset.prompt || asset.description || '';
+  promptEditorOpen.value = true;
+}
+
+async function savePrompt() {
+  const asset = promptAsset.value;
+  if (!asset) return;
+  promptSaving.value = true;
+  try {
+    await saveAsset({
+      id: asset.id,
+      projectId: assetProjectId(asset),
+      name: asset.name,
+      type: asset.type,
+      description: promptDescription.value,
+      prompt: promptText.value,
+      remark: asset.remark,
+      scriptId: asset.scriptId,
+      parentAssetId: asset.parentAssetId,
+      imageId: asset.imageId,
+    });
+    promptEditorOpen.value = false;
+    message.success(`“${asset.name}”的造型描述和生成提示词已保存`);
+    emit('refresh');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '造型描述和生成提示词保存失败');
+  } finally {
+    promptSaving.value = false;
+  }
+}
+
+async function polishDerivedPrompt(asset: ToonflowApi.Asset) {
+  if (promptGeneratingIds.has(asset.id)) return;
+  promptGeneratingIds.add(asset.id);
+  try {
+    const projectId = assetProjectId(asset);
+    const result = await polishAssetPrompt({
+      assetsId: asset.id,
+      projectId,
+      type: asset.type,
+      name: asset.name,
+      describe: asset.description || '',
+    });
+    asset.prompt = result.prompt;
+    message.success(`“${asset.name}”的 AI 提示词已生成`);
+    emit('refresh');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : 'AI 提示词生成失败');
+  } finally {
+    promptGeneratingIds.delete(asset.id);
+  }
+}
+
+async function materializeAppearance(
+  asset: ToonflowApi.Asset,
+  appearance: NonNullable<ToonflowApi.Asset['appearances']>[number],
+) {
+  const scriptId = props.script?.id;
+  if (!scriptId) throw new Error('请先选择制作剧本');
+  const projectId = assetProjectId(asset);
+  const created = await executeAgentTool({
+    agentType: 'productionAgent',
+    projectId,
+    scriptId,
+    toolName: 'add_deriveAsset',
+    arguments: {
+      assetsId: asset.id,
+      appearanceId: appearance.id,
+      name: appearance.name,
+      desc: appearance.costumePrompt,
+    },
+  });
+  const id = Number(created.result?.id);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('创建衍生资产后未返回有效资产 ID');
+  return {
+    id,
+    name: appearance.name,
+    prompt: appearance.costumePrompt,
+    description: appearance.costumePrompt,
+    type: 'role',
+    projectId,
+    scriptId,
+    parentAssetId: asset.id,
+    appearanceId: appearance.id,
+  } satisfies ToonflowApi.Asset;
+}
+
+async function editPendingAppearance(
+  asset: ToonflowApi.Asset,
+  appearance: NonNullable<ToonflowApi.Asset['appearances']>[number],
+) {
+  if (pendingActionIds.has(appearance.id)) return;
+  pendingActionIds.add(appearance.id);
+  try {
+    const derived = await materializeAppearance(asset, appearance);
+    emit('refresh');
+    openPromptEditor(derived);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '衍生资产创建失败');
+  } finally {
+    pendingActionIds.delete(appearance.id);
+  }
+}
+
+async function polishPendingAppearance(
+  asset: ToonflowApi.Asset,
+  appearance: NonNullable<ToonflowApi.Asset['appearances']>[number],
+) {
+  if (pendingActionIds.has(appearance.id)) return;
+  pendingActionIds.add(appearance.id);
+  try {
+    const derived = await materializeAppearance(asset, appearance);
+    await polishDerivedPrompt(derived);
+    emit('refresh');
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : 'AI 提示词生成失败');
+    emit('refresh');
+  } finally {
+    pendingActionIds.delete(appearance.id);
+  }
+}
+
+function isAssetGenerating(asset: ToonflowApi.Asset) {
+  return asset.imageState === '生成中' || generatingAssetIds.has(asset.id);
+}
+
+async function generateDerivedAsset(asset: ToonflowApi.Asset) {
+  if (isAssetGenerating(asset)) return;
+  generatingAssetIds.add(asset.id);
+  try {
+    await executeAgentTool({
+      agentType: 'productionAgent',
+      projectId: assetProjectId(asset),
+      scriptId: asset.scriptId || props.script?.id,
+      toolName: 'generate_deriveAsset',
+      arguments: { ids: [asset.id], concurrentCount: 1 },
+    });
+    message.success(`“${asset.name}”衍生资产生成完成`);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '衍生资产生成失败');
+  } finally {
+    generatingAssetIds.delete(asset.id);
+    emit('refresh');
+  }
+}
+
+async function generatePendingAppearance(
+  asset: ToonflowApi.Asset,
+  appearance: NonNullable<ToonflowApi.Asset['appearances']>[number],
+) {
+  if (!asset.imageFilePath) return message.warning(`请先生成“${asset.name}”的基础角色图片`);
+  if (pendingActionIds.has(appearance.id)) return;
+  pendingActionIds.add(appearance.id);
+  try {
+    const derived = await materializeAppearance(asset, appearance);
+    await generateDerivedAsset(derived);
+  } catch (error) {
+    message.error(error instanceof Error ? error.message : '衍生资产生成失败');
+  } finally {
+    pendingActionIds.delete(appearance.id);
+  }
 }
 </script>
 
@@ -150,19 +337,40 @@ function assetSummary(asset: ToonflowApi.Asset) {
                   {{ assetSummary(derived) }}
                 </div>
                 <button
-                  v-if="!derived.imageFilePath && derived.imageState !== '生成中'"
+                  type="button"
+                  class="production-asset-prompt"
+                  @click="openPromptEditor(derived)"
+                >
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  class="production-asset-prompt"
+                  :disabled="promptGeneratingIds.has(derived.id)"
+                  @click="polishDerivedPrompt(derived)"
+                >
+                  {{ promptGeneratingIds.has(derived.id) ? '生成中…' : 'AI 提示词' }}
+                </button>
+                <button
                   type="button"
                   class="production-asset-generate"
-                  @click="emit('generate', derived)"
+                  :disabled="isAssetGenerating(derived)"
+                  @click="generateDerivedAsset(derived)"
                 >
-                  直接生成
+                  {{
+                    isAssetGenerating(derived)
+                      ? '生成中…'
+                      : derived.imageFilePath
+                        ? '重新生成'
+                        : '生成图片'
+                  }}
                 </button>
                 <button
                   type="button"
                   class="production-asset-edit"
                   @click="emit('edit', derived)"
                 >
-                  编辑图片
+                  图片编辑
                 </button>
               </div>
             </article>
@@ -193,6 +401,33 @@ function assetSummary(asset: ToonflowApi.Asset) {
                 <div class="production-appearance-scenes">
                   {{ appearance.scenes.join('、') || '当前剧本' }}
                 </div>
+                <button
+                  type="button"
+                  class="production-asset-edit"
+                  :disabled="pendingActionIds.has(appearance.id)"
+                  title="创建衍生资产并编辑造型描述与提示词"
+                  @click="editPendingAppearance(asset, appearance)"
+                >
+                  编辑
+                </button>
+                <button
+                  type="button"
+                  class="production-asset-prompt"
+                  :disabled="pendingActionIds.has(appearance.id)"
+                  title="按视觉手册生成衍生资产提示词"
+                  @click="polishPendingAppearance(asset, appearance)"
+                >
+                  {{ pendingActionIds.has(appearance.id) ? '处理中…' : 'AI 提示词' }}
+                </button>
+                <button
+                  type="button"
+                  class="production-asset-generate"
+                  :disabled="pendingActionIds.has(appearance.id) || !asset.imageFilePath"
+                  :title="asset.imageFilePath ? '使用基础角色图生成衍生图片' : '请先生成基础角色图片'"
+                  @click="generatePendingAppearance(asset, appearance)"
+                >
+                  {{ pendingActionIds.has(appearance.id) ? '处理中…' : '生成图片' }}
+                </button>
               </div>
             </article>
           </div>
@@ -210,6 +445,35 @@ function assetSummary(asset: ToonflowApi.Asset) {
         </div>
       </div>
     </div>
+
+    <Modal
+      v-model:open="promptEditorOpen"
+      root-class-name="toon-overlay"
+      :title="`${promptAsset?.name ?? '衍生资产'} · 编辑造型`"
+      width="760px"
+      :confirm-loading="promptSaving"
+      @ok="savePrompt"
+    >
+      <Form layout="vertical">
+        <Form.Item label="造型描述">
+          <Input.TextArea
+            v-model:value="promptDescription"
+            :rows="5"
+            placeholder="描述服装、妆容、发型和稳定形态变化"
+          />
+        </Form.Item>
+        <Form.Item label="生成提示词">
+          <Input.TextArea
+            v-model:value="promptText"
+            :rows="10"
+            placeholder="输入用于衍生资产生图的提示词"
+          />
+          <div class="production-prompt-help">
+            保存后，生成图片或重新生成时会使用这里的提示词。
+          </div>
+        </Form.Item>
+      </Form>
+    </Modal>
   </section>
 </template>
 
@@ -390,7 +654,7 @@ function assetSummary(asset: ToonflowApi.Asset) {
   white-space: nowrap;
 }
 
-.production-asset-edit,.production-asset-generate {
+.production-asset-edit,.production-asset-generate,.production-asset-prompt {
   width: 100%;
   padding: 3px 6px;
   margin-top: 7px;
@@ -402,11 +666,18 @@ function assetSummary(asset: ToonflowApi.Asset) {
   border-radius: 5px;
 }
 
-.production-asset-edit:hover,.production-asset-generate:hover {
+.production-asset-edit:hover,.production-asset-generate:hover,.production-asset-prompt:hover {
   border-color: var(--ant-color-primary);
 }
 
 .production-asset-generate { color: var(--ant-color-warning-text); }
+.production-asset-edit:disabled,.production-asset-generate:disabled,.production-asset-prompt:disabled { cursor: not-allowed; opacity: .5; }
+
+.production-prompt-help {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ant-color-text-tertiary);
+}
 
 .production-asset-connector {
   position: relative;

@@ -190,6 +190,32 @@ pub(crate) async fn load_agent_skill(pool: &PgPool, agent_key: &str) -> Result<S
 }
 
 pub(crate) async fn load_skill(pool: &PgPool, path: &str) -> Result<String, String> {
+    if let Some(manual_path) = path.strip_prefix("manual/") {
+        let (kind, entry) = manual_path.split_once('/').unwrap_or_default();
+        let (selected_path, value) = entry.rsplit_once('/').unwrap_or_default();
+        if !matches!(kind, "visual" | "director") || selected_path.is_empty() || value.is_empty() {
+            return Err(format!("Skill {path} 路径无效"));
+        }
+        let data: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT data FROM toonflow.creative_manuals WHERE kind=$1 AND path=$2",
+        )
+        .bind(kind)
+        .bind(selected_path)
+        .fetch_optional(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+        return data
+            .and_then(|data| {
+                data.as_array()?.iter().find_map(|item| {
+                    (item.get("value").and_then(serde_json::Value::as_str) == Some(value))
+                        .then(|| item.get("data").and_then(serde_json::Value::as_str))
+                        .flatten()
+                        .filter(|content| !content.trim().is_empty())
+                        .map(str::to_string)
+                })
+            })
+            .ok_or_else(|| format!("Skill {path} 不存在或内容为空"));
+    }
     sqlx::query_scalar(
         "SELECT content FROM toonflow.skill_list WHERE path=$1 AND state=1 AND content<>''",
     )
@@ -200,25 +226,138 @@ pub(crate) async fn load_skill(pool: &PgPool, path: &str) -> Result<String, Stri
     .ok_or_else(|| format!("Skill {path} 不存在或已停用"))
 }
 
+fn manual_values_for_agent(agent_key: &str) -> (&'static [&'static str], &'static [&'static str]) {
+    match agent_key {
+        "productionAgent:decisionAgent" => (
+            &[
+                "director_planning_style",
+                "director_storyboard_table_style",
+                "director_storyboard",
+                "art_storyboard_video",
+            ],
+            &[
+                "director_planning_narrative",
+                "director_storyboard_table_narrative",
+            ],
+        ),
+        "productionAgent:directorPlanAgent" => (
+            &["director_planning_style"],
+            &["director_planning_narrative"],
+        ),
+        "productionAgent:storyboardTableAgent" => (
+            &["director_storyboard_table_style"],
+            &["director_storyboard_table_narrative"],
+        ),
+        "productionAgent:storyboardPanelAgent" | "productionAgent:storyboardGenAgent" => {
+            (&["director_storyboard"], &[])
+        }
+        "productionAgent:supervisionAgent" => (
+            &[
+                "director_planning_style",
+                "director_storyboard_table_style",
+                "director_storyboard",
+            ],
+            &[
+                "director_planning_narrative",
+                "director_storyboard_table_narrative",
+            ],
+        ),
+        "productionAgent:deriveAssetsAgent" | "productionAgent:generateAssetsAgent" => {
+            (&["art_character_derivative"], &[])
+        }
+        _ => (&[], &[]),
+    }
+}
+
+fn production_skill_paths_for_agent(agent_key: &str) -> &'static [&'static str] {
+    match agent_key {
+        "productionAgent:decisionAgent" => &[
+            "production_skills/storyboard_prompt_techniques.md",
+            "production_skills/storyboard_table_techniques.md",
+        ],
+        "productionAgent:storyboardTableAgent" | "productionAgent:supervisionAgent" => {
+            &["production_skills/storyboard_table_techniques.md"]
+        }
+        "productionAgent:storyboardPanelAgent" | "productionAgent:storyboardGenAgent" => {
+            &["production_skills/storyboard_prompt_techniques.md"]
+        }
+        _ => &[],
+    }
+}
+
+async fn manual_skill_entries(
+    pool: &PgPool,
+    kind: &str,
+    selected_path: &str,
+    allowed_values: &[&str],
+) -> Result<Vec<(String, String, String)>, String> {
+    if selected_path.trim().is_empty() || allowed_values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let manual: Option<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT name,data FROM toonflow.creative_manuals WHERE kind=$1 AND path=$2")
+            .bind(kind)
+            .bind(selected_path.trim())
+            .fetch_optional(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    let Some((manual_name, data)) = manual else {
+        return Ok(Vec::new());
+    };
+    Ok(data
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let value = item.get("value")?.as_str()?;
+            let label = item
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(value);
+            let content = item.get("data")?.as_str()?;
+            (allowed_values.contains(&value) && !content.trim().is_empty()).then(|| {
+                (
+                    format!("manual/{kind}/{}/{value}", selected_path.trim()),
+                    format!("{manual_name} · {label}"),
+                    format!("当前项目选定的{manual_name}{label}技能"),
+                )
+            })
+        })
+        .collect())
+}
+
 pub(crate) async fn dynamic_skills(
     pool: &PgPool,
+    agent_key: &str,
     project_id: i64,
 ) -> Result<Vec<(String, String, String)>, String> {
+    if !agent_key.starts_with("productionAgent:") {
+        return Ok(Vec::new());
+    }
     let project: Option<(String, String)> =
         sqlx::query_as("SELECT art_style,director_manual FROM toonflow.projects WHERE id=$1")
             .bind(project_id)
             .fetch_optional(pool)
             .await
             .map_err(|error| error.to_string())?;
-    let (art_style, director_manual) = project.unwrap_or_default();
-    sqlx::query_as(
-        "SELECT path,name,description FROM toonflow.skill_list WHERE state=1 AND (path LIKE 'production_skills/%' OR ($1<>'' AND path LIKE 'art_skills/%') OR ($2<>'' AND path LIKE 'story_skills/%')) ORDER BY path",
-    )
-    .bind(art_style.trim())
-    .bind(director_manual.trim())
-    .fetch_all(pool)
-    .await
-    .map_err(|error| error.to_string())
+    let (art_style, director_manual) =
+        project.ok_or_else(|| format!("项目 {project_id} 不存在"))?;
+    let production_paths = production_skill_paths_for_agent(agent_key);
+    let mut skills = if production_paths.is_empty() {
+        Vec::new()
+    } else {
+        sqlx::query_as::<_, (String, String, String)>(
+            "SELECT path,name,description FROM toonflow.skill_list WHERE state=1 AND path=ANY($1) ORDER BY path",
+        )
+        .bind(production_paths)
+        .fetch_all(pool)
+        .await
+        .map_err(|error| error.to_string())?
+    };
+    let (visual_values, director_values) = manual_values_for_agent(agent_key);
+    skills.extend(manual_skill_entries(pool, "visual", &art_style, visual_values).await?);
+    skills.extend(manual_skill_entries(pool, "director", &director_manual, director_values).await?);
+    Ok(skills)
 }
 
 pub(crate) async fn available_skills(
@@ -239,7 +378,7 @@ pub(crate) async fn available_skills(
         .await
         .map_err(|error| error.to_string())?,
     );
-    skills.extend(dynamic_skills(pool, project_id).await?);
+    skills.extend(dynamic_skills(pool, agent_key, project_id).await?);
     skills.sort_by(|left, right| left.0.cmp(&right.0));
     skills.dedup_by(|left, right| left.0 == right.0);
     Ok(skills)
@@ -385,7 +524,10 @@ pub(crate) async fn expand_related_messages(
 
 #[cfg(test)]
 mod tests {
-    use super::{ThinkingPart, ThinkingStream, parse_id_array, strip_xml_tags};
+    use super::{
+        ThinkingPart, ThinkingStream, manual_values_for_agent, parse_id_array,
+        production_skill_paths_for_agent, strip_xml_tags,
+    };
 
     #[test]
     fn strips_agent_protocol_xml_without_losing_text() {
@@ -442,5 +584,18 @@ mod tests {
             [2, 7].into_iter().collect()
         );
         assert!(parse_id_array("not json").is_empty());
+    }
+
+    #[test]
+    fn production_agents_only_receive_stage_relevant_dynamic_skills() {
+        let (visual, director) = manual_values_for_agent("productionAgent:directorPlanAgent");
+        assert_eq!(visual, ["director_planning_style"]);
+        assert_eq!(director, ["director_planning_narrative"]);
+        assert!(production_skill_paths_for_agent("productionAgent:directorPlanAgent").is_empty());
+
+        let (visual, director) = manual_values_for_agent("scriptAgent:decisionAgent");
+        assert!(visual.is_empty());
+        assert!(director.is_empty());
+        assert!(production_skill_paths_for_agent("scriptAgent:decisionAgent").is_empty());
     }
 }

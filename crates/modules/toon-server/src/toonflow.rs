@@ -939,6 +939,19 @@ pub async fn save_asset(
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to begin asset transaction"))?;
+    let prompt_changed: bool = if request.id.is_some() && request.prompt.is_some() {
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM toonflow.assets WHERE id=$1 AND project_id=$2 AND prompt IS DISTINCT FROM $3)",
+        )
+        .bind(id)
+        .bind(request.project_id)
+        .bind(request.prompt.as_deref().unwrap_or_default())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to compare asset prompt"))?
+    } else {
+        false
+    };
     sqlx::query(
         r#"INSERT INTO toonflow.assets
            (id, project_id, name, prompt, remark, type, description, script_id, parent_asset_id, image_id)
@@ -951,7 +964,10 @@ pub async fn save_asset(
              description=coalesce(excluded.description, toonflow.assets.description),
              script_id=coalesce(excluded.script_id, toonflow.assets.script_id),
              parent_asset_id=coalesce(excluded.parent_asset_id, toonflow.assets.parent_asset_id),
-             image_id=coalesce(excluded.image_id, toonflow.assets.image_id)"#,
+             image_id=CASE
+               WHEN toonflow.assets.prompt IS DISTINCT FROM excluded.prompt THEN excluded.image_id
+               ELSE coalesce(excluded.image_id, toonflow.assets.image_id)
+             END"#,
     )
     .bind(id)
     .bind(request.project_id)
@@ -966,6 +982,16 @@ pub async fn save_asset(
     .execute(&mut *tx)
     .await
     .map_err(|_| AppError::internal("failed to save asset"))?;
+    if prompt_changed {
+        sqlx::query(
+            "UPDATE toonflow.images SET state='已取消',error_reason='资产提示词已修改'
+             WHERE assets_id=$1 AND state='生成中'",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AppError::internal("failed to invalidate outdated image generation"))?;
+    }
     sqlx::query(
         "INSERT INTO toonflow.project_assets(project_id,asset_id,linked_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING",
     )
@@ -1018,7 +1044,11 @@ pub async fn delete_assets(
         .await
         .map_err(|_| AppError::internal("failed to begin asset deletion"))?;
     let file_paths: Vec<String> = sqlx::query_scalar(
-        "SELECT i.file_path FROM toonflow.images i JOIN toonflow.assets a ON a.id=i.assets_id WHERE a.id=ANY($1) OR a.parent_asset_id=ANY($1)",
+        "SELECT DISTINCT i.file_path
+         FROM toonflow.images i
+         JOIN toonflow.assets a ON a.id=i.assets_id
+         WHERE (a.id=ANY($1) OR a.parent_asset_id=ANY($1))
+           AND nullif(i.file_path,'') IS NOT NULL",
     )
     .bind(&ids)
     .fetch_all(&mut *tx)

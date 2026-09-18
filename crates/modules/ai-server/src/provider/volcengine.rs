@@ -22,6 +22,18 @@ pub(super) fn normalize_seedream_size(model: &str, size: &str) -> String {
     format!("{}x{}", align(width), align(height))
 }
 
+/// Keep Ark image generation deterministic and aligned with Toonflow-app's
+/// Seedream request contract.
+pub(super) fn apply_image_generation_options(model: &str, body: &mut Value) {
+    body["response_format"] = json!("url");
+    body["watermark"] = json!(false);
+
+    let model = model.to_ascii_lowercase();
+    if model.contains("seedream") && !model.contains("seedream-3-0") {
+        body["sequential_image_generation"] = json!("disabled");
+    }
+}
+
 fn normalize_seedance_duration(model: &str, duration: i64) -> i64 {
     if model.to_ascii_lowercase().contains("seedance-1-5") {
         duration.clamp(4, 12)
@@ -209,7 +221,10 @@ impl VolcEngineMediaProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{VolcEngineMediaProvider, normalize_seedance_duration, normalize_seedream_size};
+    use super::{
+        VolcEngineMediaProvider, apply_image_generation_options, normalize_seedance_duration,
+        normalize_seedream_size,
+    };
     use rust_toon_ai_api::ModelConfig;
     use serde_json::json;
 
@@ -239,6 +254,26 @@ mod tests {
             "2560x1440"
         );
         assert_eq!(normalize_seedream_size("dall-e-3", "512x512"), "512x512");
+    }
+
+    #[test]
+    fn applies_toonflow_seedream_image_options() {
+        let mut body = json!({"model":"doubao-seedream-4-5-251128"});
+        apply_image_generation_options("doubao-seedream-4-5-251128", &mut body);
+
+        assert_eq!(body["response_format"], "url");
+        assert_eq!(body["watermark"], false);
+        assert_eq!(body["sequential_image_generation"], "disabled");
+    }
+
+    #[test]
+    fn seedream_3_does_not_receive_unsupported_sequential_option() {
+        let mut body = json!({"model":"doubao-seedream-3-0-t2i"});
+        apply_image_generation_options("doubao-seedream-3-0-t2i", &mut body);
+
+        assert_eq!(body["response_format"], "url");
+        assert_eq!(body["watermark"], false);
+        assert!(body.get("sequential_image_generation").is_none());
     }
 
     #[test]

@@ -128,6 +128,10 @@ AI 能力域：
 
 ### 5.5 toon（`crates/modules/toon-server`）
 
+视频生成的基础验收由 `toon.video_quality` 持久任务承担：Gateway 归档视频并提交 outbox，Worker 执行媒体检查，只有检查通过才将新视频标记为生成成功。检查报告和最终生成请求分别保存在 `toonflow.videos.generation_context` 的 `quality`、`request` 字段。失败报告保留视频供审片，黑场/冻结提醒不自动判定创作失败。旧视频可手动发起检查。
+
+严格尾帧衔接只接受通过基础检查的前片，本次批量生成绑定本次前片版本，前片失败会停止依赖镜头。基础验收不覆盖人物身份、动作、口型与叙事质量；完整工作流仍依赖单 Gateway 进程。阶段范围见[媒体生成稳定性计划](media-generation-stability-plan.md)。
+
 动漫制作业务核心，分为两组路由：
 
 - REST 资源：`/toon/projects`、`/toon/episodes`、`/toon/scenes` 等。

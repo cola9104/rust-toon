@@ -225,6 +225,20 @@ async fn extract_group(
     if scripts.len() != script_ids.len() {
         return Err("部分剧本不存在".into());
     }
+    let project: Option<(String, String, String, String)> = sqlx::query_as(
+        "SELECT project_type,type,intro,art_style FROM toonflow.projects WHERE id=$1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    let (project_template, project_type, project_intro, art_style) =
+        project.ok_or_else(|| "项目不存在".to_string())?;
+    let project_context = crate::toonflow_asset_prompt::project_world_context(
+        &project_template,
+        &project_type,
+        &project_intro,
+    );
     sqlx::query("UPDATE toonflow.scripts SET extract_state=0,error_reason=NULL WHERE project_id=$1 AND id=ANY($2)")
         .bind(project_id)
         .bind(script_ids)
@@ -261,7 +275,10 @@ async fn extract_group(
         "{system_prompt}\n\n{}\n提取 role 资产时，将采用的人物背景写入 desc：没有明确设定则写明中国人物形象；明确外国、混血或其他背景则保留原设定。已有角色及 appearances 继承基础角色身份，不因换装重新指定人物背景。此规则不适用于 scene、tool、costume，不要为这些资产添加人物。",
         crate::toonflow_asset_prompt::CHARACTER_IDENTITY_RULE
     );
-    let user_prompt = format!("已有资产：{existing}\n\n{content}");
+    let system_prompt = format!(
+        "{system_prompt}\n\n## 项目世界观\n{project_context}\n项目画风：{art_style}\n项目世界观用于理解古今共存、人物背景和资产归属；画风只控制视觉审美。具体资产以剧本明确事实为最高优先级，不得因画风改变电脑、服装、建筑、道具等元素的年代，也不得把项目简介里的所有对象自动添加到每一集。"
+    );
+    let user_prompt = format!("项目世界观：{project_context}\n已有资产：{existing}\n\n{content}");
     let mut parse_error = String::new();
     let mut result = None;
     for attempt in 0..2 {

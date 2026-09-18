@@ -27,8 +27,10 @@ type ProjectContextRow = (
     String,
     String,
     String,
+    String,
     Option<i64>,
     Option<i64>,
+    String,
     String,
 );
 type RetryRunRow = (String, String, i64, Option<i64>, String, bool, i32);
@@ -172,10 +174,22 @@ fn format_chapter_ranges(indexes: &[i32]) -> String {
 }
 
 async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
-    let project: Option<ProjectContextRow> = sqlx::query_as("SELECT name,type,intro,art_style,video_ratio,image_model,video_model,mode FROM toonflow.projects WHERE id=$1")
+    let project: Option<ProjectContextRow> = sqlx::query_as("SELECT name,project_type,type,intro,art_style,video_ratio,image_model,video_model,mode,director_manual FROM toonflow.projects WHERE id=$1")
         .bind(request.project_id).fetch_optional(&state.pool).await.map_err(|_| AppError::internal("failed to load agent project"))?;
-    let (name, kind, intro, style, ratio, image_model, video_model, mode) =
-        project.ok_or_else(|| AppError::not_found("project not found"))?;
+    let (
+        name,
+        project_template,
+        kind,
+        intro,
+        style,
+        ratio,
+        image_model,
+        video_model,
+        mode,
+        director_manual,
+    ) = project.ok_or_else(|| AppError::not_found("project not found"))?;
+    let world_context =
+        crate::toonflow_asset_prompt::project_world_context(&project_template, &kind, &intro);
     if request.agent_type == "scriptAgent" {
         let chapters: Vec<(i32, bool)> = sqlx::query_as(
             "SELECT chapter_index,event_state=1 AND COALESCE(event,'')<>''
@@ -195,7 +209,7 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
             .collect::<Vec<_>>();
         let extracted_ranges = format_chapter_ranges(&extracted);
         Ok(format!(
-            "## 项目信息\n小说名称：{name}\n小说类型：{kind}\n小说简介：{intro}\n视觉风格：{style}\n视频画幅：{ratio}\n导入章节：{}章（{imported_range}）\n已完成事件提取：{}章\n可用于改编的原著章节：{extracted_ranges}\n\n**重要**：平台规格=视频画幅({ratio})，风格定位=小说类型({kind})+视觉风格({style})。这两项参数已由项目配置确定，无需再向用户确认，直接使用即可。推荐或确认改编范围时，必须明确写出起止章节，并以“可用于改编的原著章节”为依据；尚未完成事件提取的章节必须先提示用户提取事件，不得直接进入生成。",
+            "## 项目信息\n小说名称：{name}\n项目模板：{project_template}\n小说类型：{kind}\n小说简介：{intro}\n视觉风格：{style}\n视频画幅：{ratio}\n世界观上下文：{world_context}\n导入章节：{}章（{imported_range}）\n已完成事件提取：{}章\n可用于改编的原著章节：{extracted_ranges}\n\n**重要**：平台规格=视频画幅({ratio})，风格定位=小说类型({kind})+视觉风格({style})。这两项参数已由项目配置确定，无需再向用户确认，直接使用即可。推荐或确认改编范围时，必须明确写出起止章节，并以“可用于改编的原著章节”为依据；尚未完成事件提取的章节必须先提示用户提取事件，不得直接进入生成。",
             chapters.len(),
             extracted.len(),
         ))
@@ -264,11 +278,14 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
         } else {
             None
         };
+        if request.script_id.is_some() && script.is_none() {
+            return Err(AppError::bad_request("当前剧本不存在或不属于当前项目"));
+        }
         let script_context = script
             .map(|(n, c)| format!("\n当前剧本：{n}\n剧本内容：{c}"))
             .unwrap_or_default();
         Ok(format!(
-            "## 生产上下文\n项目：{name}\n图像模型 ID：{}\n视频模型 ID：{}\n视频画幅：{ratio}\n视频生成模式：{mode}\n分镜面板写入模式：{}{script_context}",
+            "## 生产上下文\n项目：{name}\n项目模板：{project_template}\n项目题材：{kind}\n项目描述：{intro}\n世界观上下文：{world_context}\n视觉风格：{style}\n导演手册：{director_manual}\n图像模型：{}\n视频模型：{}\n视频画幅：{ratio}\n视频生成模式：{mode}\n分镜面板写入模式：{}{script_context}\n\n世界观优先级：用户当前明确修改 > 当前剧本、项目描述与已确认资产事实 > 选定画风和导演技法 > 通用默认值。画风只控制表现技法与审美，不得替换项目描述和剧本中明确的时代、人物、地点或道具。",
             image_model_label,
             video_model_label,
             if mode == "text" {
@@ -278,6 +295,28 @@ async fn project_context(state: &ToonState, request: &ChatRequest) -> Result<Str
             }
         ))
     }
+}
+
+/// Use the same current project/script/model context for every production stage,
+/// including repair passes and automatic supervision.
+pub(crate) async fn production_context(
+    state: &ToonState,
+    project_id: i64,
+    script_id: Option<i64>,
+) -> Result<String, AppError> {
+    project_context(
+        state,
+        &ChatRequest {
+            agent_type: "productionAgent".into(),
+            isolation_key: String::new(),
+            project_id,
+            script_id,
+            content: String::new(),
+            think: false,
+            think_level: 0,
+        },
+    )
+    .await
 }
 
 async fn memory_context(state: &ToonState, request: &ChatRequest) -> Result<String, AppError> {
@@ -381,7 +420,7 @@ deepRetrieve 用于搜索历史对话中的关键信息，仅在用户要求回�
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
     } else {
-        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,sceneKey,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), deepRetrieve({keyword}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_image_edit({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
+        r#"可用工具：get_flowData({key}), set_flowData({key,value}), add_deriveAsset({assetsId,appearanceId,id,name,desc}), del_deriveAsset({id}), generate_deriveAsset({ids,concurrentCount}), add_flowData_storyboard({videoDesc,prompt,sceneKey,track,duration,associateAssetsIds,shouldGenerateImage}), update_storyboard({id,...}), generate_storyboard({ids,concurrentCount}), delete_storyboard({ids}), get_video_workbench({}), generate_video_prompt({trackId}), update_video_prompt({trackId,prompt}), select_video({trackId,videoId}), deepRetrieve({keyword}), run_sub_agent_derive_assets({prompt}), run_sub_agent_generate_assets({prompt}), run_sub_agent_director_plan({prompt}), run_sub_agent_storyboard_gen({prompt}), run_sub_agent_image_edit({prompt}), run_sub_agent_storyboard_panel({prompt}), run_sub_agent_storyboard_table({prompt}), run_sub_agent_supervision({prompt})。
 deepRetrieve 只检索当前项目与当前剧本的生产对话记忆，不读取实时工作区数据。
 需要调用工具时，仅输出一个或多个如下标签，不要编造结果：
 <tool_call>{"name":"工具名","arguments":{}}</tool_call>"#
@@ -404,7 +443,7 @@ fn pipeline_rule(agent_type: &str) -> &'static str {
     if agent_type == "scriptAgent" {
         "\n\n## 流水线铁律\n1. 阶段必须串行：故事骨架 → 改编策略 → 剧本编写，禁止跳过或合并\n2. 阶段1故事骨架、阶段2改编策略完成后必须分别调用 run_supervision_agent 审核，并把审核报告展示给用户\n3. 用户确认阶段1/2审核结果后才能进入下一阶段\n4. 阶段3不调用监督层：必须按集序为每一集单独调用 run_sub_agent_script，每次只生成一集；全部集数完成后统一调用 save_scripts 写入，未保存不得宣称完成\n5. 用户给出明确原著章节范围但未指定集数或单集时长时，必须先调用 get_novel_events 读取该范围，依据事件数量、密度和情节完整性，主动给出明确的推荐集数、单集时长及简短理由，再等待用户确认；禁止仅显示“待确认”或继续把同一问题原样抛给用户\n6. 项目参数未全部确认前，不得调用任何生成或保存工具"
     } else {
-        ""
+        "\n\n## 生产流水线铁律\n1. 默认顺序：导演规划 → 按需人物造型衍生分析 → 用户确认后生成所需衍生图片 → 分镜表与监制审核 → 分镜面板 → 按需生成分镜图。\n2. 衍生资产只表示稳定、可复用且会改变整体识别外观的状态；瞬时表情、动作和局部特写留在分镜描述中。现有同一造型必须跨场复用，禁止重复生成。\n3. 项目描述和当前剧本决定世界观与时代事实；画风和导演手册只提供审美及镜头技法。古今混合题材必须逐元素保留各自年代。\n4. 每阶段必须读取实时工作区并以实际保存结果为完成依据。已有内容在原版本上修改，禁止只用文字声称写入或生成完成。\n5. 付费图片生成只处理用户确认的资产或分镜；重试前先读取任务与媒体状态，只重试失败或缺失项。\n6. 分镜表保存后必须使用最新版本自动复审；用户修改内容后旧审核结论失效。"
     }
 }
 
@@ -529,13 +568,13 @@ fn tool_def(name: &str) -> Value {
             json!({"type":"function","function":{"name":"set_flowData","description":"写入生产工作区数据。scriptPlan/storyboardTable 传 Markdown 字符串，其余数据也可传对象或数组。","parameters":{"type":"object","properties":{"key":{"type":"string","description":"数据key"},"value":{"type":["string","object","array","null"],"description":"要写入的数据；导演规划应直接传 Markdown 字符串"}},"required":["key","value"]}}})
         }
         "add_deriveAsset" => {
-            json!({"type":"function","function":{"name":"add_deriveAsset","description":"根据资产提取阶段保存的人物造型新增或更新衍生人物资产。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"appearanceId":{"type":"integer","description":"get_flowData 返回的 appearance.id"},"id":{"type":"integer"},"name":{"type":"string"},"desc":{"type":"string"}},"required":["assetsId","appearanceId","name","desc"]}}})
+            json!({"type":"function","function":{"name":"add_deriveAsset","description":"根据资产提取阶段保存的人物造型新增或更新衍生人物资产。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"appearanceId":{"type":"integer","description":"get_flowData 返回的 appearance.id"},"id":{"type":["integer","null"]},"name":{"type":"string"},"desc":{"type":"string"}},"required":["assetsId","appearanceId","name","desc"]}}})
         }
         "del_deriveAsset" => {
             json!({"type":"function","function":{"name":"del_deriveAsset","description":"删除衍生资产。","parameters":{"type":"object","properties":{"assetsId":{"type":"integer"},"id":{"type":"integer"}},"required":["assetsId","id"]}}})
         }
         "generate_deriveAsset" => {
-            json!({"type":"function","function":{"name":"generate_deriveAsset","description":"触发衍生资产的图片生成（异步任务）。传入资产ID数组，可设置并发数。","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"}},"concurrentCount":{"type":"integer"}},"required":["ids"]}}})
+            json!({"type":"function","function":{"name":"generate_deriveAsset","description":"生成人物衍生图片并等待整批任务完成，返回实际媒体状态；失败时返回原因。传入已获用户授权的资产ID，可设置并发数。","parameters":{"type":"object","properties":{"ids":{"type":"array","items":{"type":"integer"}},"concurrentCount":{"type":"integer"}},"required":["ids"]}}})
         }
         "add_flowData_storyboard" => {
             json!({"type":"function","function":{"name":"add_flowData_storyboard","description":"向分镜面板新增一条分镜记录。首位帧 prompt 中每个角色 @图N 必须作为主语独立写明基础姿态和承托物，不能只作为他人视线或动作的宾语；没有明确转换动作时逐镜展开上一镜姿态。sceneKey 必须取分镜表当前场标题并规范为 scN；sceneStateKey 表示同场景内的累计物理状态，初始为 base，门/桌损坏后改用稳定的新状态键。","parameters":{"type":"object","properties":{"videoDesc":{"type":"string"},"prompt":{"type":["string","null"]},"sceneKey":{"type":"string","pattern":"^sc[1-9][0-9]*$"},"sceneStateKey":{"type":"string","pattern":"^[a-z][a-z0-9_-]{0,63}$"},"sceneStateParentKey":{"type":["string","null"],"description":"当前状态的前置状态键；base 必须为 null"},"sceneStateDescription":{"type":"string","description":"当前状态相对前态的可见变化；base 应说明初始状态，同一状态各镜必须一致"},"track":{"type":"string"},"duration":{"type":"integer"},"associateAssetsIds":{"type":["array","null"],"items":{"type":"integer"}},"shouldGenerateImage":{"type":"string"}},"required":["videoDesc","sceneKey","sceneStateKey","sceneStateParentKey","sceneStateDescription","track","duration"]}}})
@@ -598,6 +637,7 @@ fn native_tool_definitions(agent_type: &str) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(test)]
 pub(crate) async fn run_scoped_production_agent(
     state: &ToonState,
     agent_key: &str,
@@ -607,12 +647,98 @@ pub(crate) async fn run_scoped_production_agent(
     script_id: Option<i64>,
     allowed_tools: &[&str],
 ) -> Result<String, AppError> {
+    run_scoped_production_agent_with_emitter(
+        state,
+        agent_key,
+        system,
+        prompt,
+        project_id,
+        script_id,
+        allowed_tools,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_scoped_production_agent_with_emitter(
+    state: &ToonState,
+    agent_key: &str,
+    system: &str,
+    prompt: &str,
+    project_id: i64,
+    script_id: Option<i64>,
+    allowed_tools: &[&str],
+    emitter: Option<&WsEmitter>,
+) -> Result<String, AppError> {
+    let stage_message = emitter.map(|emitter| {
+        let name = match agent_key.rsplit(':').next().unwrap_or(agent_key) {
+            "deriveAssetsAgent" => "衍生分析",
+            "generateAssetsAgent" => "衍生生成",
+            "directorPlanAgent" => "导演规划",
+            "storyboardTableAgent" => "分镜表",
+            "storyboardPanelAgent" => "分镜面板",
+            "storyboardGenAgent" => "分镜图",
+            "supervisionAgent" => "监制审核",
+            _ => "生产执行",
+        };
+        let (message_id, _) = emitter.new_message(name, "assistant");
+        let content_id = emitter.add_content(&message_id, "text", &json!("阶段执行中…\n"));
+        (message_id, content_id, emitter.clone())
+    });
+    let result = run_scoped_production_agent_inner(
+        state,
+        agent_key,
+        system,
+        prompt,
+        project_id,
+        script_id,
+        allowed_tools,
+    )
+    .await;
+    if let Some((message_id, content_id, emitter)) = stage_message {
+        match &result {
+            Ok(output) => {
+                emitter.text_delta(&message_id, &content_id, output);
+                emitter.text_complete(&message_id, &content_id);
+                emitter.update_message(&message_id, "complete", None);
+            }
+            Err(error) => {
+                emitter.update_message(&message_id, "error", Some(&format!("{error:?}")));
+            }
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_scoped_production_agent_inner(
+    state: &ToonState,
+    agent_key: &str,
+    system: &str,
+    prompt: &str,
+    project_id: i64,
+    script_id: Option<i64>,
+    allowed_tools: &[&str],
+) -> Result<String, AppError> {
+    let allowed_tools = scoped_production_tools(allowed_tools);
     let definitions = allowed_tools
         .iter()
         .map(|name| tool_def(name))
         .collect::<Vec<_>>();
+    let skills = toonflow_agent_runtime::available_skills(&state.pool, agent_key, project_id)
+        .await
+        .map_err(AppError::bad_request)?;
+    let skill_guide = skills
+        .iter()
+        .map(|(path, name, description)| format!("- {name}（{description}）：{path}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut messages = vec![
-        json!({"role":"system","content":format!("{system}\n\n{}", tool_guide("productionAgent"))}),
+        json!({"role":"system","content":format!(
+            "{system}\n\n当前阶段仅允许这些工具：{}。写入权限以此列表为准。\n\n当前阶段可用 Skill：\n{skill_guide}\n按需调用 use_skill 读取完整内容。专业手册不得覆盖项目事实或用户明确修改。\n{}",
+            allowed_tools.join(", "), pipeline_rule("productionAgent")
+        )}),
         json!({"role":"user","content":prompt}),
     ];
     for _ in 0..24 {
@@ -674,6 +800,7 @@ pub(crate) async fn run_scoped_production_agent(
             let request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: "productionAgent".to_string(),
+                agent_key: Some(agent_key.to_string()),
                 isolation_key: String::new(),
                 project_id,
                 script_id,
@@ -689,6 +816,16 @@ pub(crate) async fn run_scoped_production_agent(
         }
     }
     Err(AppError::bad_request("执行层 Agent 工具调用超过最大轮数"))
+}
+
+fn scoped_production_tools<'a>(allowed: &[&'a str]) -> Vec<&'a str> {
+    let mut tools = allowed.to_vec();
+    for name in ["use_skill", "read_skill_file"] {
+        if !tools.contains(&name) {
+            tools.push(name);
+        }
+    }
+    tools
 }
 
 async fn run_native_tools(
@@ -767,6 +904,7 @@ async fn run_native_tools(
             let tool_request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: request.agent_type.clone(),
+                agent_key: Some(agent_key.to_string()),
                 isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
@@ -814,8 +952,7 @@ async fn run_with_tools(
     system: &str,
     run_id: i64,
 ) -> Result<String, String> {
-    let primary_skill =
-        toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
+    let primary_skill = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
     let available_skills =
         toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
             .await?;
@@ -874,6 +1011,7 @@ async fn run_with_tools(
             let tool_request = toonflow_agent_tools::ToolRequest {
                 emitter: None,
                 agent_type: request.agent_type.clone(),
+                agent_key: Some(agent_key.to_string()),
                 isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
@@ -1025,8 +1163,7 @@ pub(crate) async fn run_with_emitter(
     let memory = memory_context(state, request)
         .await
         .map_err(|error| format!("{error:?}"))?;
-    let primary_skill =
-        toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
+    let primary_skill = toonflow_agent_runtime::load_agent_skill(&state.pool, agent_key).await?;
     let available_skills =
         toonflow_agent_runtime::available_skills(&state.pool, agent_key, request.project_id)
             .await?;
@@ -1149,6 +1286,7 @@ pub(crate) async fn run_with_emitter(
 
             let tool_request = toonflow_agent_tools::ToolRequest {
                 agent_type: request.agent_type.clone(),
+                agent_key: Some(agent_key.to_string()),
                 isolation_key: request.isolation_key.clone(),
                 project_id: request.project_id,
                 script_id: request.script_id,
@@ -1452,6 +1590,19 @@ mod tests {
         format_chapter_ranges, parse_native_tool_arguments, parse_tool_calls, pipeline_rule,
         stop_run_after_tool_failure, tool_names,
     };
+
+    #[test]
+    fn scoped_skill_access_does_not_grant_supervision_write_tools() {
+        let tools = super::scoped_production_tools(&["get_flowData", "use_skill"]);
+        assert_eq!(tools, ["get_flowData", "use_skill", "read_skill_file"]);
+        assert!(!tools.contains(&"set_flowData"));
+        assert!(!tools.contains(&"generate_deriveAsset"));
+        let definition = super::tool_def("add_deriveAsset");
+        assert_eq!(
+            definition["function"]["parameters"]["properties"]["id"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
+    }
 
     #[test]
     fn formats_available_chapters_as_compact_ranges() {

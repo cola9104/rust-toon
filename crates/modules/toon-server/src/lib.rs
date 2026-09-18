@@ -9,6 +9,7 @@ mod toonflow_agent_events;
 mod toonflow_agent_history;
 mod toonflow_agent_plan;
 mod toonflow_agent_read_tools;
+mod toonflow_script_quality;
 mod toonflow_agent_runtime;
 mod toonflow_agent_tool_record;
 mod toonflow_agent_tool_utils;
@@ -18,6 +19,9 @@ mod toonflow_asset_ai;
 mod toonflow_asset_context;
 mod toonflow_asset_library;
 mod toonflow_asset_prompt;
+mod toonflow_prompt_trace;
+#[cfg(test)]
+mod toonflow_alignment_tests;
 mod toonflow_image_contract;
 mod toonflow_face_identity;
 mod toonflow_audio;
@@ -50,6 +54,7 @@ mod toonflow_storyboard_table_validation;
 mod toonflow_video;
 mod toonflow_video_continuity;
 mod toonflow_video_export;
+mod toonflow_video_quality;
 mod toonflow_workflow;
 mod toonflow_workflow_control;
 mod toonflow_workflow_definition;
@@ -75,6 +80,9 @@ use rust_toon_toon_api::ToonCapability;
 pub use toonflow_video_export::{
     VIDEO_EXPORT_JOB_KIND, cleanup_stale_export_workdirs, execute_distributed_export,
 };
+pub use toonflow_video_quality::{VIDEO_QUALITY_JOB_KIND, execute_distributed_quality};
+pub use toonflow_video::resume_interrupted_video_generations;
+pub use toonflow_workflow::resume_interrupted_workflow_runs;
 
 const STORAGE_CLEANUP_CONCURRENCY: usize = 8;
 const STORAGE_CLEANUP_REFERENCE_RECHECK_SECONDS: u64 = 30;
@@ -112,14 +120,38 @@ pub async fn cleanup_provider_video_temp_on_startup() -> Result<u64, String> {
 
 /// Mark only Gateway-owned in-process work as interrupted after a restart.
 /// Durable media tasks are deliberately excluded and remain owned by the
-/// worker lease/reaper protocol.
+/// worker lease/reaper protocol. Workflow runs and video generations that can
+/// be resumed (video.generate nodes, videos with a persisted provider task)
+/// are also excluded; `resume_interrupted_video_generations` and
+/// `resume_interrupted_workflow_runs` re-drive them after this repair.
 pub async fn repair_gateway_interrupted_state(pool: &PgPool) -> Result<u64, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let mut repaired = 0_u64;
-    repaired += sqlx::query("UPDATE toonflow.workflow_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
-        .execute(&mut *tx).await?.rows_affected();
-    repaired += sqlx::query("UPDATE toonflow.workflow_node_runs SET state='failed',error_reason='服务重启导致失败',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE state='running'")
-        .execute(&mut *tx).await?.rows_affected();
+    // Node executions that cannot be checkpointed (LLM tool loops, storyboard
+    // image jobs) still fail on restart. video.generate nodes are excluded:
+    // their videos resume via persisted provider tasks or durable quality
+    // jobs, and a resumed waiter re-attaches the node run.
+    let interrupted_nodes: Vec<(i64, i64)> = sqlx::query_as(
+        "SELECT id,workflow_run_id FROM toonflow.workflow_node_runs
+         WHERE state='running' AND node_type<>'video.generate'",
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let node_ids = interrupted_nodes.iter().map(|row| row.0).collect::<Vec<_>>();
+    let run_ids = interrupted_nodes
+        .iter()
+        .map(|row| row.1)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if !node_ids.is_empty() {
+        repaired += sqlx::query("UPDATE toonflow.workflow_node_runs SET state='failed',error_reason='服务重启导致任务中断',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE id=ANY($1) AND state='running'")
+            .bind(&node_ids)
+            .execute(&mut *tx).await?.rows_affected();
+        repaired += sqlx::query("UPDATE toonflow.workflow_runs SET state='failed',error_reason='服务重启导致任务中断',finish_time=(extract(epoch from clock_timestamp())*1000)::bigint WHERE id=ANY($1) AND state='running'")
+            .bind(&run_ids)
+            .execute(&mut *tx).await?.rows_affected();
+    }
     repaired += sqlx::query("UPDATE toonflow.novels SET event_state=-1,error_reason='服务重启导致失败' WHERE event_state=0")
         .execute(&mut *tx).await?.rows_affected();
     repaired += sqlx::query("UPDATE toonflow.assets SET prompt_state='生成失败',prompt_error_reason='服务重启导致失败' WHERE prompt_state='生成中'")
@@ -130,7 +162,7 @@ pub async fn repair_gateway_interrupted_state(pool: &PgPool) -> Result<u64, sqlx
         .execute(&mut *tx).await?.rows_affected();
     repaired += sqlx::query("UPDATE toonflow.video_tracks SET state='生成失败',reason='服务重启导致失败' WHERE state='生成中'")
         .execute(&mut *tx).await?.rows_affected();
-    repaired += sqlx::query("UPDATE toonflow.videos SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中'")
+    repaired += sqlx::query("UPDATE toonflow.videos v SET state='生成失败',error_reason='服务重启导致失败' WHERE state='生成中' AND v.generation_context->'provider'->>'taskId' IS NULL AND NOT EXISTS(SELECT 1 FROM toonflow.distributed_jobs j WHERE j.kind='toon.video_quality' AND j.task_id::text=v.generation_context->'quality'->>'taskId' AND j.state IN ('queued','running','retry'))")
         .execute(&mut *tx).await?.rows_affected();
     repaired += sqlx::query(
         "UPDATE toonflow.tasks tasks
@@ -800,6 +832,7 @@ mod agent_memory_database_tests {
                 &state,
                 &toonflow_agent_tools::ToolRequest {
                     agent_type: "scriptAgent".into(),
+                    agent_key: Some("scriptAgent:decisionAgent".into()),
                     isolation_key: isolation.into(),
                     project_id,
                     script_id: None,
@@ -1515,6 +1548,8 @@ pub fn routes(state: ToonState) -> Router {
             "/api/production/workbench/checkVideoStateList",
             post(toonflow_video::check_states),
         )
+        .route("/production/workbench/inspectVideo", post(toonflow_video_quality::inspect))
+        .route("/api/production/workbench/inspectVideo", post(toonflow_video_quality::inspect))
         .route(
             "/api/production/workbench/generateVideoPrompt",
             post(toonflow_video::generate_prompt),
@@ -2175,13 +2210,14 @@ mod proxy_route_tests {
         let address = listener.local_addr().unwrap();
         let app = routes(ToonState::new(pool, tokens));
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let mut results = Vec::new();
         for path in [
             "/task/getTaskApi", "/task/taskDetails", "/task/getTaskCategories", "/task/getProject",
             "/setting/skillManagement/saveSkillContent", "/assets/uploadClip",
             "/project/editVisualManual", "/project/addVisualManual", "/project/editDirectorlManual",
             "/project/addDirectorManual", "/project/deleteVisualManual", "/project/deleteDirectorManual",
+            "/production/workbench/inspectVideo",
         ] {
             for prefix in ["", "/api"] {
                 let url = format!("http://{address}{prefix}{path}");

@@ -637,6 +637,15 @@ async fn mark_task_failed(
     reason: &str,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
+        "UPDATE toonflow.videos SET state='生成失败',error_reason=$2,
+         generation_context=jsonb_set(generation_context,'{quality,state}','\"error\"'::jsonb)
+         WHERE state='生成中' AND generation_context->'quality'->>'taskId'=$1::text",
+    )
+    .bind(task_id.to_string())
+    .bind(reason)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
         "UPDATE toonflow.tasks SET state='failed',reason=$2 WHERE id=$1 AND state='running'",
     )
     .bind(task_id)
@@ -711,6 +720,58 @@ mod tests {
     use std::time::Duration;
 
     use super::{duration_seconds, truncate_error};
+
+    #[tokio::test]
+    #[ignore = "requires an isolated TEST_DATABASE_URL"]
+    async fn terminal_quality_failure_finalizes_video_without_reviving_cancellation() {
+        use rust_toon_framework_database::{DatabaseConfig, connect, migrate};
+        let pool = connect(
+            &DatabaseConfig::new(
+                std::env::var("TEST_DATABASE_URL").unwrap(),
+                1,
+                3,
+                Duration::from_secs(10),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        migrate(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let project_id = chrono::Utc::now().timestamp_micros();
+        sqlx::query("INSERT INTO toonflow.projects(id,name,create_time,update_time) VALUES($1,'quality failure test',0,0)")
+            .bind(project_id).execute(&mut *tx).await.unwrap();
+        let task_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.tasks(project_id,task_class,state) VALUES($1,'videoQuality','running') RETURNING id")
+            .bind(project_id).fetch_one(&mut *tx).await.unwrap();
+        let video_id: i64 = sqlx::query_scalar("INSERT INTO toonflow.videos(project_id,state,generation_context) VALUES($1,'生成中',$2) RETURNING id")
+            .bind(project_id).bind(serde_json::json!({"quality":{"state":"pending","taskId":task_id}})).fetch_one(&mut *tx).await.unwrap();
+        super::mark_task_failed(&mut tx, task_id, "检查执行失败")
+            .await
+            .unwrap();
+        let result: (String, String) = sqlx::query_as(
+            "SELECT state,generation_context->'quality'->>'state' FROM toonflow.videos WHERE id=$1",
+        )
+        .bind(video_id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(result, ("生成失败".into(), "error".into()));
+        sqlx::query("UPDATE toonflow.videos SET state='已取消' WHERE id=$1")
+            .bind(video_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        super::mark_task_failed(&mut tx, task_id, "late worker error")
+            .await
+            .unwrap();
+        let state: String = sqlx::query_scalar("SELECT state FROM toonflow.videos WHERE id=$1")
+            .bind(video_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(state, "已取消");
+        tx.rollback().await.unwrap();
+    }
 
     #[test]
     fn errors_are_bounded_on_character_boundaries() {

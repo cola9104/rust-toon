@@ -9,6 +9,7 @@ import {
   Checkbox,
   Empty,
   Input,
+  InputNumber,
   Modal,
   Select,
   Slider,
@@ -18,7 +19,8 @@ import {
 } from 'ant-design-vue';
 
 import { getModelSimpleList } from '#/api/ai/model/model';
-import { updateVideoTransitionSettings } from '#/api/toonflow';
+import { inspectTrackVideo, updateVideoTransitionSettings } from '#/api/toonflow';
+import { videoQualityPresentation } from './video-quality';
 import { assetFileUrl } from '../assets/asset-types';
 import StoryboardQuickPreview from './StoryboardQuickPreview.vue';
 import StoryboardTrackStrip from './StoryboardTrackStrip.vue';
@@ -28,6 +30,7 @@ import { groupVideoTracksByScene } from './video-scene-groups';
 import {
   normalizeVideoTransitionSettings,
   previousVideoTrackContext,
+  transitionDurationApplies,
   transitionSourceLabel,
   videoFrameApplication,
   VIDEO_FRAME_POLICY_OPTIONS,
@@ -68,6 +71,18 @@ const emit = defineEmits<{
 const activeTrackId = ref<number | undefined>(props.initialTrackId);
 const activeTab = ref<'preview' | 'generate' | 'editor'>(props.initialTab ?? 'preview');
 const previewVideo = ref<any>();
+const inspectingVideoIds = ref<number[]>([]);
+
+async function inspectVideo(video: any) {
+  if (inspectingVideoIds.value.includes(video.id)) return;
+  inspectingVideoIds.value.push(video.id);
+  try {
+    await inspectTrackVideo(video.id);
+    emit('refresh');
+  } finally {
+    inspectingVideoIds.value = inspectingVideoIds.value.filter((id) => id !== video.id);
+  }
+}
 const compareOpen = ref(false);
 const compareIds = ref<number[]>([]);
 const addReferenceOpen = ref(false);
@@ -327,7 +342,18 @@ function transitionSettings(track: any) {
   const settings = normalizeVideoTransitionSettings(track);
   track.transitionType = settings.transitionType;
   track.framePolicy = settings.framePolicy;
+  track.transitionDurationMs = settings.transitionDurationMs;
+  track.trimStartMs = settings.trimStartMs;
+  track.trimEndMs = settings.trimEndMs;
   return track as any;
+}
+
+function transitionDurationEnabled(track: any) {
+  return transitionDurationApplies(transitionSettings(track).transitionType);
+}
+
+function trimEndMinMs(track: any) {
+  return transitionSettings(track).trimStartMs + 1;
 }
 
 function previousTrackContext(track: any) {
@@ -415,11 +441,19 @@ async function persistTransitionSettings(track: any) {
   }
 
   const previousTrackId = previous?.trackId;
+  let trimEndMs = settings.trimEndMs;
+  if (trimEndMs !== null && trimEndMs <= settings.trimStartMs) {
+    trimEndMs = null;
+    track.trimEndMs = null;
+  }
   await updateVideoTransitionSettings({
     framePolicy: settings.framePolicy,
     id: Number(track.id),
     ...(previousTrackId === undefined ? {} : { previousTrackId }),
+    transitionDurationMs: settings.transitionDurationMs,
     transitionType: settings.transitionType,
+    trimEndMs,
+    trimStartMs: settings.trimStartMs,
   });
   track.previousTrackId = previousTrackId;
   track.transitionSource = 'manual';
@@ -783,6 +817,11 @@ onActivated(() => {
                     <article v-for="(video, versionIndex) in activeTrack.videoList" :key="video.id" class="video-card" :class="{ 'video-card--selected': isSelectedVideo(activeTrack, video) }">
                       <button class="video-preview" type="button" @click="previewVideo = video"><video v-if="videoUrl(video)" :src="videoUrl(video)" muted playsinline preload="metadata" /><div v-else class="video-placeholder">{{ video.state }}</div><Tag class="video-state" :color="stateColor(video.state)">{{ video.state }}</Tag><Tag v-if="video.retryOfId" class="video-retry">重试自 V{{ video.retryOfId }}</Tag></button>
                     <div class="video-actions"><span class="version-label">V{{ Number(versionIndex) + 1 }}</span><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" @click="emit('selectVideo', activeTrack, video)">{{ isSelectedVideo(activeTrack, video) ? '已选中' : '选中' }}</Button><Button v-if="['生成成功','已完成'].includes(video.state)" size="small" :type="compareIds.includes(video.id) ? 'primary' : 'default'" @click="toggleCompare(video)">{{ compareIds.includes(video.id) ? '已加入对比' : '对比' }}</Button><Button v-if="video.state === '生成中'" size="small" @click="emit('cancelVideo', video)">取消</Button><Button v-if="['生成失败','已取消'].includes(video.state)" size="small" @click="emit('retryVideo', video, activeTrack)">重试</Button><Button danger size="small" type="text" @click="emit('deleteVideo', video)">删除</Button></div>
+                    <div class="video-actions">
+                      <Tooltip :title="videoQualityPresentation(video).detail"><Tag :color="videoQualityPresentation(video).color">{{ videoQualityPresentation(video).label }}</Tag></Tooltip>
+                      <Button v-if="videoUrl(video) && !['生成中', '已取消'].includes(video.state)" size="small" :loading="inspectingVideoIds.includes(video.id)" @click="inspectVideo(video)">检查质量</Button>
+                    </div>
+                    <p v-if="video.errorReason" class="video-quality-error">{{ video.errorReason }}</p>
                   </article>
                 </div>
                 <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="暂无历史版本" />
@@ -819,6 +858,9 @@ onActivated(() => {
                   <label><span>生成模式</span><Select v-model:value="generation(activeTrack).mode" :options="[{label:'纯文本',value:'text'},{label:'单图首帧',value:'singleImage'},{label:'首尾帧',value:'startEndRequired'},{label:'首帧必填、尾帧可选',value:'endFrameOptional'},{label:'尾帧必填、首帧可选',value:'startFrameOptional'}]" size="small" /></label>
                   <label><span>入场过渡</span><Select v-model:value="transitionSettings(activeTrack).transitionType" :options="VIDEO_TRANSITION_TYPE_OPTIONS" size="small" @change="persistTransitionSettings(activeTrack)" /></label>
                   <label><span>首帧来源</span><Select v-model:value="transitionSettings(activeTrack).framePolicy" :options="framePolicyOptions(activeTrack)" size="small" @change="persistTransitionSettings(activeTrack)" /></label>
+                  <label><span>过渡时长</span><InputNumber v-model:value="transitionSettings(activeTrack).transitionDurationMs" :disabled="!transitionDurationEnabled(activeTrack)" :max="10000" :min="0" :step="50" size="small" @change="persistTransitionSettings(activeTrack)" /><span>{{ transitionDurationEnabled(activeTrack) ? '毫秒 · 叠化交叉淡化音画，声音桥接提前引入下一轨声音' : '毫秒 · 当前过渡类型导出时为硬切，时长不生效' }}</span></label>
+                  <label><span>裁剪开始</span><InputNumber v-model:value="transitionSettings(activeTrack).trimStartMs" :min="0" :step="100" size="small" @change="persistTransitionSettings(activeTrack)" /><span>毫秒 · 导出时从该时间点开始播放</span></label>
+                  <label><span>裁剪结束</span><InputNumber v-model:value="transitionSettings(activeTrack).trimEndMs" :min="trimEndMinMs(activeTrack)" :step="100" placeholder="播放到结尾" size="small" @change="persistTransitionSettings(activeTrack)" /><span>毫秒 · 留空则播放到片段结尾</span></label>
                   <label><span>分辨率</span><Select v-model:value="generation(activeTrack).resolution" :options="[{label:'720p',value:'720p'},{label:'1080p',value:'1080p'}]" size="small" /></label>
                   <label class="parameter-field--readonly"><span>分镜时长</span><span class="duration-readonly">{{ generation(activeTrack).duration }} 秒 · 来自分镜</span></label>
                   <div

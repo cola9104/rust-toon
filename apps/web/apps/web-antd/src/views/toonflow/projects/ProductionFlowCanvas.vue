@@ -92,6 +92,7 @@ const emit = defineEmits<{
   generateVideoPrompt: [track: any];
   openVideoTrack: [trackId: number];
   openAgentRun: [runId: number];
+  refreshWorkbench: [];
   retryStoryboards: [];
   retryNode: [nodeId: string];
   retryTrackVideo: [video: any, track: any];
@@ -585,7 +586,7 @@ onBeforeUnmount(() => {
                 {{ assets.length ? '资产已载入' : '等待 Agent 分析' }}
               </Tag>
             </header>
-            <ProductionAssetStrip :assets="assets" @edit="emit('editAsset', $event)" @generate="emit('generateDerivedAsset', $event)" />
+            <ProductionAssetStrip :assets="assets" :script="script" @edit="emit('editAsset', $event)" @generate="emit('generateDerivedAsset', $event)" @refresh="emit('refreshWorkbench')" />
           </section>
         </section>
       </template>

@@ -19,6 +19,7 @@ use axum::{
 use futures_util::StreamExt;
 use handlers::{
     HandlerRegistry, JobHandler, ScheduledInfraHandler, TestNoopHandler, VideoExportHandler,
+    VideoQualityHandler,
 };
 use job_store::{ClaimResult, CompletionDisposition, FailureDisposition, JobStore};
 use rust_toon_framework_common::ServiceConfig;
@@ -177,6 +178,9 @@ async fn main() -> anyhow::Result<()> {
     ping(&pool).await?;
     let store = JobStore::new(pool);
     let mut handlers = HandlerRegistry::default();
+    handlers
+        .register(VideoQualityHandler)
+        .map_err(anyhow::Error::msg)?;
     handlers
         .register(VideoExportHandler)
         .map_err(anyhow::Error::msg)?;

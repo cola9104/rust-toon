@@ -85,6 +85,7 @@ impl FrameApplication {
         }
     }
 
+    #[cfg(test)]
     fn unavailable(
         previous_track_id: Option<i64>,
         previous_video_id: Option<i64>,
@@ -107,6 +108,13 @@ pub(crate) fn validate_transition_type(value: &str) -> bool {
 
 pub(crate) fn validate_frame_policy(value: &str) -> bool {
     matches!(value, FRAME_POLICY_OWN | FRAME_POLICY_PREVIOUS_TAIL)
+}
+
+pub(crate) fn validate_continuity_mode(mode: &str, frame_policy: &str) -> Result<(), String> {
+    if mode == "text" && frame_policy == FRAME_POLICY_PREVIOUS_TAIL {
+        return Err("使用上一轨尾帧需要首帧视频模式；请切换模式或改用本轨分镜".into());
+    }
+    Ok(())
 }
 
 pub(crate) async fn load_track_settings(
@@ -204,22 +212,29 @@ pub(crate) async fn resolve_previous_track_id(
     .map_err(|error| format!("读取上一视频轨道失败：{error}"))
 }
 
-async fn selected_previous_video(
+pub(crate) async fn selected_previous_video(
     pool: &sqlx::PgPool,
     previous_track_id: i64,
+    pinned_video_id: Option<i64>,
 ) -> Result<Option<(i64, String)>, String> {
     sqlx::query_as(
         "SELECT video.id,video.file_path
          FROM toonflow.videos video
          WHERE video.video_track_id=$1
            AND video.state='生成成功'
+           AND video.generation_context->'quality'->>'state'='passed'
+           AND ($2::bigint IS NULL OR video.id=$2)
+           AND ($2::bigint IS NOT NULL
+                OR (SELECT video_id FROM toonflow.video_tracks WHERE id=$1) IS NULL
+                OR video.id=(SELECT video_id FROM toonflow.video_tracks WHERE id=$1))
            AND coalesce(video.file_path,'')<>''
          ORDER BY (
            video.id=(SELECT video_id FROM toonflow.video_tracks WHERE id=$1)
-         ) DESC,video.time DESC,video.id DESC
+         ) DESC NULLS LAST,video.time DESC,video.id DESC
          LIMIT 1",
     )
     .bind(previous_track_id)
+    .bind(pinned_video_id)
     .fetch_optional(pool)
     .await
     .map_err(|error| format!("读取上一视频轨道结果失败：{error}"))
@@ -337,6 +352,8 @@ pub(crate) async fn apply_frame_policy(
     track_id: i64,
     settings: &TrackTransitionSettings,
     mut references: Value,
+    pinned_video_id: Option<i64>,
+    mode: &str,
 ) -> Result<(Value, FrameApplication), String> {
     if settings.frame_policy == FRAME_POLICY_OWN {
         return Ok((references, FrameApplication::own()));
@@ -344,72 +361,29 @@ pub(crate) async fn apply_frame_policy(
     if settings.frame_policy != FRAME_POLICY_PREVIOUS_TAIL {
         return Err("未知的首帧来源策略".into());
     }
-    let previous_track_id = match resolve_previous_track_id(
+    let previous_track_id = resolve_previous_track_id(
         pool,
         project_id,
         script_id,
         track_id,
         settings.previous_track_id,
     )
-    .await
-    {
-        Ok(previous_track_id) => previous_track_id,
-        Err(reason) => {
-            return Ok((
-                references,
-                FrameApplication::unavailable(
-                    settings.previous_track_id,
-                    None,
-                    format!("配置的上一轨道不可用：{reason}；已使用本轨分镜首帧"),
-                ),
-            ));
-        }
-    };
-    let Some(previous_track_id) = previous_track_id else {
-        return Ok((
-            references,
-            FrameApplication::unavailable(None, None, "没有可用的上一轨道，已使用本轨分镜首帧"),
-        ));
-    };
+    .await?
+    .ok_or("严格连续镜头缺少上一轨道；请指定前镜头或改用本轨分镜")?;
     let Some((previous_video_id, source)) =
-        selected_previous_video(pool, previous_track_id).await?
+        selected_previous_video(pool, previous_track_id, pinned_video_id).await?
     else {
-        return Ok((
-            references,
-            FrameApplication::unavailable(
-                Some(previous_track_id),
-                None,
-                "上一轨道没有成功视频，已使用本轨分镜首帧",
-            ),
-        ));
+        return Err(
+            "上一轨道没有通过基础质检的视频；请先生成或检查前镜头，严格连续镜头不会自动降级".into(),
+        );
     };
-    let last_frame =
-        match extract_or_load_last_frame(pool, project_id, previous_video_id, &source).await {
-            Ok(last_frame) => last_frame,
-            Err(reason) => {
-                return Ok((
-                    references,
-                    FrameApplication::unavailable(
-                        Some(previous_track_id),
-                        Some(previous_video_id),
-                        format!("上一轨道尾帧不可用：{reason}；已使用本轨分镜首帧"),
-                    ),
-                ));
-            }
-        };
+    let last_frame = extract_or_load_last_frame(pool, project_id, previous_video_id, &source)
+        .await
+        .map_err(|reason| format!("上一轨道尾帧不可用，已停止连续镜头生成：{reason}"))?;
     let Some(items) = references.as_array_mut() else {
-        return Ok((
-            references,
-            FrameApplication::unavailable(
-                Some(previous_track_id),
-                Some(previous_video_id),
-                "当前模型没有可插入的帧引用，已保留原始输入",
-            ),
-        ));
+        return Err("当前模型没有可替换的首帧引用".into());
     };
-    items.retain(|item| item.as_str() != Some(&last_frame));
-    items.insert(0, Value::String(last_frame));
-    items.truncate(4);
+    replace_first_frame(items, last_frame, mode);
     Ok((
         references,
         FrameApplication {
@@ -421,6 +395,18 @@ pub(crate) async fn apply_frame_policy(
             fallback_reason: None,
         },
     ))
+}
+
+fn replace_first_frame(items: &mut Vec<Value>, last_frame: String, mode: &str) {
+    // Replace the first frame, preserving the intended last frame. Inserting
+    // shifted the old first frame into the provider's last-frame position.
+    if mode == "startFrameOptional" && items.len() == 1 {
+        items.insert(0, Value::String(last_frame));
+    } else if items.is_empty() {
+        items.push(Value::String(last_frame));
+    } else {
+        items[0] = Value::String(last_frame);
+    }
 }
 
 pub(crate) fn generation_context(
@@ -464,7 +450,7 @@ pub(crate) async fn persist_generation_context(
     settings: &TrackTransitionSettings,
     frame: &FrameApplication,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE toonflow.videos SET generation_context=$2 WHERE id=$1")
+    sqlx::query("UPDATE toonflow.videos SET generation_context=generation_context || $2::jsonb WHERE id=$1 AND state='生成中'")
         .bind(video_id)
         .bind(generation_context(settings, frame))
         .execute(pool)
@@ -475,6 +461,33 @@ pub(crate) async fn persist_generation_context(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn continuity_replaces_first_frame_without_shifting_the_target_tail() {
+        let mut frames = vec![
+            serde_json::json!("old-first"),
+            serde_json::json!("intended-last"),
+        ];
+        super::replace_first_frame(&mut frames, "previous-tail".into(), "startEndRequired");
+        assert_eq!(
+            frames,
+            vec![
+                serde_json::json!("previous-tail"),
+                serde_json::json!("intended-last")
+            ]
+        );
+        let mut tail_only = vec![serde_json::json!("target-last")];
+        super::replace_first_frame(&mut tail_only, "previous-tail".into(), "startFrameOptional");
+        assert_eq!(
+            tail_only,
+            vec![
+                serde_json::json!("previous-tail"),
+                serde_json::json!("target-last")
+            ]
+        );
+        assert!(
+            super::validate_continuity_mode("text", super::FRAME_POLICY_PREVIOUS_TAIL).is_err()
+        );
+    }
     use super::{
         FRAME_POLICY_OWN, FRAME_POLICY_PREVIOUS_TAIL, FrameApplication, TrackTransitionSettings,
         generation_context, prompt_with_transition_context, validate_frame_policy,

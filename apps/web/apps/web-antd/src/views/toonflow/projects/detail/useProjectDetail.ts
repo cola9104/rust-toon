@@ -1798,7 +1798,7 @@ function startVideoPolling() {
       const updateMap = new Map(updates.map((video) => [video.id, video]));
       videoTracks.value = videoTracks.value.map((track: any) => ({
         ...track,
-        videoGenerating: (track.videoList ?? []).some((video: any) => video.state === '生成中'),
+        videoGenerating: (track.videoList ?? []).some((video: any) => (updateMap.get(video.id)?.state ?? video.state) === '生成中'),
         videoList: (track.videoList ?? []).map((video: any) => ({
           ...video,
           ...(updateMap.get(video.id) ?? {}),

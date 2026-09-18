@@ -410,6 +410,22 @@ pub async fn image_with_references_for_project(
     references: Vec<String>,
     role_sheet: bool,
 ) -> Result<String, String> {
+    image_with_provenance_for_project(
+        pool, project_id, configured, prompt, size, references, role_sheet, None,
+    )
+    .await
+}
+
+pub(crate) async fn image_with_provenance_for_project(
+    pool: &PgPool,
+    project_id: Option<i64>,
+    configured: &str,
+    prompt: &str,
+    size: &str,
+    references: Vec<String>,
+    role_sheet: bool,
+    provenance: Option<Value>,
+) -> Result<String, String> {
     let model = model_id(configured, "图片")?;
     let canvas = crate::toonflow_image_contract::ImageCanvas::parse(size)?;
     let mut references = references;
@@ -423,7 +439,13 @@ pub async fn image_with_references_for_project(
     } else {
         prompt.to_string()
     };
-    let input = serde_json::json!({"prompt":prompt,"size":size,"referenceCount":references.len(),"roleSheet":role_sheet});
+    let input = crate::toonflow_prompt_trace::image_input(
+        &prompt,
+        size,
+        references.len(),
+        role_sheet,
+        provenance,
+    );
     recorded_image_with_context(pool, project_id, &model.to_string(), input, async move {
         let mut last_error = String::new();
         for attempt in 1..=3 {
@@ -478,18 +500,87 @@ fn is_transient_model_error(error: &str) -> bool {
     .iter()
     .any(|marker| error.contains(marker))
 }
-/// Executes a video request without creating a generic `universalAi` task.
-///
-/// Video generation already has a project-scoped row in `toonflow.videos`
-/// whose state is polled by the workbench, so recording a second generic task
-/// only creates duplicate entries in the task center.
-pub async fn video_untracked(
+/// A provider-side video task handle. `url` is present when the model
+/// responded synchronously; otherwise `task_id` must be polled.
+pub struct VideoSubmission {
+    pub url: Option<String>,
+    pub task_id: Option<String>,
+}
+
+/// Submit a video generation request and return the provider handle without
+/// polling. Callers persist `task_id` before polling so a Gateway restart can
+/// resume the paid task instead of failing or resubmitting it.
+pub async fn video_submit(
     pool: &PgPool,
     configured: &str,
     payload: Value,
-) -> Result<String, String> {
+) -> Result<VideoSubmission, String> {
     let model_id = validate_video_request(pool, configured, &payload).await?;
-    video_unrecorded(pool, model_id, payload).await
+    let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
+    let response = factory
+        .video(model_id, payload)
+        .await
+        .map_err(normalized_app_error)?;
+    Ok(VideoSubmission {
+        url: (!response.url.is_empty()).then_some(response.url),
+        task_id: response.task_id,
+    })
+}
+
+/// Poll a previously submitted provider video task until it yields a URL,
+/// fails, or times out. Used both right after submission and when resuming
+/// interrupted generations after a Gateway restart.
+pub async fn video_poll_task(
+    pool: &PgPool,
+    configured: &str,
+    task_id: &str,
+) -> Result<String, String> {
+    let model_id = model_id(configured, "视频")?;
+    let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
+    let interval = std::env::var("AI_VIDEO_POLL_INTERVAL_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(5)
+        .max(1);
+    let timeout = std::env::var("AI_VIDEO_POLL_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(600)
+        .max(interval);
+    for _ in 0..timeout.div_ceil(interval) {
+        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+        let result = factory
+            .poll_video(model_id, task_id)
+            .await
+            .map_err(normalized_app_error)?;
+        if !result.url.is_empty() {
+            return Ok(result.url);
+        }
+        let state = result
+            .raw
+            .pointer("/status")
+            .or_else(|| result.raw.pointer("/state"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(
+            state.as_str(),
+            "failed" | "error" | "cancelled" | "canceled"
+        ) {
+            let reason = [
+                "/error/message",
+                "/error",
+                "/message",
+                "/failReason",
+                "/data/error",
+            ]
+            .iter()
+            .find_map(|path| result.raw.pointer(path).and_then(Value::as_str))
+            .unwrap_or("上游视频任务失败");
+            return Err(format!("视频任务 {task_id} 失败：{reason}"));
+        }
+    }
+    Err(format!("视频任务 {task_id} 等待超时"))
 }
 
 async fn validate_video_request(
@@ -528,64 +619,6 @@ async fn validate_video_request(
         ));
     }
     Ok(model_id)
-}
-
-async fn video_unrecorded(pool: &PgPool, model_id: i64, payload: Value) -> Result<String, String> {
-    let factory = rust_toon_ai_server::AiModelFactory::new(pool.clone());
-    let response = factory
-        .video(model_id, payload)
-        .await
-        .map_err(normalized_app_error)?;
-    if !response.url.is_empty() {
-        return Ok(response.url);
-    }
-    let task_id = response
-        .task_id
-        .ok_or_else(|| "视频响应缺少 URL 或任务 ID".to_string())?;
-    let interval = std::env::var("AI_VIDEO_POLL_INTERVAL_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(5)
-        .max(1);
-    let timeout = std::env::var("AI_VIDEO_POLL_TIMEOUT_SECONDS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(600)
-        .max(interval);
-    for _ in 0..timeout.div_ceil(interval) {
-        tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-        let result = factory
-            .poll_video(model_id, &task_id)
-            .await
-            .map_err(normalized_app_error)?;
-        if !result.url.is_empty() {
-            return Ok(result.url);
-        }
-        let state = result
-            .raw
-            .pointer("/status")
-            .or_else(|| result.raw.pointer("/state"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if matches!(
-            state.as_str(),
-            "failed" | "error" | "cancelled" | "canceled"
-        ) {
-            let reason = [
-                "/error/message",
-                "/error",
-                "/message",
-                "/failReason",
-                "/data/error",
-            ]
-            .iter()
-            .find_map(|path| result.raw.pointer(path).and_then(Value::as_str))
-            .unwrap_or("上游视频任务失败");
-            return Err(format!("视频任务 {task_id} 失败：{reason}"));
-        }
-    }
-    Err(format!("视频任务 {task_id} 等待超时"))
 }
 
 pub async fn speech(

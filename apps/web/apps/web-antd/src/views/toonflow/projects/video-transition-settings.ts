@@ -18,7 +18,7 @@ export const VIDEO_FRAME_POLICY_OPTIONS: Array<{
   value: ToonflowApi.VideoFramePolicy;
 }> = [
   { label: '使用本轨分镜', value: 'own' },
-  { label: '使用上一轨尾帧', value: 'previous_tail' },
+  { label: '使用上一轨尾帧（须通过基础质检）', value: 'previous_tail' },
 ];
 
 const transitionTypes = new Set<ToonflowApi.VideoTransitionType>(
@@ -32,7 +32,10 @@ export interface VideoTransitionTrackLike {
   framePolicy?: unknown;
   id: unknown;
   previousTrackId?: unknown;
+  transitionDurationMs?: unknown;
   transitionType?: unknown;
+  trimEndMs?: unknown;
+  trimStartMs?: unknown;
 }
 
 export interface OrderedVideoTrackContext {
@@ -42,11 +45,32 @@ export interface OrderedVideoTrackContext {
   trackName: string;
 }
 
+export const TRANSITION_DURATION_DEFAULT_MS = 600;
+export const TRANSITION_DURATION_MAX_MS = 10_000;
+
+function normalizeMs(value: unknown, fallback: number, max?: number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  let result = Math.max(0, Math.round(numeric));
+  if (max !== undefined) result = Math.min(max, result);
+  return result;
+}
+
+export function transitionDurationApplies(
+  transitionType: unknown,
+): boolean {
+  return transitionType === 'dissolve' || transitionType === 'audio_bridge';
+}
+
 export function normalizeVideoTransitionSettings(
   track: VideoTransitionTrackLike,
 ): Pick<
   ToonflowApi.UpdateVideoTransitionSettings,
-  'framePolicy' | 'transitionType'
+  | 'framePolicy'
+  | 'transitionDurationMs'
+  | 'transitionType'
+  | 'trimEndMs'
+  | 'trimStartMs'
 > {
   const transitionType = transitionTypes.has(
     track.transitionType as ToonflowApi.VideoTransitionType,
@@ -58,8 +82,27 @@ export function normalizeVideoTransitionSettings(
   )
     ? (track.framePolicy as ToonflowApi.VideoFramePolicy)
     : 'own';
+  const transitionDurationMs = normalizeMs(
+    track.transitionDurationMs,
+    TRANSITION_DURATION_DEFAULT_MS,
+    TRANSITION_DURATION_MAX_MS,
+  );
+  const trimStartMs = normalizeMs(track.trimStartMs, 0);
+  const trimEndNumeric = Number(track.trimEndMs);
+  const trimEndMs =
+    track.trimEndMs === null ||
+    track.trimEndMs === undefined ||
+    !Number.isFinite(trimEndNumeric)
+      ? null
+      : Math.max(0, Math.round(trimEndNumeric));
 
-  return { framePolicy, transitionType };
+  return {
+    framePolicy,
+    transitionDurationMs,
+    transitionType,
+    trimEndMs,
+    trimStartMs,
+  };
 }
 
 export function previousVideoTrackContext(
