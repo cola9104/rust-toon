@@ -51,6 +51,8 @@ import {
 } from './production-workflow';
 import StoryboardPanel from './StoryboardPanel.vue';
 
+const scriptExpanded = ref(false);
+
 const props = defineProps<{
   selectedNodeId?: string;
   assets: ToonflowApi.Asset[];
@@ -574,18 +576,16 @@ onBeforeUnmount(() => {
             <div><span class="stage-index">1</span> 剧本与衍生资产</div>
             <Tag :color="data.runtime.color">{{ data.runtime.label }}</Tag>
           </header>
-          <div v-if="script" class="script-body">
-            <h3>{{ script.name }}</h3>
-            <pre class="nowheel nopan">{{ script.content }}</pre>
+          <div v-if="script" class="script-body nopan nodrag">
+            <div class="script-summary-header">
+              <h3>{{ script.name }}</h3>
+              <Button size="small" :aria-expanded="scriptExpanded" @click.stop="scriptExpanded = !scriptExpanded">{{ scriptExpanded ? '收起剧本' : '展开全文' }}</Button>
+            </div>
+            <pre v-if="scriptExpanded" class="nowheel">{{ script.content }}</pre>
+            <p v-else class="script-excerpt">{{ script.content }}</p>
           </div>
           <Empty v-else :image="Empty.PRESENTED_IMAGE_SIMPLE" description="请先选择需要制作的剧本" />
           <section class="embedded-assets" :class="{ waiting: !script }">
-            <header class="embedded-assets-header">
-              <div>衍生资产</div>
-              <Tag :color="assets.length ? 'green' : 'gold'">
-                {{ assets.length ? '资产已载入' : '等待 Agent 分析' }}
-              </Tag>
-            </header>
             <ProductionAssetStrip :assets="assets" :script="script" @edit="emit('editAsset', $event)" @generate="emit('generateDerivedAsset', $event)" @refresh="emit('refreshWorkbench')" />
           </section>
         </section>
